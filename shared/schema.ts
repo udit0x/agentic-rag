@@ -105,6 +105,27 @@ export type QueryRequest = {
   sessionId?: string;
   query: string;
   topK?: number;
+  enableTracing?: boolean;
+  debugMode?: boolean;
+};
+
+export type QueryClassification = {
+  type: "factual" | "counterfactual" | "temporal" | "general";
+  confidence: number;
+  reasoning: string;
+  keywords: string[];
+  temporal_indicators?: string[];
+  use_general_knowledge?: boolean;
+};
+
+export type AgentTrace = {
+  agentName: string;
+  startTime: string;
+  endTime?: string;
+  durationMs?: number;
+  inputData: Record<string, any>;
+  outputData?: Record<string, any>;
+  error?: string;
 };
 
 export type QueryResponse = {
@@ -118,6 +139,10 @@ export type QueryResponse = {
     excerpt: string;
     score: number;
   }>;
+  classification?: QueryClassification;
+  agentTraces?: AgentTrace[];
+  executionTimeMs?: number;
+  responseType?: "reasoning" | "simulation" | "temporal" | "general_knowledge" | "error";
 };
 
 export type ChatHistoryResponse = {

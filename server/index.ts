@@ -1,3 +1,9 @@
+process.on("warning", (warning) => {
+  if (!warning.message.includes("A PostCSS plugin did not pass the `from` option")) {
+    console.warn(warning);
+  }
+});
+
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
@@ -9,12 +15,34 @@ declare module 'http' {
     rawBody: unknown
   }
 }
-app.use(express.json({
-  verify: (req, _res, buf) => {
-    req.rawBody = buf;
+
+// Apply JSON parsing only to non-API routes (API routes are proxied to Python)
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    // Skip JSON parsing for API routes - let the proxy handle it
+    next();
+  } else {
+    // Apply JSON parsing for other routes
+    express.json({
+      limit: '50mb',
+      verify: (req, _res, buf) => {
+        req.rawBody = buf;
+      }
+    })(req, res, next);
   }
-}));
-app.use(express.urlencoded({ extended: false }));
+});
+
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    // Skip URL encoding parsing for API routes
+    next();
+  } else {
+    express.urlencoded({ 
+      extended: false,
+      limit: '50mb'
+    })(req, res, next);
+  }
+});
 
 app.use((req, res, next) => {
   const start = Date.now();
@@ -77,5 +105,7 @@ app.use((req, res, next) => {
     reusePort: true,
   }, () => {
     log(`serving on port ${port}`);
+    console.log(`\n  ➜  Local:   http://localhost:${port}/`);
+    console.log(`  ➜  Network: http://0.0.0.0:${port}/\n`);
   });
 })();

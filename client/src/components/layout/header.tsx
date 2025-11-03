@@ -1,14 +1,30 @@
-import { Upload, Settings } from "lucide-react";
+import { Upload, Settings, Library } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "./theme-toggle";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { DocumentUpload } from "@/components/upload/document-upload";
+import { DocumentLibrary } from "@/components/upload/document-library";
 
-interface HeaderProps {
-  onUpload: (file: File) => Promise<void>;
+interface Document {
+  id: string;
+  filename: string;
+  size: number;
+  uploadedAt: string;
 }
 
-export function Header({ onUpload }: HeaderProps) {
+interface HeaderProps {
+  onSettingsClick?: () => void;
+  documents?: Document[];
+  onRefreshDocuments?: () => void;
+  onDeleteDocument?: (documentId: string) => void;
+}
+
+export function Header({ 
+  onSettingsClick, 
+  documents = [], 
+  onRefreshDocuments, 
+  onDeleteDocument 
+}: HeaderProps) {
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="flex h-16 items-center justify-between px-6">
@@ -51,12 +67,43 @@ export function Header({ onUpload }: HeaderProps) {
                 <SheetTitle>Upload Documents</SheetTitle>
               </SheetHeader>
               <div className="mt-6">
-                <DocumentUpload onUpload={onUpload} />
+                <DocumentUpload />
               </div>
             </SheetContent>
           </Sheet>
 
-          <Button variant="ghost" size="icon" data-testid="button-settings">
+          <Sheet>
+            <SheetTrigger asChild>
+              <Button variant="outline" size="default" data-testid="button-library" className="relative">
+                <Library className="h-4 w-4 mr-2" />
+                Library
+                {documents.length > 0 && (
+                  <span className="absolute -top-2 -right-2 h-5 w-5 bg-primary text-primary-foreground text-xs rounded-full flex items-center justify-center">
+                    {documents.length}
+                  </span>
+                )}
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="right" className="w-full sm:max-w-2xl">
+              <SheetHeader>
+                <SheetTitle>Document Library</SheetTitle>
+              </SheetHeader>
+              <div className="mt-6">
+                <DocumentLibrary 
+                  documents={documents}
+                  onRefresh={onRefreshDocuments || (() => {})}
+                  onDeleteDocument={onDeleteDocument}
+                />
+              </div>
+            </SheetContent>
+          </Sheet>
+
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            onClick={onSettingsClick}
+            data-testid="button-settings"
+          >
             <Settings className="h-5 w-5" />
             <span className="sr-only">Settings</span>
           </Button>

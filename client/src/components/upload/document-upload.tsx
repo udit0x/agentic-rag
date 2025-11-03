@@ -1,34 +1,32 @@
 import { useState, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
-import { Upload, File, X, CheckCircle2, AlertCircle } from "lucide-react";
+import { Upload, File, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { useUploadProgress } from "@/hooks/use-upload-progress";
+import { UploadProcessingVisualizer } from "./upload-processing-visualizer";
 
-interface UploadedFile {
+interface DropFile {
   id: string;
   file: File;
-  status: "pending" | "uploading" | "success" | "error";
-  progress: number;
   error?: string;
 }
 
 interface DocumentUploadProps {
-  onUpload: (file: File) => Promise<void>;
   accept?: string;
   maxSize?: number;
 }
 
 export function DocumentUpload({
-  onUpload,
   accept = ".pdf,.txt",
   maxSize = 10 * 1024 * 1024, // 10MB
 }: DocumentUploadProps) {
-  const [files, setFiles] = useState<UploadedFile[]>([]);
+  const [dropFiles, setDropFiles] = useState<DropFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  const { uploads, startUpload, removeUpload, clearCompleted } = useUploadProgress();
 
   const validateFile = (file: File): string | null => {
     const extension = "." + file.name.split(".").pop()?.toLowerCase();
@@ -49,68 +47,42 @@ export function DocumentUpload({
     async (fileList: FileList | null) => {
       if (!fileList || fileList.length === 0) return;
 
-      const newFiles: UploadedFile[] = Array.from(fileList).map((file) => ({
-        id: Math.random().toString(36).substring(7),
-        file,
-        status: "pending" as const,
-        progress: 0,
-      }));
+      const validFiles: DropFile[] = [];
+      const invalidFiles: DropFile[] = [];
 
-      setFiles((prev) => [...prev, ...newFiles]);
-
-      for (const uploadedFile of newFiles) {
-        const error = validateFile(uploadedFile.file);
+      Array.from(fileList).forEach((file) => {
+        const error = validateFile(file);
+        const dropFile: DropFile = {
+          id: Math.random().toString(36).substring(7),
+          file,
+          error: error || undefined,
+        };
 
         if (error) {
-          setFiles((prev) =>
-            prev.map((f) =>
-              f.id === uploadedFile.id ? { ...f, status: "error", error } : f
-            )
-          );
-          toast({
-            title: "Upload failed",
-            description: error,
-            variant: "destructive",
-          });
-          continue;
+          invalidFiles.push(dropFile);
+        } else {
+          validFiles.push(dropFile);
         }
+      });
 
-        setFiles((prev) =>
-          prev.map((f) =>
-            f.id === uploadedFile.id ? { ...f, status: "uploading" } : f
-          )
-        );
+      // Add all files to drop files for display
+      setDropFiles((prev) => [...prev, ...validFiles, ...invalidFiles]);
 
-        try {
-          await onUpload(uploadedFile.file);
-          setFiles((prev) =>
-            prev.map((f) =>
-              f.id === uploadedFile.id ? { ...f, status: "success", progress: 100 } : f
-            )
-          );
-          toast({
-            title: "Upload successful",
-            description: `${uploadedFile.file.name} has been processed.`,
-          });
-        } catch (error) {
-          const errorMessage =
-            error instanceof Error ? error.message : "Failed to upload file";
-          setFiles((prev) =>
-            prev.map((f) =>
-              f.id === uploadedFile.id
-                ? { ...f, status: "error", error: errorMessage }
-                : f
-            )
-          );
-          toast({
-            title: "Upload failed",
-            description: errorMessage,
-            variant: "destructive",
-          });
-        }
-      }
+      // Show errors for invalid files
+      invalidFiles.forEach((dropFile) => {
+        toast({
+          title: "Upload failed",
+          description: dropFile.error,
+          variant: "destructive",
+        });
+      });
+
+      // Start upload for valid files
+      validFiles.forEach((dropFile) => {
+        startUpload(dropFile.file);
+      });
     },
-    [onUpload, toast, accept, maxSize]
+    [toast, accept, maxSize, startUpload]
   );
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -136,12 +108,12 @@ export function DocumentUpload({
     }
   };
 
-  const removeFile = (id: string) => {
-    setFiles((prev) => prev.filter((f) => f.id !== id));
+  const removeDropFile = (id: string) => {
+    setDropFiles((prev) => prev.filter((f) => f.id !== id));
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -182,54 +154,64 @@ export function DocumentUpload({
         />
       </div>
 
-      {files.length > 0 && (
+      {/* Upload Progress Visualization */}
+      {uploads.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-medium text-foreground">
+              Processing {uploads.length} document{uploads.length !== 1 ? 's' : ''}
+            </h4>
+            {uploads.some(u => u.status === "completed") && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearCompleted}
+                className="text-xs"
+              >
+                Clear completed
+              </Button>
+            )}
+          </div>
+          <UploadProcessingVisualizer 
+            uploads={uploads}
+            onRemove={removeUpload}
+          />
+        </div>
+      )}
+
+      {/* Invalid Files Display */}
+      {dropFiles.filter(f => f.error).length > 0 && (
         <div className="space-y-2">
-          {files.map((uploadedFile) => (
-            <Card
-              key={uploadedFile.id}
-              className="p-3"
-              data-testid={`card-file-${uploadedFile.status}`}
-            >
-              <div className="flex items-center gap-3">
-                <File className="h-5 w-5 text-muted-foreground flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <p className="text-sm font-medium truncate" data-testid="text-filename">
-                      {uploadedFile.file.name}
-                    </p>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <span className="text-xs text-muted-foreground">
-                        {(uploadedFile.file.size / 1024).toFixed(1)} KB
-                      </span>
-                      {uploadedFile.status === "success" && (
-                        <CheckCircle2 className="h-4 w-4 text-green-600" />
-                      )}
-                      {uploadedFile.status === "error" && (
-                        <AlertCircle className="h-4 w-4 text-destructive" />
-                      )}
+          <h4 className="text-sm font-medium text-destructive">
+            Files with errors:
+          </h4>
+          {dropFiles
+            .filter(f => f.error)
+            .map((dropFile) => (
+              <Card key={dropFile.id} className="p-3 border-destructive/20">
+                <div className="flex items-center gap-3">
+                  <File className="h-5 w-5 text-destructive flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium truncate text-destructive">
+                        {dropFile.file.name}
+                      </p>
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6"
-                        onClick={() => removeFile(uploadedFile.id)}
-                        data-testid="button-remove-file"
+                        onClick={() => removeDropFile(dropFile.id)}
                       >
                         <X className="h-3 w-3" />
                       </Button>
                     </div>
-                  </div>
-                  {uploadedFile.status === "uploading" && (
-                    <Progress value={uploadedFile.progress} className="h-1" />
-                  )}
-                  {uploadedFile.status === "error" && uploadedFile.error && (
                     <p className="text-xs text-destructive mt-1">
-                      {uploadedFile.error}
+                      {dropFile.error}
                     </p>
-                  )}
+                  </div>
                 </div>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            ))}
         </div>
       )}
     </div>

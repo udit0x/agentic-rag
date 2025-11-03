@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Send } from "lucide-react";
@@ -10,13 +10,23 @@ interface MessageInputProps {
   placeholder?: string;
 }
 
-export function MessageInput({
+interface MessageInputRef {
+  focus: () => void;
+}
+
+export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
   onSubmit,
   disabled = false,
   placeholder = "Ask a question about your documents...",
-}: MessageInputProps) {
+}, ref) => {
   const [message, setMessage] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    focus: () => {
+      textareaRef.current?.focus();
+    }
+  }));
 
   const handleSubmit = () => {
     if (message.trim() && !disabled) {
@@ -43,27 +53,27 @@ export function MessageInput({
   }, [message]);
 
   return (
-    <div className="relative">
+    <div className="flex items-end gap-2 w-full">
       <Textarea
-        ref={textareaRef}
-        value={message}
-        onChange={(e) => setMessage(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder={placeholder}
-        disabled={disabled}
-        className={cn(
-          "min-h-[3rem] max-h-48 resize-none pr-12 text-base",
-          "focus-visible:ring-2 focus-visible:ring-ring",
-          disabled && "opacity-50 cursor-not-allowed"
-        )}
-        data-testid="input-message"
-        rows={1}
+      ref={textareaRef}
+      value={message}
+      onChange={(e) => setMessage(e.target.value)}
+      onKeyDown={handleKeyDown}
+      placeholder={placeholder}
+      disabled={disabled}
+      className={cn(
+        "min-h-[3rem] max-h-48 resize-none flex-1 text-base",
+        "focus-visible:ring-2 focus-visible:ring-ring",
+        disabled && "opacity-50 cursor-not-allowed"
+      )}
+      data-testid="input-message"
+      rows={1}
       />
       <Button
         onClick={handleSubmit}
         disabled={disabled || !message.trim()}
         size="icon"
-        className="absolute bottom-2 right-2 h-8 w-8"
+        className="h-10 w-10 mb-0.5"
         data-testid="button-send"
       >
         <Send className="h-4 w-4" />
@@ -71,4 +81,6 @@ export function MessageInput({
       </Button>
     </div>
   );
-}
+});
+
+MessageInput.displayName = "MessageInput";
