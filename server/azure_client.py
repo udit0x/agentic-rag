@@ -601,7 +601,7 @@ class MultiProviderRAGClient:
                 continue
             
             # Debug: Print both raw and normalized scores
-            print(f"[DEBUG] Azure Search result - ID: {result.get('id', 'unknown')[:8]}..., Raw Score: {raw_score:.6f}, Normalized: {normalized_score:.3f}")
+            #print(f"[DEBUG] Azure Search result - ID: {result.get('id', 'unknown')[:8]}..., Raw Score: {raw_score:.6f}, Normalized: {normalized_score:.3f}")
             
             # Level 3: Enhanced metadata grounding with source information
             chunk_index = result.get("chunkIndex", 0)

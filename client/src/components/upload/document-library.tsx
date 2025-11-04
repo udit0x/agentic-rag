@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import { API_ENDPOINTS, apiRequest } from "@/lib/api-config";
 
 interface Document {
   id: string;
@@ -17,7 +18,7 @@ interface Document {
 }
 
 interface DocumentLibraryProps {
-  documents: Document[];
+  documents?: Document[];
   onRefresh: () => void;
   onDeleteDocument?: (documentId: string) => void;
 }
@@ -39,18 +40,10 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
       setError(null);
       
       try {
-        console.log(`[DEBUG] Loading preview for document: ${document.id}`);
-        // Fetch document content from API
-        const response = await fetch(`/api/documents/${document.id}/content`);
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`[DEBUG] API Error: ${response.status} - ${errorText}`);
-          throw new Error(`Failed to load document content: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        console.log(`[DEBUG] Content loaded successfully, length: ${data.content?.length || 0}`);
+        //console.log(`[DEBUG] Loading preview for document: ${document.id}`);
+        // Fetch document content from Python API
+        const data = await apiRequest<{content: string}>(API_ENDPOINTS.DOCUMENT_CONTENT(document.id));
+        //console.log(`[DEBUG] Content loaded successfully, length: ${data.content?.length || 0}`);
         setContent(data.content || 'No content available');
         setLoading(false);
       } catch (err) {
@@ -69,16 +62,8 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
     
     try {
       console.log(`[DEBUG] Retrying preview load for document: ${document.id}`);
-      const response = await fetch(`/api/documents/${document.id}/content`);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`[DEBUG] API Error: ${response.status} - ${errorText}`);
-        throw new Error(`Failed to load document content: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      console.log(`[DEBUG] Content loaded successfully on retry, length: ${data.content?.length || 0}`);
+      const data = await apiRequest<{content: string}>(API_ENDPOINTS.DOCUMENT_CONTENT(document.id));
+      //console.log(`[DEBUG] Content loaded successfully on retry, length: ${data.content?.length || 0}`);
       setContent(data.content || 'No content available');
       setLoading(false);
     } catch (err) {
@@ -140,7 +125,7 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
   );
 }
 
-export function DocumentLibrary({ documents, onRefresh, onDeleteDocument }: DocumentLibraryProps) {
+export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }: DocumentLibraryProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
   const { toast } = useToast();

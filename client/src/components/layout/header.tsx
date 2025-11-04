@@ -1,9 +1,10 @@
-import { Upload, Settings, Library } from "lucide-react";
+import { Upload, Settings, Library, Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "./theme-toggle";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { DocumentUpload } from "@/components/upload/document-upload";
 import { DocumentLibrary } from "@/components/upload/document-library";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 interface Document {
   id: string;
@@ -14,21 +15,39 @@ interface Document {
 
 interface HeaderProps {
   onSettingsClick?: () => void;
+  onMenuClick?: () => void;
   documents?: Document[];
   onRefreshDocuments?: () => void;
   onDeleteDocument?: (documentId: string) => void;
 }
 
 export function Header({ 
-  onSettingsClick, 
+  onSettingsClick,
+  onMenuClick,
   documents = [], 
   onRefreshDocuments, 
   onDeleteDocument 
 }: HeaderProps) {
+  const isMobile = useIsMobile();
+
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="flex h-16 items-center justify-between px-6">
         <div className="flex items-center gap-3">
+          {/* Mobile menu button */}
+          {isMobile && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onMenuClick}
+              className="h-10 w-10"
+              data-testid="button-mobile-menu"
+            >
+              <Menu className="h-5 w-5" />
+              <span className="sr-only">Open menu</span>
+            </Button>
+          )}
+          
           <div className="flex items-center justify-center h-10 w-10 rounded-lg bg-primary text-primary-foreground">
             <svg
               viewBox="0 0 24 24"
@@ -44,14 +63,17 @@ export function Header({
               <line x1="12" y1="22.08" x2="12" y2="12" />
             </svg>
           </div>
-          <div>
-            <h1 className="text-lg font-semibold text-foreground" data-testid="text-app-title">
-              RAG Orchestrator
-            </h1>
-            <p className="text-xs text-muted-foreground hidden sm:block">
-              Multi-Agent Document Intelligence
-            </p>
-          </div>
+          {/* Hide text on mobile to save space, show only on desktop */}
+          {!isMobile && (
+            <div>
+              <h1 className="text-lg font-semibold text-foreground" data-testid="text-app-title">
+                RAG Orchestrator
+              </h1>
+              <p className="text-xs text-muted-foreground hidden sm:block">
+                Multi-Agent Document Intelligence
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2">

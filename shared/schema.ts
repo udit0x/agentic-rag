@@ -1,92 +1,73 @@
-import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, jsonb } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
-import { z } from "zod";
+import * as sqliteSchema from "./schemas/sqlite";
+import * as postgresSchema from "./schemas/postgresql";
 
-// Documents table - stores uploaded documents
-export const documents = pgTable("documents", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  filename: text("filename").notNull(),
-  contentType: text("content_type").notNull(),
-  size: integer("size").notNull(),
-  content: text("content").notNull(),
-  uploadedAt: timestamp("uploaded_at").notNull().defaultNow(),
-});
+// Environment-based schema exports
+const DB_TYPE = process.env.DB_TYPE || "sqlite";
 
-// Document chunks table - stores embedded chunks for retrieval
-export const documentChunks = pgTable("document_chunks", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  documentId: varchar("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
-  chunkIndex: integer("chunk_index").notNull(),
-  content: text("content").notNull(),
-  metadata: jsonb("metadata").$type<{
-    page?: number;
-    section?: string;
-    startChar?: number;
-    endChar?: number;
-  }>(),
-  embeddingId: text("embedding_id"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+// Export schema based on database type
+const schema = DB_TYPE === "sqlite" ? sqliteSchema : postgresSchema;
 
-// Chat sessions table - stores conversation history
-export const chatSessions = pgTable("chat_sessions", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  title: text("title"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+// Re-export all tables and types
+export const {
+  documents,
+  documentChunks,
+  chatSessions,
+  messages,
+  users,
+  messageContext,
+  userSessions,
+  configVersions,
+  queryAnalytics,
+  agentTraces,
+  documentProcessingJobs,
+  
+  // Insert schemas
+  insertDocumentSchema,
+  insertDocumentChunkSchema,
+  insertChatSessionSchema,
+  insertMessageSchema,
+  insertUserSchema,
+  insertMessageContextSchema,
+  insertUserSessionSchema,
+  insertConfigVersionSchema,
+  insertQueryAnalyticsSchema,
+  insertAgentTraceSchema,
+  insertDocumentProcessingJobSchema,
+} = schema;
 
-// Messages table - stores individual chat messages
-export const messages = pgTable("messages", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  sessionId: varchar("session_id").notNull().references(() => chatSessions.id, { onDelete: "cascade" }),
-  role: text("role").notNull().$type<"user" | "assistant">(),
-  content: text("content").notNull(),
-  sources: jsonb("sources").$type<Array<{
-    documentId: string;
-    chunkId: string;
-    filename: string;
-    excerpt: string;
-    score?: number;
-  }>>(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
-
-// Insert schemas
-export const insertDocumentSchema = createInsertSchema(documents).omit({
-  id: true,
-  uploadedAt: true,
-});
-
-export const insertDocumentChunkSchema = createInsertSchema(documentChunks).omit({
-  id: true,
-  createdAt: true,
-});
-
-export const insertChatSessionSchema = createInsertSchema(chatSessions).omit({
-  id: true,
-  createdAt: true,
-  updatedAt: true,
-});
-
-export const insertMessageSchema = createInsertSchema(messages).omit({
-  id: true,
-  createdAt: true,
-});
-
-// Types
+// Re-export types
 export type Document = typeof documents.$inferSelect;
-export type InsertDocument = z.infer<typeof insertDocumentSchema>;
+export type InsertDocument = typeof documents.$inferInsert;
 
 export type DocumentChunk = typeof documentChunks.$inferSelect;
-export type InsertDocumentChunk = z.infer<typeof insertDocumentChunkSchema>;
+export type InsertDocumentChunk = typeof documentChunks.$inferInsert;
 
 export type ChatSession = typeof chatSessions.$inferSelect;
-export type InsertChatSession = z.infer<typeof insertChatSessionSchema>;
+export type InsertChatSession = typeof chatSessions.$inferInsert;
 
 export type Message = typeof messages.$inferSelect;
-export type InsertMessage = z.infer<typeof insertMessageSchema>;
+export type InsertMessage = typeof messages.$inferInsert;
+
+export type User = typeof users.$inferSelect;
+export type InsertUser = typeof users.$inferInsert;
+
+export type MessageContext = typeof messageContext.$inferSelect;
+export type InsertMessageContext = typeof messageContext.$inferInsert;
+
+export type UserSession = typeof userSessions.$inferSelect;
+export type InsertUserSession = typeof userSessions.$inferInsert;
+
+export type ConfigVersion = typeof configVersions.$inferSelect;
+export type InsertConfigVersion = typeof configVersions.$inferInsert;
+
+export type QueryAnalytics = typeof queryAnalytics.$inferSelect;
+export type InsertQueryAnalytics = typeof queryAnalytics.$inferInsert;
+
+export type AgentTrace = typeof agentTraces.$inferSelect;
+export type InsertAgentTrace = typeof agentTraces.$inferInsert;
+
+export type DocumentProcessingJob = typeof documentProcessingJobs.$inferSelect;
+export type InsertDocumentProcessingJob = typeof documentProcessingJobs.$inferInsert;
 
 // API request/response types
 export type UploadDocumentRequest = {
@@ -118,7 +99,7 @@ export type QueryClassification = {
   use_general_knowledge?: boolean;
 };
 
-export type AgentTrace = {
+export type AgentTraceType = {
   agentName: string;
   startTime: string;
   endTime?: string;
@@ -140,7 +121,7 @@ export type QueryResponse = {
     score: number;
   }>;
   classification?: QueryClassification;
-  agentTraces?: AgentTrace[];
+  agentTraces?: AgentTraceType[];
   executionTimeMs?: number;
   responseType?: "reasoning" | "simulation" | "temporal" | "general_knowledge" | "error";
 };

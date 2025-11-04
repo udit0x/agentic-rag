@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest as enhancedApiRequest, API_ENDPOINTS } from "@/lib/api-config";
 import { queryClient } from "@/lib/queryClient";
 
 interface UploadProgress {
@@ -9,7 +9,6 @@ interface UploadProgress {
   fileSize: number;
   status: "uploading" | "processing" | "completed" | "error";
   currentStep: "upload" | "chunk" | "embed" | "save";
-  progress: number;
   error?: string;
 }
 
@@ -30,19 +29,8 @@ export function useUploadProgress(): UseUploadProgressReturn {
     ));
   }, []);
 
-  const simulateProgress = useCallback((id: string, step: UploadProgress["currentStep"], duration: number) => {
-    return new Promise<void>((resolve) => {
-      let progress = 0;
-      const interval = setInterval(() => {
-        progress += Math.random() * 15 + 5; // Random progress between 5-20%
-        if (progress >= 100) {
-          progress = 100;
-          clearInterval(interval);
-          resolve();
-        }
-        updateUpload(id, { currentStep: step, progress });
-      }, duration / 10);
-    });
+  const updateStep = useCallback((id: string, step: UploadProgress["currentStep"]) => {
+    updateUpload(id, { currentStep: step });
   }, [updateUpload]);
 
   const startUpload = useCallback(async (file: File) => {
@@ -55,22 +43,13 @@ export function useUploadProgress(): UseUploadProgressReturn {
       fileSize: file.size,
       status: "uploading",
       currentStep: "upload",
-      progress: 0,
     };
 
     setUploads(prev => [...prev, newUpload]);
 
     try {
-      // Step 1: Upload file (simulate progress)
-      updateUpload(uploadId, { currentStep: "upload", progress: 0 });
-      await simulateProgress(uploadId, "upload", 1000);
-
-      // Step 2: Start actual upload and processing
-      updateUpload(uploadId, { 
-        status: "processing", 
-        currentStep: "chunk", 
-        progress: 0 
-      });
+      // Step 1: Upload file (real file reading)
+      updateStep(uploadId, "upload");
 
       // Read file content
       let content: string;
@@ -97,22 +76,18 @@ export function useUploadProgress(): UseUploadProgressReturn {
         });
       }
 
-      // Simulate chunking progress
-      await simulateProgress(uploadId, "chunk", 1500);
+      // Step 2: Send to backend for processing
+      updateUpload(uploadId, { 
+        status: "processing", 
+        currentStep: "chunk"
+      });
 
-      // Step 3: Embedding generation
-      updateUpload(uploadId, { currentStep: "embed", progress: 0 });
-      await simulateProgress(uploadId, "embed", 2000);
-
-      // Step 4: Save to database
-      updateUpload(uploadId, { currentStep: "save", progress: 0 });
-
-      // Make the actual API call
-      const response = await apiRequest<{
+      // Start the API call and simulate the backend steps
+      const apiPromise = enhancedApiRequest<{
         documentId: string;
         filename: string;
         chunksCreated: number;
-      }>("/api/documents/upload", {
+      }>(API_ENDPOINTS.DOCUMENT_UPLOAD, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -122,13 +97,17 @@ export function useUploadProgress(): UseUploadProgressReturn {
         }),
       });
 
-      // Complete the save step
-      await simulateProgress(uploadId, "save", 800);
+      // Show step progression while API is processing
+      setTimeout(() => updateStep(uploadId, "embed"), 1000);
+      setTimeout(() => updateStep(uploadId, "save"), 2000);
+
+      // Wait for the actual API call to complete
+      const response = await apiPromise;
 
       // Mark as completed
       updateUpload(uploadId, { 
-        status: "completed", 
-        progress: 100 
+        status: "completed",
+        currentStep: "save"
       });
 
       toast({
@@ -137,7 +116,7 @@ export function useUploadProgress(): UseUploadProgressReturn {
       });
 
       // Refresh documents list in React Query cache
-      queryClient.invalidateQueries({ queryKey: ["/api/documents"] });
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Failed to upload file";
@@ -153,7 +132,7 @@ export function useUploadProgress(): UseUploadProgressReturn {
         variant: "destructive",
       });
     }
-  }, [updateUpload, simulateProgress, toast]);
+  }, [updateUpload, updateStep, toast]);
 
   const removeUpload = useCallback((id: string) => {
     setUploads(prev => prev.filter(upload => upload.id !== id));

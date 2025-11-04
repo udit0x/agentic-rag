@@ -10,6 +10,7 @@ import { Slider } from "@/components/ui/slider";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -45,6 +46,7 @@ interface SettingsPanelProps {
 export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onSaveConfiguration }: SettingsPanelProps) {
   const [activeTab, setActiveTab] = useState<"general" | "configuration">("general");
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  const isMobile = useIsMobile();
 
   const validateConfiguration = () => {
     const errors: Record<string, string> = {};
@@ -227,29 +229,28 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                             </div>
                           </CardContent>
                         </Card>
-
+                        {!isMobile && (
                         <Card>
                           <CardHeader>
                             <CardTitle className="text-base">Agent Behavior</CardTitle>
                           </CardHeader>
-                          <CardContent className="space-y-4">
-                            <div className="flex items-center justify-between">
-                              <div className="space-y-1">
-                                <Label htmlFor="enable-tracing">Agent Tracing</Label>
-                                <p className="text-xs text-muted-foreground">
-                                  Show step-by-step agent execution
-                                </p>
+                          <CardContent className="space-y-4">                            
+                              <div className="flex items-center justify-between">
+                                <div className="space-y-1">
+                                  <Label htmlFor="enable-tracing">Agent Tracing</Label>
+                                  <p className="text-xs text-muted-foreground">
+                                    Show step-by-step agent execution
+                                  </p>
+                                </div>
+                                <Switch
+                                  id="enable-tracing"
+                                  checked={settings.enableTracing}
+                                  onCheckedChange={(checked) => onSettingsChange("enableTracing", checked)}
+                                />
                               </div>
-                              <Switch
-                                id="enable-tracing"
-                                checked={settings.enableTracing}
-                                onCheckedChange={(checked) => onSettingsChange("enableTracing", checked)}
-                              />
-                            </div>
-
-                            
                           </CardContent>
                         </Card>
+                         )}
                       </>
                     )}
 

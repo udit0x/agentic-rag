@@ -139,7 +139,7 @@ async def get_documents():
             "id": doc["id"],
             "filename": doc["filename"],
             "size": doc["size"],
-            "uploadedAt": doc["uploadedAt"].isoformat(),
+            "uploadedAt": doc["uploadedAt"],
         }
         for doc in documents
     ]

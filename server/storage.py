@@ -247,5 +247,5 @@ class MemStorage:
         ]
 
 
-# Global storage instance
-storage = MemStorage()
+# Global storage instance - Use database-agnostic interface
+from server.database_interface import db_storage as storage

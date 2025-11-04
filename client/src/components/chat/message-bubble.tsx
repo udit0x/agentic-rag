@@ -1,5 +1,6 @@
 import { type Message } from "@shared/schema";
 import { cn } from "@/lib/utils";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { User, Bot, Copy, Check, ChevronDown, ChevronUp } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -74,6 +75,7 @@ export function MessageBubble({
   onRefinedQueryClick 
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
+  const isMobile = useIsMobile();
   const [isQuestionsExpanded, setIsQuestionsExpanded] = useState(false);
   const [showQuestions, setShowQuestions] = useState(showRefinedQueries);
 
@@ -100,15 +102,19 @@ export function MessageBubble({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: "easeOut" }}
       className={cn(
-        "flex gap-3",
+        "flex",
+        isMobile ? "gap-2" : "gap-3", // Tighter spacing on mobile
         isUser ? "justify-end" : "justify-start"
       )}
       data-testid={`message-${message.role}`}
     >
       {!isUser && (
         <div className="flex-shrink-0">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground">
-            <Bot className="h-4 w-4" />
+          <div className={cn(
+            "flex items-center justify-center rounded-full bg-primary text-primary-foreground",
+            isMobile ? "h-7 w-7" : "h-8 w-8" // Smaller avatar on mobile
+          )}>
+            <Bot className={cn(isMobile ? "h-3.5 w-3.5" : "h-4 w-4")} />
           </div>
         </div>
       )}
@@ -116,19 +122,34 @@ export function MessageBubble({
       <div
         className={cn(
           "flex flex-col gap-1",
-          isUser ? "items-end max-w-2xl" : "items-start flex-1 max-w-full"
+          isUser ? [
+            "items-end", 
+            isMobile ? "max-w-[85%]" : "max-w-2xl" // Wider on mobile for better use of space
+          ] : [
+            "items-start flex-1", 
+            isMobile ? "max-w-[85%]" : "max-w-full"
+          ]
         )}
       >
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-foreground" data-testid={`text-sender-${message.role}`}>
+          <span className={cn(
+            "font-medium text-foreground",
+            isMobile ? "text-xs" : "text-sm" // Smaller text on mobile
+          )} data-testid={`text-sender-${message.role}`}>
             {isUser ? "You" : "Assistant"}
           </span>
           {!isUser && responseType === "general_knowledge" && (
-            <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 rounded-full border border-blue-200 dark:border-blue-800">
+            <span className={cn(
+              "px-2 py-0.5 bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 rounded-full border border-blue-200 dark:border-blue-800",
+              isMobile ? "text-[10px]" : "text-xs" // Even smaller badge on mobile
+            )}>
               General AI Knowledge
             </span>
           )}
-          <span className="text-xs text-muted-foreground" data-testid="text-timestamp">
+          <span className={cn(
+            "text-muted-foreground",
+            isMobile ? "text-[10px]" : "text-xs"
+          )} data-testid="text-timestamp">
             {new Date(message.createdAt).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
@@ -138,7 +159,8 @@ export function MessageBubble({
 
         <div
           className={cn(
-            "rounded-2xl px-4 py-3",
+            "rounded-2xl",
+            isMobile ? "px-3 py-2.5 text-sm" : "px-4 py-3 text-base", // Smaller padding and text on mobile
             isUser
               ? "bg-primary text-primary-foreground shadow-sm"
               : "bg-card border border-card-border"
@@ -146,9 +168,15 @@ export function MessageBubble({
           data-testid="message-content"
         >
           {isUser ? (
-            <p className="text-base leading-relaxed whitespace-pre-wrap">{message.content}</p>
+            <p className={cn(
+              "leading-relaxed whitespace-pre-wrap",
+              isMobile ? "text-sm" : "text-base"
+            )}>{message.content}</p>
           ) : (
-            <div className="prose prose-sm dark:prose-invert max-w-none">
+            <div className={cn(
+              "prose dark:prose-invert max-w-none",
+              isMobile ? "prose-sm" : "prose-sm"
+            )}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
@@ -162,7 +190,11 @@ export function MessageBubble({
                         {codeContent}
                       </CodeBlock>
                     ) : (
-                      <code className={cn("font-mono text-sm", className)} {...props}>
+                      <code className={cn(
+                        "font-mono",
+                        isMobile ? "text-xs" : "text-sm",
+                        className
+                      )} {...props}>
                         {children}
                       </code>
                     );
@@ -174,7 +206,10 @@ export function MessageBubble({
                       return (
                         <button
                           onClick={() => onCitationClick?.(index)}
-                          className="inline-flex items-center align-super text-xs font-medium text-primary hover:underline"
+                          className={cn(
+                            "inline-flex items-center align-super font-medium text-primary hover:underline",
+                            isMobile ? "text-[10px]" : "text-xs"
+                          )}
                           data-testid={`link-citation-${index}`}
                           {...props}
                         >
@@ -266,17 +301,26 @@ export function MessageBubble({
 
         {!isUser && (
           (message.sources && message.sources.length > 0) ? (
-            <div className="mt-3">
+            <div className={cn("mt-3", isMobile && "mt-2")}>
               <div className="flex items-center gap-2 mb-3">
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                <span className={cn(
+                  "font-medium text-muted-foreground uppercase tracking-wide",
+                  isMobile ? "text-[10px]" : "text-xs"
+                )}>
                   Sources
                 </span>
                 <div className="h-px bg-border flex-1" />
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              <div className={cn(
+                "grid gap-2",
+                isMobile ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
+              )}>
                 {(() => {
+                  // Ensure sources is an array
+                  const sourcesArray = Array.isArray(message.sources) ? message.sources : [];
+                  
                   // Group sources by filename and collect citation numbers
-                  const sourceGroups = message.sources.reduce((acc, source, index) => {
+                  const sourceGroups = sourcesArray.reduce((acc, source, index) => {
                     const filename = source.filename;
                     if (!acc[filename]) {
                       acc[filename] = {
@@ -290,21 +334,31 @@ export function MessageBubble({
 
                   return Object.entries(sourceGroups).map(([filename, data]) => {
                     // Trim filename if too long (keep first part + extension)
-                    const trimmedFilename = filename.length > 25 
-                      ? filename.substring(0, 20) + "..." + filename.substring(filename.lastIndexOf('.'))
+                    const maxLength = isMobile ? 20 : 25;
+                    const trimmedFilename = filename.length > maxLength 
+                      ? filename.substring(0, maxLength - 5) + "..." + filename.substring(filename.lastIndexOf('.'))
                       : filename;
                     
                     return (
                       <button
                         key={filename}
                         onClick={() => onCitationClick?.(data.citations[0] - 1)}
-                        className="group flex items-center gap-2 px-3 py-2 bg-background border border-border hover:border-primary/50 rounded-lg transition-all hover:shadow-sm"
+                        className={cn(
+                          "group flex items-center gap-2 bg-background border border-border hover:border-primary/50 rounded-lg transition-all hover:shadow-sm",
+                          isMobile ? "px-2.5 py-2 text-xs" : "px-3 py-2"
+                        )}
                         title={`${filename} - Score: ${(data.source.score * 100).toFixed(0)}%`}
                         data-testid={`button-source-${filename}`}
                       >
                         <div className="flex items-center gap-2 flex-1 min-w-0">
-                          <div className="flex-shrink-0 w-2 h-2 bg-primary/60 rounded-full group-hover:bg-primary"></div>
-                          <span className="text-xs font-medium text-foreground truncate">
+                          <div className={cn(
+                            "flex-shrink-0 bg-primary/60 rounded-full group-hover:bg-primary",
+                            isMobile ? "w-1.5 h-1.5" : "w-2 h-2"
+                          )}></div>
+                          <span className={cn(
+                            "font-medium text-foreground truncate",
+                            isMobile ? "text-xs" : "text-xs"
+                          )}>
                             {trimmedFilename}
                           </span>
                         </div>
@@ -312,7 +366,10 @@ export function MessageBubble({
                           {data.citations.map((num) => (
                             <span
                               key={num}
-                              className="inline-flex items-center justify-center w-5 h-5 text-xs font-medium text-primary bg-primary/10 border border-primary/20 rounded"
+                              className={cn(
+                                "inline-flex items-center justify-center font-medium text-primary bg-primary/10 border border-primary/20 rounded",
+                                isMobile ? "w-4 h-4 text-[10px]" : "w-5 h-5 text-xs"
+                              )}
                             >
                               {num}
                             </span>
@@ -325,16 +382,28 @@ export function MessageBubble({
               </div>
             </div>
           ) : responseType === "general_knowledge" && (
-            <div className="mt-3">
+            <div className={cn("mt-3", isMobile && "mt-2")}>
               <div className="flex items-center gap-2 mb-3">
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                <span className={cn(
+                  "font-medium text-muted-foreground uppercase tracking-wide",
+                  isMobile ? "text-[10px]" : "text-xs"
+                )}>
                   Source
                 </span>
                 <div className="h-px bg-border flex-1" />
               </div>
-              <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
-                <div className="flex-shrink-0 w-2 h-2 bg-blue-500 rounded-full"></div>
-                <span className="text-xs font-medium text-blue-700 dark:text-blue-300">
+              <div className={cn(
+                "flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg",
+                isMobile ? "px-2.5 py-2" : "px-3 py-2"
+              )}>
+                <div className={cn(
+                  "flex-shrink-0 bg-blue-500 rounded-full",
+                  isMobile ? "w-1.5 h-1.5" : "w-2 h-2"
+                )} />
+                <span className={cn(
+                  "font-medium text-blue-700 dark:text-blue-300",
+                  isMobile ? "text-xs" : "text-xs"
+                )}>
                   General AI Knowledge
                 </span>
               </div>
@@ -345,8 +414,11 @@ export function MessageBubble({
 
       {isUser && (
         <div className="flex-shrink-0">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
-            <User className="h-4 w-4" />
+          <div className={cn(
+            "flex items-center justify-center rounded-full bg-muted text-muted-foreground",
+            isMobile ? "h-7 w-7" : "h-8 w-8"
+          )}>
+            <User className={cn(isMobile ? "h-3.5 w-3.5" : "h-4 w-4")} />
           </div>
         </div>
       )}

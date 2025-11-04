@@ -28,8 +28,35 @@ export default defineConfig({
       deny: ["**/.*"],
     },
     proxy: {
-      "/api": {
+      // Route specific endpoints to Python FastAPI
+      "/api/query": {
         target: "http://localhost:8000",
+        changeOrigin: true,
+        secure: false,
+      },
+      "/api/config": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+        secure: false,
+      },
+      "/api/chat": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+        secure: false,
+      },
+      // Route document and storage endpoints to TypeScript Express
+      "/api/documents": {
+        target: "http://localhost:5000",
+        changeOrigin: true,
+        secure: false,
+      },
+      "/api/health": {
+        target: "http://localhost:5000",
+        changeOrigin: true,
+        secure: false,
+      },
+      "/api/analytics": {
+        target: "http://localhost:5000",
         changeOrigin: true,
         secure: false,
       },

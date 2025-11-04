@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { type Message, type QueryResponse, type QueryClassification, type AgentTrace } from "@shared/schema";
 import { Header } from "@/components/layout/header";
+import { Sidebar } from "@/components/layout/sidebar";
 import { MessageBubble } from "@/components/chat/message-bubble";
 import { TypingIndicator } from "@/components/chat/typing-indicator";
 import { MessageInput } from "@/components/chat/message-input";
@@ -14,12 +15,70 @@ import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { apiRequest } from "@/lib/queryClient";
+import { apiRequest as enhancedApiRequest, API_ENDPOINTS } from "@/lib/api-config";
 import { queryClient } from "@/lib/queryClient";
+import { cn } from "@/lib/utils";
 import { Settings, Zap } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 export default function Chat() {
+  const isMobile = useIsMobile();
+  
+  // Sidebar state - mobile-aware initialization
+  const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
+    // On mobile, always start closed; on desktop, use localStorage
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      return false;
+    }
+    const saved = localStorage.getItem("sidebar-open");
+    if (saved !== null) return JSON.parse(saved);
+    return window.innerWidth >= 1024; // lg breakpoint
+  });
+
+  // Real chat sessions data from API
+  const { data: chatSessions, isLoading: isLoadingChatSessions, refetch: refetchChatSessions } = useQuery({
+    queryKey: ["chat-sessions"],
+    queryFn: async () => {
+      const response = await enhancedApiRequest<{
+        sessions: Array<{
+          id: string;
+          title: string;
+          userId?: string;
+          metadata?: any;
+          messageCount: number;
+          lastMessageAt?: string;
+          lastMessage?: string;
+          createdAt: string;
+          updatedAt: string;
+        }>;
+        total: number;
+        page: number;
+        limit: number;
+        hasMore: boolean;
+      }>(API_ENDPOINTS.CHAT_SESSIONS);
+      
+      // Transform the data to match the expected format
+      return response.sessions.map(session => ({
+        id: session.id,
+        title: session.title,
+        lastMessage: session.lastMessage || "No messages yet",
+        createdAt: session.createdAt,
+        messageCount: session.messageCount,
+      }));
+    },
+  });
+
+  // Mock user profile - will be replaced with real data later
+  const [userProfile, setUserProfile] = useState({
+    name: "John Doe",
+    email: "john.doe@company.com",
+    avatar: undefined, // Will use initials fallback
+    role: "Technology", // Default role from dropdown options
+    joinedAt: "2024-01-15T00:00:00Z",
+  });
+
   const [sessionId, setSessionId] = useState<string | undefined>();
   const [selectedSourceIndex, setSelectedSourceIndex] = useState<number | undefined>();
   const [currentSources, setCurrentSources] = useState<Message["sources"]>();
@@ -69,8 +128,12 @@ export default function Chat() {
   const inputRef = useRef<{ focus: () => void }>(null);
   const { toast } = useToast();
 
-  const { data: chatHistory, isLoading: isLoadingHistory } = useQuery<{ messages: Message[] }>({
-    queryKey: ["/api/chat", sessionId],
+  const { data: chatHistory, isLoading: isLoadingHistory } = useQuery<{ messages: Message[] } | null>({
+    queryKey: ["chat-history", sessionId],
+    queryFn: async () => {
+      if (!sessionId) return null;
+      return await enhancedApiRequest<{ messages: Message[] }>(API_ENDPOINTS.CHAT_HISTORY(sessionId));
+    },
     enabled: !!sessionId,
   });
 
@@ -81,16 +144,16 @@ export default function Chat() {
     size: number;
     uploadedAt: string;
   }>>({
-    queryKey: ["/api/documents"],
+    queryKey: ["documents"],
     queryFn: async () => {
       console.log('[DEBUG] Fetching documents from API...');
-      const data = await apiRequest<Array<{
+      const data = await enhancedApiRequest<Array<{
         id: string;
         filename: string;
         size: number;
         uploadedAt: string;
-      }>>("/api/documents");
-      console.log('[DEBUG] Documents fetched:', data);
+      }>>(API_ENDPOINTS.DOCUMENTS);
+      //console.log('[DEBUG] Documents fetched:', data);
       return data;
     },
   });
@@ -116,7 +179,7 @@ export default function Chat() {
 
   const deleteMutation = useMutation({
     mutationFn: async (documentId: string) => {
-      const response = await apiRequest(`/api/documents/${documentId}`, {
+      const response = await enhancedApiRequest(API_ENDPOINTS.DOCUMENT_DELETE(documentId), {
         method: "DELETE",
       });
       return response;
@@ -140,7 +203,7 @@ export default function Chat() {
 
   const queryMutation = useMutation({
     mutationFn: async (query: string) => {
-      const response = await apiRequest<QueryResponse>("/api/query", {
+      const response = await enhancedApiRequest<QueryResponse>(API_ENDPOINTS.QUERY, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -162,10 +225,13 @@ export default function Chat() {
       setSessionId(data.sessionId);
       setCurrentSources(data.sources);
       setCurrentClassification(data.classification);
-      setCurrentAgentTraces(data.agentTraces);
+      setCurrentAgentTraces((data.agentTraces || []) as unknown as AgentTrace[]);
       setCurrentExecutionTime(data.executionTimeMs);
       setCurrentResponseType(data.responseType);
-      queryClient.invalidateQueries({ queryKey: ["/api/chat", data.sessionId] });
+      queryClient.invalidateQueries({ queryKey: ["chat-history", data.sessionId] });
+      
+      // Refresh chat sessions to update metadata like message count
+      refetchChatSessions();
     },
     onError: (error: Error) => {
       toast({
@@ -179,18 +245,20 @@ export default function Chat() {
   const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null);
 
   // Streaming query function
-  const handleStreamingQuery = async (query: string) => {
+  const handleStreamingQuery = async (query: string, overrideSessionId?: string) => {
+    const effectiveSessionId = overrideSessionId || sessionId;
+    
     setIsStreaming(true);
     setRefinedQueries([]);
     setShowRefinedQueries(false);
     
     try {
-      const response = await fetch("/api/query/stream", {
+      const response = await fetch(API_ENDPOINTS.QUERY_STREAM, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query,
-          sessionId,
+          sessionId: effectiveSessionId,
           topK: 5,
           enableTracing,
           debugMode,
@@ -238,7 +306,10 @@ export default function Chat() {
                 setCurrentAgentTraces(data.data.agentTraces);  // Set agent traces!
                 setCurrentExecutionTime(data.data.executionTimeMs);
                 setCurrentResponseType(data.data.responseType);
-                queryClient.invalidateQueries({ queryKey: ["/api/chat", data.data.sessionId] });
+                queryClient.invalidateQueries({ queryKey: ["chat-history", data.data.sessionId] });
+                
+                // Refresh chat sessions to update metadata
+                refetchChatSessions();
               } else if (data.type === "error") {
                 // Handle API errors by creating an assistant message
                 if (pendingUserMessage) {
@@ -251,13 +322,21 @@ export default function Chat() {
                   sessionId: sessionId || `temp-session-${Date.now()}`,
                   role: "assistant",
                   content: data.data.error,
-                  createdAt: new Date(),
-                  sources: null
+                  createdAt: new Date().toISOString(),
+                  sources: null,
+                  classification: null,
+                  agentTraces: null,
+                  executionTimeMs: null,
+                  responseType: "error",
+                  tokenCount: null,
+                  contextWindowUsed: null,
+                  sequenceNumber: 0,
+                  parentMessageId: null,
                 };
                 
                 // Add error message to the current session
-                if (sessionId) {
-                  queryClient.setQueryData(["/api/chat", sessionId], (oldData: { messages: Message[] } | undefined) => {
+                if (effectiveSessionId) {
+                  queryClient.setQueryData(["chat-history", effectiveSessionId], (oldData: { messages: Message[] } | undefined) => {
                     return {
                       messages: [...(oldData?.messages || []), errorMessage]
                     };
@@ -266,7 +345,7 @@ export default function Chat() {
                   // For new sessions, we need to create a temporary session ID
                   const tempSessionId = `temp-session-${Date.now()}`;
                   setSessionId(tempSessionId);
-                  queryClient.setQueryData(["/api/chat", tempSessionId], {
+                  queryClient.setQueryData(["chat-history", tempSessionId], {
                     messages: [errorMessage]
                   });
                 }
@@ -297,29 +376,99 @@ export default function Chat() {
     }
   };
 
-  const handleSubmit = (message: string) => {
-    // Store the pending user message for cases where there's no session yet
+  const handleSubmit = async (message: string) => {
+    // If no session exists, create a new one
     if (!sessionId) {
-      setPendingUserMessage(message);
-    } else {
-      // Add optimistic user message for existing session
-      queryClient.setQueryData(["/api/chat", sessionId], (oldData: { messages: Message[] } | undefined) => {
-        const newUserMessage: Message = {
-          id: `temp-${Date.now()}`,
-          sessionId: sessionId,
-          role: "user",
-          content: message,
-          createdAt: new Date(),
-          sources: null
-        };
+      try {
+        // Create a new chat session
+        const newSession = await enhancedApiRequest<{
+          id: string;
+          title: string;
+          userId?: string;
+          metadata?: any;
+          messageCount: number;
+          lastMessageAt?: string;
+          createdAt: string;
+          updatedAt: string;
+        }>(API_ENDPOINTS.CREATE_CHAT_SESSION, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: message.length > 50 ? message.substring(0, 50) + "..." : message,
+            metadata: { source: "web-ui" }
+          }),
+        });
         
-        return {
-          messages: [...(oldData?.messages || []), newUserMessage]
-        };
-      });
+        setSessionId(newSession.id);
+        
+        // Refresh chat sessions list to include the new session
+        refetchChatSessions();
+        
+        // Store the pending user message - but add it to query cache immediately for new session
+        setPendingUserMessage(message);
+        
+        // Add the user message to the new session's cache immediately
+        queryClient.setQueryData(["chat-history", newSession.id], {
+          messages: [{
+            id: `user-${Date.now()}`,
+            sessionId: newSession.id,
+            role: "user",
+            content: message,
+            createdAt: new Date().toISOString(),
+            sources: null,
+            classification: null,
+            agentTraces: null,
+            executionTimeMs: null,
+            responseType: null,
+            tokenCount: null,
+            contextWindowUsed: null,
+            sequenceNumber: 0,
+            parentMessageId: null,
+          }]
+        });
+        
+        // Clear pending message since we added it to cache
+        setPendingUserMessage(null);
+        
+        // Start the query with the new session ID
+        handleStreamingQuery(message, newSession.id);
+        return;
+      } catch (error) {
+        console.error("Failed to create new chat session:", error);
+        toast({
+          title: "Failed to create chat",
+          description: "Could not start a new conversation. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
     }
     
-    // Use streaming query instead of regular mutation
+    // For existing sessions, add optimistic user message
+    queryClient.setQueryData(["chat-history", sessionId], (oldData: { messages: Message[] } | undefined) => {
+      const newUserMessage: Message = {
+        id: `temp-${Date.now()}`,
+        sessionId: sessionId,
+        role: "user",
+        content: message,
+        createdAt: new Date().toISOString(),
+        sources: null,
+        classification: null,
+        agentTraces: null,
+        executionTimeMs: null,
+        responseType: null,
+        tokenCount: null,
+        contextWindowUsed: null,
+        sequenceNumber: 0,
+        parentMessageId: null,
+      };
+      
+      return {
+        messages: [...(oldData?.messages || []), newUserMessage]
+      };
+    });
+    
+    // Use streaming query with existing session
     handleStreamingQuery(message);
   };
 
@@ -416,8 +565,8 @@ export default function Chat() {
         documentRelevanceThreshold: configData.documentRelevanceThreshold 
       });
 
-      // Save configuration to backend
-      await apiRequest("/api/config/save", {
+      // Save configuration to backend using proper API endpoint
+      await enhancedApiRequest(API_ENDPOINTS.CONFIG_SAVE, {
         method: "POST",
         body: JSON.stringify(configData),
         headers: {
@@ -442,6 +591,102 @@ export default function Chat() {
     }
   };
 
+  // Sidebar handlers - mobile-aware
+  const handleSidebarToggle = () => {
+    const newState = !isSidebarOpen;
+    setIsSidebarOpen(newState);
+    // Only persist on desktop
+    if (!isMobile) {
+      localStorage.setItem("sidebar-open", JSON.stringify(newState));
+    }
+  };
+
+  const handleChatSelect = (chatId: string) => {
+    // Load selected chat session
+    setSessionId(chatId);
+    // Clear current context when switching chats
+    setCurrentSources(undefined);
+    setCurrentClassification(undefined);
+    setCurrentAgentTraces(undefined);
+    setCurrentExecutionTime(undefined);
+    setCurrentResponseType(undefined);
+    
+    // On mobile, close sidebar after selection
+    if (isMobile) {
+      setIsSidebarOpen(false);
+    }
+  };
+
+  const handleNewChat = () => {
+    // Clear current session and start fresh
+    setSessionId(undefined);
+    setCurrentSources(undefined);
+    setCurrentClassification(undefined);
+    setCurrentAgentTraces(undefined);
+    setCurrentExecutionTime(undefined);
+    setCurrentResponseType(undefined);
+    setPendingUserMessage(null);
+    // Clear any refined queries
+    setRefinedQueries([]);
+    setShowRefinedQueries(false);
+    
+    // On mobile, close sidebar after new chat
+    if (isMobile) {
+      setIsSidebarOpen(false);
+    }
+    
+    // Refresh chat sessions to update counts and metadata
+    refetchChatSessions();
+  };
+
+  const handleDeleteChat = async (chatId: string) => {
+    try {
+      await enhancedApiRequest(API_ENDPOINTS.DELETE_CHAT_SESSION(chatId), {
+        method: "DELETE",
+      });
+      
+      // Refresh the chat sessions list
+      refetchChatSessions();
+      
+      // If the deleted chat was the current session, clear it
+      if (sessionId === chatId) {
+        handleNewChat();
+      }
+      
+      toast({
+        title: "Chat deleted",
+        description: "The conversation has been removed successfully.",
+      });
+    } catch (error) {
+      console.error("Failed to delete chat:", error);
+      toast({
+        title: "Delete failed",
+        description: error instanceof Error ? error.message : "Failed to delete the conversation.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Profile handlers
+  const handleUpdateRole = (role: string) => {
+    setUserProfile(prev => ({ ...prev, role }));
+    toast({
+      title: "Role updated",
+      description: "Your industry/role has been updated successfully.",
+    });
+  };
+
+  const handleLogout = () => {
+    // Clear user session and redirect to login
+    // This would typically clear tokens, reset state, etc.
+    toast({
+      title: "Signed out",
+      description: "You have been signed out successfully.",
+    });
+    // In a real app, you'd redirect to login page or clear auth state
+    console.log("User logged out");
+  };
+
   // Keyboard shortcuts
   const handleKeyboardShortcuts = useCallback((event: KeyboardEvent) => {
     if (!settings.enableKeyboardShortcuts) return;
@@ -459,12 +704,15 @@ export default function Chat() {
         inputRef.current?.focus();
         break;
       case isModifier && key === "t":
-        event.preventDefault();
-        setEnableTracing(prev => !prev);
-        toast({
-          title: `Agent tracing ${!enableTracing ? "enabled" : "disabled"}`,
-          description: `Agent execution traces are now ${!enableTracing ? "visible" : "hidden"}`,
-        });
+        // Disable agent tracing shortcut on mobile since context panel is hidden
+        if (!isMobile) {
+          event.preventDefault();
+          setEnableTracing(prev => !prev);
+          toast({
+            title: `Agent tracing ${!enableTracing ? "enabled" : "disabled"}`,
+            description: `Agent execution traces are now ${!enableTracing ? "visible" : "hidden"}`,
+          });
+        }
         break;
     }
   }, [settings.enableKeyboardShortcuts, enableTracing, toast]);
@@ -484,137 +732,195 @@ export default function Chat() {
   const hasMessages = messages.length > 0;
 
   return (
-    <div className="flex flex-col h-screen bg-background">
-      <Header 
+    <div className="flex h-screen bg-background relative overflow-hidden">
+      {/* Mobile backdrop overlay */}
+      <AnimatePresence>
+        {isMobile && isSidebarOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 bg-black/50 z-40 lg:hidden"
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Sidebar */}
+      <Sidebar
+        isOpen={isSidebarOpen}
+        onToggle={handleSidebarToggle}
+        chatHistory={chatSessions || []}
+        currentChatId={sessionId}
+        onChatSelect={handleChatSelect}
+        onNewChat={handleNewChat}
+        onDeleteChat={handleDeleteChat}
+        userProfile={userProfile}
         onSettingsClick={() => setIsSettingsOpen(true)}
-        documents={documentsData || []}
-        onRefreshDocuments={handleRefreshDocuments}
-        onDeleteDocument={handleDeleteDocument}
+        onUpdateRole={handleUpdateRole}
+        onLogout={handleLogout}
       />
 
-      <div className="flex flex-1 overflow-hidden">
-        <div className="flex-1 flex flex-col min-w-0">
+      {/* Main Content */}
+      <div className={cn(
+        "flex flex-col flex-1 min-w-0",
+        isMobile && "w-full" // Ensure full width on mobile
+      )}>
+        <Header 
+          onSettingsClick={() => setIsSettingsOpen(true)}
+          onMenuClick={handleSidebarToggle}
+          documents={documentsData || []}
+          onRefreshDocuments={handleRefreshDocuments}
+          onDeleteDocument={handleDeleteDocument}
+        />
 
-          <ScrollArea className="flex-1">
-            <div className="max-w-4xl mx-auto px-4 py-6">
-              <AnimatePresence mode="wait">
-                {!hasMessages && !queryMutation.isPending && !pendingUserMessage ? (
-                  <EmptyState 
-                    onSamplePromptClick={handleSamplePromptClick}
-                    uploadedDocuments={documentsData || []}
-                  />
-                ) : (
-                  <motion.div 
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="space-y-6"
-                  >
-                    <AnimatePresence>
-                      {/* Show pending user message if there's no session yet */}
-                      {pendingUserMessage && !sessionId && (
-                        <motion.div
-                          key="pending-user-message"
-                          initial={{ opacity: 0, y: 20 }}
-                          animate={{ opacity: 1, y: 0 }}
-                        >
-                          <MessageBubble
-                            message={{
-                              id: "pending",
-                              sessionId: "pending",
-                              role: "user",
-                              content: pendingUserMessage,
-                              createdAt: new Date(),
-                              sources: null
-                            }}
-                            onCitationClick={() => {}}
-                            refinedQueries={refinedQueries}
-                            showRefinedQueries={showRefinedQueries}
-                            onRefinedQueryClick={handleRefinedQueryClick}
-                          />
-                        </motion.div>
-                      )}
-                      
-                      {messages.map((message, index) => {
-                        // For assistant messages, check if this is the most recent assistant message
-                        const isLastAssistantMessage = message.role === "assistant" && 
-                          index === messages.length - 1;
-                        
-                        // For user messages, check if this is the most recent user message
-                        const isLastUserMessage = message.role === "user" && 
-                          index === messages.length - 1;
-                        
-                        return (
+        <div className="flex flex-1 overflow-hidden">
+          <div className="flex-1 flex flex-col min-w-0">
+
+            <ScrollArea className="flex-1">
+              <div className={cn(
+                "max-w-4xl mx-auto px-3 py-4 sm:px-4 sm:py-6",
+                // For empty state, ensure container takes available height and prevents scrolling
+                !hasMessages && !queryMutation.isPending && !pendingUserMessage && [
+                  "h-full flex items-center justify-center",
+                  "min-h-[calc(100vh-16rem)]" // Account for header and input areas
+                ]
+              )}>
+                <AnimatePresence mode="wait">
+                  {!hasMessages && !queryMutation.isPending && !pendingUserMessage ? (
+                    <div className="w-full">
+                      <EmptyState 
+                        onSamplePromptClick={handleSamplePromptClick}
+                        uploadedDocuments={documentsData || []}
+                      />
+                    </div>
+                  ) : (
+                    <motion.div 
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="space-y-4 sm:space-y-6"
+                    >
+                      <AnimatePresence>
+                        {/* Show pending user message for new sessions until it appears in history */}
+                        {pendingUserMessage && (!sessionId || (sessionId && messages.length === 0)) && (
                           <motion.div
-                            key={message.id}
+                            key="pending-user-message"
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: index * 0.1 }}
                           >
                             <MessageBubble
-                              message={message}
-                              responseType={isLastAssistantMessage ? currentResponseType : undefined}
-                              onCitationClick={handleCitationClick}
-                              refinedQueries={isLastUserMessage ? refinedQueries : undefined}
-                              showRefinedQueries={isLastUserMessage ? showRefinedQueries : false}
+                              message={{
+                                id: "pending",
+                                sessionId: "pending",
+                                role: "user",
+                                content: pendingUserMessage,
+                                createdAt: new Date().toISOString(),
+                                sources: null,
+                                classification: null,
+                                agentTraces: null,
+                                executionTimeMs: null,
+                                responseType: null,
+                                tokenCount: null,
+                                contextWindowUsed: null,
+                                sequenceNumber: 0,
+                                parentMessageId: null,
+                              }}
+                              onCitationClick={() => {}}
+                              refinedQueries={refinedQueries}
+                              showRefinedQueries={showRefinedQueries}
                               onRefinedQueryClick={handleRefinedQueryClick}
                             />
                           </motion.div>
-                        );
-                      })}
-                    </AnimatePresence>
-                    
-                    <AnimatePresence>
-                      {(queryMutation.isPending || isStreaming) && (
-                        <TypingIndicator />
-                      )}
-                    </AnimatePresence>
-                    
-                    <div ref={messagesEndRef} />
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          </ScrollArea>
+                        )}
+                        
+                        {messages.map((message: Message, index: number) => {
+                          // For assistant messages, check if this is the most recent assistant message
+                          const isLastAssistantMessage = message.role === "assistant" && 
+                            index === messages.length - 1;
+                          
+                          // For user messages, check if this is the most recent user message
+                          const isLastUserMessage = message.role === "user" && 
+                            index === messages.length - 1;
+                          
+                          return (
+                            <motion.div
+                              key={message.id}
+                              initial={{ opacity: 0, y: 20 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: index * 0.1 }}
+                            >
+                              <MessageBubble
+                                message={message}
+                                responseType={isLastAssistantMessage ? currentResponseType : undefined}
+                                onCitationClick={handleCitationClick}
+                                refinedQueries={isLastUserMessage ? refinedQueries : undefined}
+                                showRefinedQueries={isLastUserMessage ? showRefinedQueries : false}
+                                onRefinedQueryClick={handleRefinedQueryClick}
+                              />
+                            </motion.div>
+                          );
+                        })}
+                      </AnimatePresence>
+                      
+                      <AnimatePresence>
+                        {(queryMutation.isPending || isStreaming) && (
+                          <TypingIndicator />
+                        )}
+                      </AnimatePresence>
+                      
+                      <div ref={messagesEndRef} />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </ScrollArea>
 
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="flex-shrink-0 border-t border-border bg-background"
-          >
-            <div className="max-w-4xl mx-auto px-4 py-4">
-              <MessageInput
-                ref={inputRef}
-                onSubmit={handleSubmit}
-                disabled={queryMutation.isPending || isStreaming}
-                placeholder={
-                  hasMessages 
-                    ? "Ask a follow-up question..." 
-                    : "Ask about your documents or try a sample query above..."
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex-shrink-0 border-t border-border bg-background"
+              style={{
+                paddingBottom: isMobile ? 'env(safe-area-inset-bottom)' : undefined
+              }}
+            >
+              <div className="max-w-4xl mx-auto px-3 py-3 sm:px-4 sm:py-4">
+                <MessageInput
+                  ref={inputRef}
+                  onSubmit={handleSubmit}
+                  disabled={queryMutation.isPending || isStreaming}
+                  placeholder={
+                    hasMessages
+                      ? "Ask a follow-up question..."
+                      : "Ask about anything your documents..."
+                  }
+                />
+              </div>
+            </motion.div>
+          </div>
+
+          {/* Context Panel - Hidden on mobile */}
+          {!isMobile && (
+            <div className="w-96 border-l border-border bg-card">
+              <ContextPanel
+                sources={currentSources}
+                selectedSourceIndex={selectedSourceIndex}
+                classification={
+                  // Adjust classification display based on actual response type
+                  currentResponseType === "general_knowledge" && currentClassification
+                    ? {
+                        ...currentClassification,
+                        type: "general" as any,
+                        reasoning: "Used general AI knowledge (no relevant documents found)"
+                      }
+                    : currentClassification
                 }
+                agentTraces={currentAgentTraces}
+                executionTimeMs={currentExecutionTime}
+                responseType={currentResponseType}
+                enableTracing={enableTracing}
               />
             </div>
-          </motion.div>
-        </div>
-
-        <div className="hidden lg:block w-96 border-l border-border bg-card">
-          <ContextPanel
-            sources={currentSources}
-            selectedSourceIndex={selectedSourceIndex}
-            classification={
-              // Adjust classification display based on actual response type
-              currentResponseType === "general_knowledge" && currentClassification
-                ? {
-                    ...currentClassification,
-                    type: "general" as any,
-                    reasoning: "Used general AI knowledge (no relevant documents found)"
-                  }
-                : currentClassification
-            }
-            agentTraces={currentAgentTraces}
-            executionTimeMs={currentExecutionTime}
-            responseType={currentResponseType}
-            enableTracing={enableTracing}
-          />
+          )}
         </div>
       </div>
 

@@ -416,7 +416,7 @@ async def get_chat_history(session_id: str):
                 "role": msg["role"],
                 "content": msg["content"],
                 "sources": msg["sources"],
-                "createdAt": msg["createdAt"].isoformat(),
+                "createdAt": msg["createdAt"],
             }
             for msg in messages
         ]

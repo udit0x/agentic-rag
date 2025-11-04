@@ -118,7 +118,7 @@ export function ContextPanel({
           <div className="flex-shrink-0 px-4 pt-4">
             <TabsList className="grid grid-cols-2 w-full max-w-full">
               <TabsTrigger value="sources" className="text-sm truncate">
-                Sources ({sources ? new Set(sources.map(s => s.filename)).size : 0})
+                Sources ({sources && Array.isArray(sources) ? new Set(sources.map((s: any) => s.filename)).size : 0})
               </TabsTrigger>
               <TabsTrigger value="agents" className="text-sm truncate">
                 Agents ({agentTraces?.length || 0})
@@ -136,15 +136,18 @@ export function ContextPanel({
                   </div>
                 ) : (
                   (() => {
+                    // Ensure sources is an array
+                    const sourcesArray = Array.isArray(sources) ? sources : [];
+                    
                     // Group sources by filename
-                    const groupedSources = sources.reduce((acc, source, index) => {
+                    const groupedSources = sourcesArray.reduce((acc: Record<string, any[]>, source: any, index: number) => {
                       const filename = source.filename;
                       if (!acc[filename]) {
                         acc[filename] = [];
                       }
                       acc[filename].push({ ...source, originalIndex: index });
                       return acc;
-                    }, {} as Record<string, Array<typeof sources[0] & { originalIndex: number }>>);
+                    }, {});
 
                     const documentGroups = Object.entries(groupedSources);
 
@@ -154,24 +157,24 @@ export function ContextPanel({
                         collapsible
                         defaultValue={selectedSourceIndex !== undefined ? 
                           `doc-${Object.keys(groupedSources).find(filename => 
-                            groupedSources[filename].some(s => s.originalIndex === selectedSourceIndex)
+                            (groupedSources[filename] as any[]).some((s: any) => s.originalIndex === selectedSourceIndex)
                           )}` : undefined
                         }
                         className="w-full"
                       >
                         {documentGroups.map(([filename, documentSources], docIndex) => {
                           // Sort sources by relevance score (highest first)
-                          const sortedSources = [...documentSources].sort((a, b) => 
+                          const sortedSources = [...(documentSources as any[])].sort((a: any, b: any) => 
                             (b.score || 0) - (a.score || 0)
                           );
                           const highestScore = sortedSources[0]?.score || 0;
-                          const chunkCount = documentSources.length;
+                          const chunkCount = (documentSources as any[]).length;
                           
                           return (
                             <AccordionItem
                               key={filename}
                               value={`doc-${filename}`}
-                              className={`w-full ${documentSources.some(s => s.originalIndex === selectedSourceIndex) ? "border-primary" : ""}`}
+                              className={`w-full ${(documentSources as any[]).some((s: any) => s.originalIndex === selectedSourceIndex) ? "border-primary" : ""}`}
                             >
                               <AccordionTrigger
                                 className="hover:no-underline text-left w-full"
@@ -327,13 +330,13 @@ export function ContextPanel({
                                 <span>Started:</span>
                                 <span className="flex-shrink-0">{new Date(trace.startTime).toLocaleTimeString()}</span>
                               </div>
-                              {trace.outputData && (
+                              {trace.outputData ? (
                                 <div className="mt-1 p-2 bg-muted/30 rounded overflow-hidden">
                                   <pre className="text-xs overflow-x-auto break-words whitespace-pre-wrap">
-                                    {JSON.stringify(trace.outputData, null, 2)}
+                                    {typeof trace.outputData === 'string' ? trace.outputData : JSON.stringify(trace.outputData, null, 2)}
                                   </pre>
                                 </div>
-                              )}
+                              ) : null}
                             </div>
                           )}
                         </Card>

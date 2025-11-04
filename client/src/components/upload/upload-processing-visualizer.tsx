@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { File, ArrowRight, Database, Zap, CheckCircle2, AlertCircle, Loader2, X } from "lucide-react";
@@ -12,7 +11,6 @@ interface ProcessingStep {
   label: string;
   icon: React.ReactNode;
   status: "pending" | "active" | "completed" | "error";
-  progress?: number;
 }
 
 interface UploadProgress {
@@ -21,7 +19,6 @@ interface UploadProgress {
   fileSize: number;
   status: "uploading" | "processing" | "completed" | "error";
   currentStep: "upload" | "chunk" | "embed" | "save";
-  progress: number;
   error?: string;
 }
 
@@ -37,14 +34,12 @@ function SingleUploadVisualizer({
   upload: UploadProgress;
   onRemove: (id: string) => void;
 }) {
-  const [animatedProgress, setAnimatedProgress] = useState(0);
   const [steps, setSteps] = useState<ProcessingStep[]>([
     {
       id: "upload",
       label: "Upload",
       icon: <File className="h-4 w-4" />,
       status: "active",
-      progress: 0,
     },
     {
       id: "chunk",
@@ -66,21 +61,6 @@ function SingleUploadVisualizer({
     },
   ]);
 
-  // Animate progress changes
-  useEffect(() => {
-    const targetProgress = upload.progress;
-    const animate = () => {
-      setAnimatedProgress(prev => {
-        const diff = targetProgress - prev;
-        if (Math.abs(diff) < 1) return targetProgress;
-        return prev + diff * 0.1;
-      });
-    };
-    
-    const interval = setInterval(animate, 16);
-    return () => clearInterval(interval);
-  }, [upload.progress]);
-
   // Update steps based on current upload state
   useEffect(() => {
     setSteps(prevSteps => {
@@ -99,7 +79,7 @@ function SingleUploadVisualizer({
         }
 
         if (step.id === upload.currentStep) {
-          return { ...step, status: "active", progress: upload.progress };
+          return { ...step, status: "active" };
         }
 
         const currentStepIndex = steps.findIndex(s => s.id === upload.currentStep);
@@ -112,7 +92,7 @@ function SingleUploadVisualizer({
         return { ...step, status: "pending" };
       });
     });
-  }, [upload.currentStep, upload.status, upload.progress]);
+  }, [upload.currentStep, upload.status]);
 
   return (
     <Card className="p-4 space-y-4 w-full max-w-full overflow-hidden">
@@ -196,7 +176,7 @@ function SingleUploadVisualizer({
         {/* Step Labels */}
         <div className="flex items-center justify-between w-full">
           {steps.map((step) => (
-            <div key={`${step.id}-label`} className="flex-1 text-center">
+            <div key={`${step.id}-label`} className="flex-1 text-left">
               <p className={cn(
                 "text-xs font-medium truncate",
                 step.status === "completed" ? "text-green-700" :
@@ -210,29 +190,6 @@ function SingleUploadVisualizer({
           ))}
         </div>
       </div>
-
-      {/* Progress Bar for Active Step */}
-      <AnimatePresence>
-        {upload.status !== "completed" && upload.status !== "error" && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            className="space-y-2"
-          >
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>
-                {upload.currentStep === "upload" && "Uploading file..."}
-                {upload.currentStep === "chunk" && "Splitting into chunks..."}
-                {upload.currentStep === "embed" && "Generating embeddings..."}
-                {upload.currentStep === "save" && "Saving to database..."}
-              </span>
-              <span>{Math.round(animatedProgress)}%</span>
-            </div>
-            <Progress value={animatedProgress} className="h-1" />
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Error Message */}
       <AnimatePresence>
