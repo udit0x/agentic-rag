@@ -35,7 +35,7 @@ class ConfigResponse(BaseModel):
 async def get_current_config():
     """Get the current configuration for display in UI."""
     try:
-        config_data = config_manager.get_config_for_frontend()
+        config_data = await config_manager.get_config_for_frontend()
         
         return ConfigResponse(
             success=True,
@@ -96,7 +96,7 @@ async def save_configuration(request: ConfigSaveRequest):
                     raise HTTPException(status_code=400, detail="Azure embeddings API key and endpoint are required")
         
         # Save configuration
-        success = config_manager.save_ui_config(config_data)
+        success = await config_manager.save_ui_config(config_data)
         
         if not success:
             raise HTTPException(status_code=500, detail="Failed to save configuration")
@@ -122,8 +122,8 @@ async def save_configuration(request: ConfigSaveRequest):
 async def reload_configuration():
     """Reload configuration from all sources."""
     try:
-        config_manager.reload_config()
-        config_data = config_manager.get_config_for_frontend()
+        await config_manager.reload_config()
+        config_data = await config_manager.get_config_for_frontend()
         
         return ConfigResponse(
             success=True,

@@ -10,6 +10,55 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { useToast } from "@/hooks/use-toast";
 import { API_ENDPOINTS, apiRequest } from "@/lib/api-config";
 
+// Custom scrollbar styles
+const scrollbarStyles = `
+  .custom-scroll::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  
+  .custom-scroll::-webkit-scrollbar-track {
+    background: hsl(var(--muted));
+    border-radius: 6px;
+  }
+  
+  .custom-scroll::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 6px;
+    border: 2px solid hsl(var(--muted));
+  }
+  
+  .custom-scroll::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
+  }
+  
+  .custom-scroll::-webkit-scrollbar-corner {
+    background: hsl(var(--muted));
+  }
+
+  /* Mobile touch improvements */
+  @media (max-width: 640px) {
+    .document-card {
+      min-height: 72px; /* Ensure adequate touch target size */
+    }
+    
+    .document-actions {
+      min-width: 72px; /* Ensure buttons don't get cut off */
+    }
+    
+    .document-content {
+      padding-right: 8px; /* Extra space to prevent overlap */
+    }
+  }
+`;
+
+// Inject styles
+if (typeof document !== 'undefined') {
+  const styleElement = document.createElement('style');
+  styleElement.textContent = scrollbarStyles;
+  document.head.appendChild(styleElement);
+}
+
 interface Document {
   id: string;
   filename: string;
@@ -32,6 +81,10 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true); // Start with loading true
   const [error, setError] = useState<string | null>(null);
+
+  const getFileExtension = (filename: string) => {
+    return filename.split('.').pop()?.toUpperCase() || 'FILE';
+  };
 
   // Auto-load preview when component mounts
   useEffect(() => {
@@ -74,11 +127,14 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
   };
 
   return (
-    <DialogContent className="max-w-4xl max-h-[80vh]">
+    <DialogContent className="max-w-6xl max-h-[90vh] w-[95vw] overflow-hidden">
       <DialogHeader>
-        <DialogTitle className="flex items-center gap-2">
+        <DialogTitle className="flex items-center gap-2 flex-shrink-0">
           <File className="h-5 w-5" />
-          {document.filename}
+          <span className="truncate">{document.filename}</span>
+          <Badge variant="outline" className="ml-2 flex-shrink-0">
+            {getFileExtension(document.filename)}
+          </Badge>
         </DialogTitle>
       </DialogHeader>
       
@@ -95,39 +151,97 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
               Retry
             </Button>
           )}
-        </div>        <ScrollArea className="h-96 w-full border rounded-md p-4">
-          {loading && (
-            <div className="flex items-center justify-center h-full">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-            </div>
-          )}
-          
-          {error && (
-            <div className="flex items-center justify-center h-full text-destructive">
-              {error}
-            </div>
-          )}
-          
-          {content && (
-            <pre className="whitespace-pre-wrap text-sm leading-relaxed">
-              {content}
-            </pre>
-          )}
-          
-          {!content && !loading && !error && (
-            <div className="flex items-center justify-center h-full text-muted-foreground">
-              Loading document content...
-            </div>
-          )}
-        </ScrollArea>
+        </div>        <div
+          className="relative border rounded-md bg-background h-[60vh] w-full custom-scroll"
+          style={{
+            overflowX: "auto",
+            overflowY: "auto",
+          }}
+        >
+          <div
+            className="absolute inset-0 p-4"
+            style={{
+              width: "fit-content",
+              minWidth: "100%",
+            }}
+          >
+            {loading && (
+              <div className="flex items-center justify-center h-full w-full">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+              </div>
+            )}
+
+            {error && (
+              <div className="flex items-center justify-center h-full w-full text-destructive">
+                {error}
+              </div>
+            )}
+
+            {content && (
+              <pre
+                className="text-xs leading-relaxed font-mono whitespace-pre"
+                style={{
+                  display: "inline-block",
+                  minWidth: "800px",
+                  paddingBottom: "2rem",
+                }}
+              >
+                {content}
+              </pre>
+            )}
+
+            {!content && !loading && !error && (
+              <div className="flex items-center justify-center h-full w-full text-muted-foreground">
+                Loading document content...
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </DialogContent>
+  );
+}
+
+// Smart animated delete button component
+function AnimatedDeleteButton({ 
+  isDeleting, 
+  onClick, 
+  disabled = false 
+}: { 
+  isDeleting: boolean; 
+  onClick: () => void; 
+  disabled?: boolean; 
+}) {
+  return (
+    <div className="relative">
+      <Button
+        variant="ghost"
+        size="icon"
+        className={`h-8 w-8 sm:h-8 sm:w-8 transition-all duration-200 touch-manipulation ${
+          isDeleting 
+            ? 'text-destructive/40 cursor-not-allowed' 
+            : 'text-destructive hover:text-destructive hover:bg-destructive/10 active:bg-destructive/20'
+        }`}
+        onClick={onClick}
+        disabled={disabled || isDeleting}
+      >
+        <Trash2 className="h-4 w-4" />
+      </Button>
+      
+      {/* Loading spinner beside the button */}
+      {isDeleting && (
+        <div className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-background border border-destructive/30 shadow-sm">
+          <div className="w-full h-full rounded-full border border-transparent border-t-destructive animate-spin"></div>
+        </div>
+      )}
+    </div>
   );
 }
 
 export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }: DocumentLibraryProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
+  const [deletingDocuments, setDeletingDocuments] = useState<Set<string>>(new Set());
   const { toast } = useToast();
 
   const filteredDocuments = documents.filter(doc =>
@@ -149,6 +263,9 @@ export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }:
   const handleDelete = async (documentId: string, filename: string) => {
     if (!onDeleteDocument) return;
     
+    // Add document to deleting set
+    setDeletingDocuments(prev => new Set(prev).add(documentId));
+    
     try {
       await onDeleteDocument(documentId);
       toast({
@@ -161,6 +278,13 @@ export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }:
         title: "Delete failed",
         description: "Failed to delete the document. Please try again.",
         variant: "destructive",
+      });
+    } finally {
+      // Remove document from deleting set
+      setDeletingDocuments(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(documentId);
+        return newSet;
       });
     }
   };
@@ -212,41 +336,52 @@ export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }:
                       exit={{ opacity: 0, y: -20 }}
                       transition={{ delay: index * 0.05 }}
                     >
-                      <Card className="hover:shadow-md transition-shadow">
-                        <CardContent className="p-4">
-                          <div className="flex items-center gap-3">
+                      <Card className={`document-card transition-all duration-200 ${
+                        deletingDocuments.has(document.id) 
+                          ? 'opacity-60 pointer-events-none' 
+                          : 'hover:shadow-md'
+                      }`}>
+                        <CardContent className="p-3 sm:p-4">
+                          <div className="flex items-center gap-2 sm:gap-3">
                             <div className="flex-shrink-0">
-                              <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                                <File className="h-5 w-5 text-primary" />
+                              <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-primary/10 flex items-center justify-center transition-all duration-200 ${
+                                deletingDocuments.has(document.id) ? 'bg-destructive/10' : ''
+                              }`}>
+                                <File className={`h-4 w-4 sm:h-5 sm:w-5 transition-colors duration-200 ${
+                                  deletingDocuments.has(document.id) 
+                                    ? 'text-destructive/60' 
+                                    : 'text-primary'
+                                }`} />
                               </div>
                             </div>
                             
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-1">
-                                <h4 className="text-sm font-medium truncate">
+                            <div className="flex-1 min-w-0 document-content">
+                              <div className="flex items-center gap-1 sm:gap-2 mb-1">
+                                <h4 className="text-xs sm:text-sm font-medium truncate">
                                   {document.filename}
                                 </h4>
-                                <Badge variant="outline" className="text-xs">
+                                <Badge variant="outline" className="text-xs flex-shrink-0">
                                   {getFileExtension(document.filename)}
                                 </Badge>
                               </div>
                               
-                              <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                              <div className="flex items-center gap-2 sm:gap-4 text-xs text-muted-foreground">
                                 <span className="flex items-center gap-1">
                                   <Calendar className="h-3 w-3" />
-                                  {new Date(document.uploadedAt).toLocaleDateString()}
+                                  <span className="hidden xs:inline">{new Date(document.uploadedAt).toLocaleDateString()}</span>
+                                  <span className="xs:hidden">{new Date(document.uploadedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
                                 </span>
-                                <span>{formatFileSize(document.size)}</span>
+                                <span className="flex-shrink-0">{formatFileSize(document.size)}</span>
                               </div>
                             </div>
                             
-                            <div className="flex items-center gap-1">
+                            <div className="document-actions flex items-center gap-1 flex-shrink-0">
                               <Dialog>
                                 <DialogTrigger asChild>
                                   <Button
                                     variant="ghost"
                                     size="icon"
-                                    className="h-8 w-8"
+                                    className="h-8 w-8 sm:h-8 sm:w-8 touch-manipulation hover:bg-primary/10 active:bg-primary/20"
                                     onClick={() => setSelectedDocument(document)}
                                   >
                                     <Eye className="h-4 w-4" />
@@ -261,14 +396,10 @@ export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }:
                               </Dialog>
                               
                               {onDeleteDocument && (
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 text-destructive hover:text-destructive"
+                                <AnimatedDeleteButton
+                                  isDeleting={deletingDocuments.has(document.id)}
                                   onClick={() => handleDelete(document.id, document.filename)}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
+                                />
                               )}
                             </div>
                           </div>

@@ -4,8 +4,14 @@ import { Card } from "@/components/ui/card";
 import { Upload, File, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { useUploadProgress } from "@/hooks/use-upload-progress";
+import { useUploadContext } from "@/contexts/upload-context";
 import { UploadProcessingVisualizer } from "./upload-processing-visualizer";
+import { 
+  UPLOAD_CONFIG, 
+  getSupportedExtensions, 
+  getFileTypeInfo, 
+  formatSizeLimit 
+} from "@/lib/file-types";
 
 interface DropFile {
   id: string;
@@ -19,25 +25,31 @@ interface DocumentUploadProps {
 }
 
 export function DocumentUpload({
-  accept = ".pdf,.txt",
-  maxSize = 10 * 1024 * 1024, // 10MB
+  accept = getSupportedExtensions(),
+  maxSize = UPLOAD_CONFIG.maxFileSize,
 }: DocumentUploadProps) {
   const [dropFiles, setDropFiles] = useState<DropFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
-  const { uploads, startUpload, removeUpload, clearCompleted } = useUploadProgress();
+  const { uploads, startUpload, removeUpload, clearCompleted, hasActiveUploads } = useUploadContext();
 
   const validateFile = (file: File): string | null => {
     const extension = "." + file.name.split(".").pop()?.toLowerCase();
     const acceptedExtensions = accept.split(",").map((ext) => ext.trim().toLowerCase());
 
     if (!acceptedExtensions.includes(extension)) {
-      return `File type ${extension} not supported. Please upload ${accept} files.`;
+      const fileTypeInfo = getFileTypeInfo(extension);
+      const supportedTypes = acceptedExtensions.join(", ");
+      return `File type ${extension} not supported. ${
+        fileTypeInfo 
+          ? `Supported types: ${supportedTypes}` 
+          : `Please upload one of: ${supportedTypes}`
+      }`;
     }
 
     if (file.size > maxSize) {
-      return `File size exceeds ${Math.round(maxSize / 1024 / 1024)}MB limit.`;
+      return `File size exceeds ${formatSizeLimit(maxSize)} limit.`;
     }
 
     return null;
@@ -129,13 +141,22 @@ export function DocumentUpload({
         <Upload className="h-12 w-12 text-muted-foreground mb-4" />
         <h3 className="text-lg font-semibold text-foreground mb-2">
           Upload documents
+          {hasActiveUploads && (
+            <span className="ml-2 inline-flex items-center gap-1 text-sm text-primary">
+              <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
+              Processing...
+            </span>
+          )}
         </h3>
         <p className="text-sm text-muted-foreground mb-4">
-          Drag and drop files here, or click to browse
+          Drag and drop documents here, or click to browse
         </p>
-        <p className="text-xs text-muted-foreground mb-4">
-          Supported formats: PDF, TXT (max {Math.round(maxSize / 1024 / 1024)}MB)
+        <p className="text-xs text-muted-foreground mb-2">
+          Supported: PDF, Word, PowerPoint, Excel, CSV, JSON, TXT (max {formatSizeLimit(maxSize)})
         </p>
+        <div className="text-xs text-amber-600 dark:text-amber-400 mb-4 max-w-md">
+          ⏱ <strong>Processing time:</strong> Excel/CSV files and multiple uploads may take 1-2 minutes to process completely
+        </div>
         <Button
           onClick={() => fileInputRef.current?.click()}
           variant="outline"
@@ -154,14 +175,14 @@ export function DocumentUpload({
         />
       </div>
 
-      {/* Upload Progress Visualization */}
+      {/* Upload Progress Visualization - Show on upload screen */}
       {uploads.length > 0 && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-medium text-foreground">
               Processing {uploads.length} document{uploads.length !== 1 ? 's' : ''}
             </h4>
-            {uploads.some(u => u.status === "completed") && (
+            {uploads.some((u) => u.status === "completed") && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -172,6 +193,15 @@ export function DocumentUpload({
               </Button>
             )}
           </div>
+          
+          {/* Processing Time Reminder */}
+          {hasActiveUploads && (
+            <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-2 rounded border">
+              <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse flex-shrink-0" />
+              <span>Processing documents... Large files may take 1-2 minutes</span>
+            </div>
+          )}
+          
           <UploadProcessingVisualizer 
             uploads={uploads}
             onRemove={removeUpload}

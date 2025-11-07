@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Settings, X, Moon, Sun, Monitor, Keyboard, Zap, Info, Cog, Save, CheckCircle } from "lucide-react";
+import { Settings, X, Moon, Sun, Monitor, Keyboard, Zap, Info, Cog, Save, CheckCircle, Linkedin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -11,6 +11,7 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useIsMobile } from "@/hooks/use-mobile";
+import ShinyText from "@/components/ui/ShinyText";
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -458,6 +459,27 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                     )}
                   </motion.div>
                 </AnimatePresence>
+              </div>
+
+              {/* Built By Footer */}
+              <div className="p-4 border-t border-border">
+                <div className="flex items-center justify-center space-x-2 text-sm">
+                  <span className="text-muted-foreground">Built by:</span>
+                  <a
+                    href="https://www.linkedin.com/in/udit-kashyap-219a70133/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center space-x-1 hover:opacity-80 transition-opacity"
+                  >
+                    <ShinyText 
+                      text="Udit Kashyap" 
+                      disabled={false} 
+                      speed={3} 
+                      className="text-sm" 
+                    />
+                    <Linkedin className="h-3 w-3 text-primary" />
+                  </a>
+                </div>
               </div>
             </div>
           </motion.div>

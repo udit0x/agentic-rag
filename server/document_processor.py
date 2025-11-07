@@ -1,66 +1,151 @@
-"""Document processing utilities for PDF and TXT files."""
+"""Enhanced document processing pipeline supporting multiple file types."""
 import base64
 import io
-from typing import Tuple
+from typing import Tuple, Dict, Any
 import fitz  # pymupdf
+
+# Handle relative import for when used as module vs direct execution
+try:
+    from .ocr_processor import ocr_processor
+    from .universal_document_processor import process_document as universal_process_document
+except ImportError:
+    from ocr_processor import ocr_processor
+    from universal_document_processor import process_document as universal_process_document
 
 async def process_document(
     content: str,
     content_type: str,
-    filename: str
-) -> Tuple[str, int]:
+    filename: str,
+    force_ocr: bool = False
+) -> Tuple[str, int, Dict[str, Any]]:
     """
-    Process uploaded document and extract text content.
+    Enhanced document processing pipeline supporting multiple file types.
+    
+    This function now routes to the universal document processor for all file types,
+    maintaining backward compatibility for PDF and TXT while adding support for:
+    - Microsoft Office documents (DOCX, PPTX)
+    - Spreadsheets (CSV, XLSX)
+    - Data formats (JSON)
+    - Markup (Markdown, HTML)
     
     Args:
-        content: Base64 encoded content for PDF, plain text for TXT
+        content: Base64 encoded content for binary files, plain text for text files
         content_type: MIME type of the document
         filename: Original filename
+        force_ocr: If True, forces OCR processing for PDFs
     
     Returns:
-        Tuple of (extracted_text, size_in_bytes)
+        Tuple of (extracted_text, size_in_bytes, processing_metrics)
     """
-    print(f"[DEBUG] Processing document: {filename}")
-    print(f"[DEBUG] Content type: {content_type}")
-    print(f"[DEBUG] Content length: {len(content)} chars")
+    print(f"[PROCESSOR] Processing document: {filename}")
+    print(f"[PROCESSOR] Content type: {content_type}")
+    print(f"[PROCESSOR] Force OCR: {force_ocr}")
+    
+    # Handle plain text files directly (legacy support)
+    if content_type == "text/plain" or filename.endswith(".txt"):
+        print("[PROCESSOR] Handling as legacy plain text")
+        text_content = content
+        size = len(content.encode("utf-8"))
+        processing_metrics = {
+            "filename": filename,
+            "content_type": content_type,
+            "file_type": "txt",
+            "extraction_mode": "Direct",
+            "total_chars": len(text_content),
+            "processing_time_ms": 0,
+            "errors": []
+        }
+        return text_content, size, processing_metrics
+    
+    # For all other file types, route to universal processor
+    try:
+        return await universal_process_document(
+            content=content,
+            content_type=content_type,
+            filename=filename,
+            force_ocr=force_ocr
+        )
+    except Exception as e:
+        print(f"[PROCESSOR] Universal processor failed: {str(e)}")
+        # For backward compatibility, try legacy PDF processing if it's a PDF
+        if content_type == "application/pdf":
+            print("[PROCESSOR] Falling back to legacy PDF processing")
+            return await _legacy_pdf_processing(content, content_type, filename, force_ocr)
+        else:
+            # Re-raise for non-PDF files
+            raise
+
+
+async def _legacy_pdf_processing(
+    content: str,
+    content_type: str,
+    filename: str,
+    force_ocr: bool = False
+) -> Tuple[str, int, Dict[str, Any]]:
+    """
+    Legacy PDF processing function for fallback compatibility.
+    
+    This is the original PDF processing logic, kept for emergency fallback
+    if the universal processor encounters issues.
+    """
+    print("[LEGACY] Using legacy PDF processing")
+    
+    processing_metrics = {
+        "filename": filename,
+        "content_type": content_type,
+        "file_type": "pdf",
+        "extraction_mode": "Direct",
+        "ocr_triggered": False,
+        "processing_time_ms": 0,
+        "page_count": 0,
+        "total_chars": 0,
+        "ocr_method": None,
+        "errors": ["Used legacy PDF fallback processor"]
+    }
     
     try:
-        if content_type == "application/pdf":
-            print("[DEBUG] Processing as PDF...")
-            # Decode base64 PDF content
-            pdf_bytes = base64.b64decode(content)
-            print(f"[DEBUG] Decoded PDF bytes: {len(pdf_bytes)}")
-            
-            # Extract text from PDF using PyMuPDF
-            print("[DEBUG] Extracting text from PDF...")
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            text_content = ""
-            
-            for page_num in range(len(doc)):
-                page = doc.load_page(page_num)
-                page_text = page.get_text()
-                text_content += page_text + "\n"
-                print(f"[DEBUG] Extracted text from page {page_num+1}: {len(page_text)} chars")
-            
-            doc.close()
-            text_content = text_content.strip()
-            print(f"[DEBUG] Total extracted text: {len(text_content)} chars")
-            return text_content, len(pdf_bytes)
+        # Decode base64 PDF content
+        pdf_bytes = base64.b64decode(content)
         
-        elif content_type == "text/plain" or filename.endswith(".txt"):
-            print("[DEBUG] Processing as plain text...")
-            # Plain text content
-            text_content = content
-            size = len(content.encode("utf-8"))
-            print(f"[DEBUG] Text processed: {len(text_content)} chars, {size} bytes")
-            return text_content, size
+        # Extract text from PDF using PyMuPDF
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        text_content = ""
+        processing_metrics["page_count"] = len(doc)
         
-        else:
-            print(f"[DEBUG] Unsupported content type: {content_type}")
-            raise ValueError(f"Unsupported content type: {content_type}")
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            page_text = page.get_text()
+            text_content += page_text + "\n"
+        
+        doc.close()
+        text_content = text_content.strip()
+        processing_metrics["total_chars"] = len(text_content)
+        
+        # Check if OCR is needed
+        ocr_needed = force_ocr or not ocr_processor.is_text_content_sufficient(text_content)
+        
+        if ocr_needed:
+            processing_metrics["ocr_triggered"] = True
+            processing_metrics["extraction_mode"] = "OCR"
             
+            try:
+                ocr_text, ocr_metrics = await ocr_processor.process_scanned_document(
+                    pdf_bytes, filename
+                )
+                
+                if ocr_text and len(ocr_text.strip()) > 0:
+                    text_content = ocr_text
+                    processing_metrics.update(ocr_metrics.finalize())
+                else:
+                    processing_metrics["errors"].append("OCR extraction yielded no meaningful content")
+                    
+            except Exception as ocr_error:
+                processing_metrics["errors"].append(f"OCR failed: {str(ocr_error)}")
+        
+        return text_content, len(pdf_bytes), processing_metrics
+        
     except Exception as e:
-        print(f"[DEBUG] Error processing document: {str(e)}")
+        processing_metrics["errors"].append(f"Legacy PDF processing error: {str(e)}")
         import traceback
         traceback.print_exc()
         raise

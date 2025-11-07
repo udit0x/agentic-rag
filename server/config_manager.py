@@ -1,10 +1,22 @@
-"""Configuration manager for multi-provider LLM and embeddings support."""
+"""Enhanced Configuration Manager with Database-First approach and Encryption.
+
+Priority Order:
+1. Database (config_versions table) - UI configurations with encrypted sensitive fields
+2. Environment Variables - Fallback for open source users  
+3. Defaults - Last resort
+
+This approach is perfect for open source projects that also need production database config.
+Security: Sensitive fields (API keys, passwords) are encrypted when stored in database.
+"""
 import os
 import json
+import asyncio
 from typing import Dict, Any, Optional, Literal
-from pathlib import Path
 from dataclasses import dataclass, asdict
 from datetime import datetime
+
+# Import encryption utilities
+from server.config_encryption import encrypt_sensitive_config, decrypt_sensitive_config
 
 @dataclass
 class LLMConfig:
@@ -30,356 +42,430 @@ class EmbeddingsConfig:
     deployment_name: Optional[str] = None
 
 @dataclass
+class DocumentLimitsConfig:
+    """Document processing limits to prevent system overload."""
+    max_file_size_mb: float = 10.0  # Maximum file size in MB
+    max_extracted_chars: int = 500000  # Maximum extracted text characters (500K)
+    max_chunks: int = 1000  # Maximum number of chunks allowed
+    warn_file_size_mb: float = 5.0  # Show warning above this size
+    warn_extracted_chars: int = 250000  # Show warning above this character count
+
+@dataclass
 class AppConfig:
     """Complete application configuration."""
     llm: LLMConfig
     embeddings: EmbeddingsConfig
-    useGeneralKnowledge: bool = True  # Allow AI to use general knowledge when no docs found
-    documentRelevanceThreshold: float = 0.65  # Minimum relevance score for documents (0.0-1.0)
+    document_limits: DocumentLimitsConfig
+    useGeneralKnowledge: bool = True
+    documentRelevanceThreshold: float = 0.65
     updated_at: Optional[datetime] = None
-    source: Literal["env", "ui"] = "env"
+    source: Literal["database", "env", "defaults"] = "defaults"
+    version: str = "1.0.0"
+    environment: str = "production"
 
-class ConfigurationManager:
-    """Manages configuration with UI override priority over environment variables."""
+class DatabaseFirstConfigManager:
+    """Configuration manager with database-first approach."""
     
-    def __init__(self, config_file_path: str = "config/config.json"):
-        self.config_file = Path(config_file_path)
-        self._ui_config: Optional[AppConfig] = None
-        self._env_config: Optional[AppConfig] = None
+    def __init__(self):
         self._current_config: Optional[AppConfig] = None
-        
-        # Load configurations
-        self._load_env_config()
-        self._load_ui_config()
-        self._determine_active_config()
+        self._db_connection = None
+        self._initialized = False
     
-    def _load_env_config(self) -> None:
-        """Load configuration from environment variables."""
+    async def initialize(self):
+        """Initialize the configuration manager."""
+        if self._initialized:
+            return
+        
         try:
-            # Try to build LLM config from env
-            llm_provider = "azure"  # Default to Azure since it's in env
-            azure_key = os.getenv("AZURE_OPENAI_API_KEY")
-            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-            azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+            # Try to get database connection
+            from server.database_postgresql import PostgreSQLConnection
+            self._db_connection = PostgreSQLConnection()
+            await self._db_connection.connect()
+            print("[Config] Database connection established for configuration")
+        except Exception as e:
+            print(f"[Config] Database connection failed: {e}")
+            print("[Config] Will use environment variables only")
+            self._db_connection = None
+        
+        # Load configuration with priority order
+        await self._load_configuration()
+        self._initialized = True
+    
+    async def _load_configuration(self):
+        """Load configuration with priority: Database > Environment > Defaults."""
+        config = None
+        
+        # 1. Try database first (highest priority)
+        if self._db_connection:
+            config = await self._load_from_database()
+            if config:
+                print("[Config] Using database configuration (UI settings)")
+        
+        # 2. Fallback to environment variables
+        if not config:
+            config = self._load_from_environment()
+            if config:
+                print("[Config] Using environment configuration (fallback)")
+        
+        # 3. Last resort: defaults
+        if not config:
+            config = self._load_defaults()
+            print("[Config] Using default configuration (requires setup)")
+        
+        self._current_config = config
+    
+    async def _load_from_database(self) -> Optional[AppConfig]:
+        """Load active configuration from database."""
+        try:
+            if not self._db_connection:
+                return None
             
-            if azure_key and azure_endpoint and azure_deployment:
-                llm_config = LLMConfig(
-                    provider="azure",
-                    api_key=azure_key,
-                    model=azure_deployment,
-                    endpoint=azure_endpoint,
-                    deployment_name=azure_deployment
-                )
-            else:
-                # Fallback LLM config (will require UI configuration)
-                llm_config = LLMConfig(
-                    provider="azure",
-                    api_key="",
-                    model="gpt-4o"
-                )
+            # Get the active configuration for current environment
+            environment = os.getenv("ENVIRONMENT", "production")
             
-            # Try to build embeddings config from env
-            embedding_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME")
-            if azure_key and azure_endpoint and embedding_deployment:
-                embeddings_config = EmbeddingsConfig(
-                    provider="azure",
-                    api_key=azure_key,
-                    model=embedding_deployment,
-                    endpoint=azure_endpoint,
-                    deployment_name=embedding_deployment
-                )
-            else:
-                # Fallback embeddings config
-                embeddings_config = EmbeddingsConfig(
-                    provider="azure",
-                    api_key="",
-                    model="text-embedding-3-large"
-                )
+            config_row = await self._db_connection.fetchone("""
+                SELECT version, environment, config_data, created_at, activated_at
+                FROM config_versions 
+                WHERE is_active = true AND environment = $1
+                ORDER BY activated_at DESC
+                LIMIT 1
+            """, environment)
             
-            # Get useGeneralKnowledge from environment variable (default False)
-            use_general_knowledge = os.getenv("USE_GENERAL_KNOWLEDGE", "false").lower() == "true"
-
-            # Get documentRelevanceThreshold from environment variable (default 0.65)
-            doc_threshold = float(os.getenv("DOCUMENT_RELEVANCE_THRESHOLD", "0.65"))
-
-            self._env_config = AppConfig(
+            if not config_row:
+                print(f"[Config] No active database configuration found for environment: {environment}")
+                return None
+            
+            # Parse config data (handle both string and dict)
+            config_data = config_row['config_data']
+            if isinstance(config_data, str):
+                config_data = json.loads(config_data)
+            
+            # Decrypt sensitive fields
+            config_data = decrypt_sensitive_config(config_data)
+            
+            # Build configuration objects
+            llm_data = config_data.get("llm", {})
+            llm_config = LLMConfig(
+                provider=llm_data.get("provider", "azure"),
+                api_key=llm_data.get("api_key", ""),
+                model=llm_data.get("model", "gpt-4o"),
+                endpoint=llm_data.get("endpoint"),
+                deployment_name=llm_data.get("deployment_name"),
+                temperature=llm_data.get("temperature", 0.7),
+                max_tokens=llm_data.get("max_tokens", 2000)
+            )
+            
+            embeddings_data = config_data.get("embeddings", {})
+            embeddings_config = EmbeddingsConfig(
+                provider=embeddings_data.get("provider", "azure"),
+                api_key=embeddings_data.get("api_key", ""),
+                model=embeddings_data.get("model", "text-embedding-3-large"),
+                endpoint=embeddings_data.get("endpoint"),
+                deployment_name=embeddings_data.get("deployment_name")
+            )
+            
+            # Merge with environment credentials if database has empty credentials
+            # This allows UI to store settings while env provides secrets
+            # Merge with environment credentials
+            embeddings_config = self._merge_with_env_credentials(embeddings_config, "embeddings")
+            
+            # Document limits configuration
+            doc_limits_data = config_data.get("documentLimits", {})
+            document_limits = DocumentLimitsConfig(
+                max_file_size_mb=doc_limits_data.get("maxFileSizeMb", 10.0),
+                max_extracted_chars=doc_limits_data.get("maxExtractedChars", 500000),
+                max_chunks=doc_limits_data.get("maxChunks", 1000),
+                warn_file_size_mb=doc_limits_data.get("warnFileSizeMb", 5.0),
+                warn_extracted_chars=doc_limits_data.get("warnExtractedChars", 250000)
+            )
+            
+            app_config = AppConfig(
                 llm=llm_config,
                 embeddings=embeddings_config,
+                document_limits=document_limits,
+                useGeneralKnowledge=config_data.get("useGeneralKnowledge", True),
+                documentRelevanceThreshold=config_data.get("documentRelevanceThreshold", 0.65),
+                updated_at=config_row['activated_at'] or config_row['created_at'],
+                source="database",
+                version=config_row['version'],
+                environment=config_row['environment']
+            )
+            
+            # Validate the configuration
+            if self._is_valid_config(app_config):
+                print(f"[Config] Loaded valid database config version {config_row['version']}")
+                return app_config
+            else:
+                print("[Config] Database configuration is invalid (missing credentials)")
+                return None
+                
+        except Exception as e:
+            print(f"[Config] Error loading database configuration: {e}")
+            return None
+    
+    def _merge_with_env_credentials(self, config, config_type: str):
+        """Merge database config with environment credentials."""
+        if config_type == "llm":
+            # If database has empty credentials, use environment
+            if not config.api_key:
+                config.api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
+            if not config.endpoint and config.provider == "azure":
+                config.endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+            if not config.deployment_name and config.provider == "azure":
+                config.deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "")
+        
+        elif config_type == "embeddings":
+            if not config.api_key:
+                config.api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
+            if not config.endpoint and config.provider == "azure":
+                config.endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+            if not config.deployment_name and config.provider == "azure":
+                config.deployment_name = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "")
+        
+        return config
+    
+    def _load_from_environment(self) -> Optional[AppConfig]:
+        """Load configuration from environment variables."""
+        try:
+            # Check if we have the basic required environment variables
+            azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+            
+            if not azure_key or not azure_endpoint:
+                print("[Config] Missing required environment variables (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)")
+                return None
+            
+            # LLM Configuration
+            llm_config = LLMConfig(
+                provider="azure",  # Default to Azure from environment
+                api_key=azure_key,
+                model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o"),
+                endpoint=azure_endpoint,
+                deployment_name=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o"),
+                temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
+                max_tokens=int(os.getenv("LLM_MAX_TOKENS", "2000"))
+            )
+            
+            # Embeddings Configuration
+            embeddings_config = EmbeddingsConfig(
+                provider="azure",
+                api_key=azure_key,  # Reuse same Azure key
+                model=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-large"),
+                endpoint=azure_endpoint,
+                deployment_name=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-large")
+            )
+            
+            # Document processing limits
+            document_limits = DocumentLimitsConfig(
+                max_file_size_mb=float(os.getenv("DOC_MAX_FILE_SIZE_MB", "10.0")),
+                max_extracted_chars=int(os.getenv("DOC_MAX_EXTRACTED_CHARS", "500000")),
+                max_chunks=int(os.getenv("DOC_MAX_CHUNKS", "1000")),
+                warn_file_size_mb=float(os.getenv("DOC_WARN_FILE_SIZE_MB", "5.0")),
+                warn_extracted_chars=int(os.getenv("DOC_WARN_EXTRACTED_CHARS", "250000"))
+            )
+            
+            # Application settings
+            use_general_knowledge = os.getenv("USE_GENERAL_KNOWLEDGE", "true").lower() == "true"
+            doc_threshold = float(os.getenv("DOCUMENT_RELEVANCE_THRESHOLD", "0.65"))
+            
+            app_config = AppConfig(
+                llm=llm_config,
+                embeddings=embeddings_config,
+                document_limits=document_limits,
                 useGeneralKnowledge=use_general_knowledge,
                 documentRelevanceThreshold=doc_threshold,
-                source="env"
+                source="env",
+                environment=os.getenv("ENVIRONMENT", "production")
             )
-            print(f"[CONFIG] Loaded environment configuration: LLM={llm_config.provider}, Embeddings={embeddings_config.provider}, GeneralKnowledge={use_general_knowledge}")
             
-        except Exception as e:
-            print(f"[CONFIG] Warning: Failed to load environment config: {e}")
-            # Create minimal fallback config
-            self._env_config = AppConfig(
-                llm=LLMConfig(provider="azure", api_key="", model="gpt-4o"),
-                embeddings=EmbeddingsConfig(provider="azure", api_key="", model="text-embedding-3-large"),
-                useGeneralKnowledge=True,
-                source="env"
-            )
-    
-    def _load_ui_config(self) -> None:
-        """Load configuration from UI settings file."""
-        try:
-            if self.config_file.exists():
-                with open(self.config_file, 'r') as f:
-                    data = json.load(f)
-                
-                # Parse LLM config
-                llm_data = data.get("llm", {})
-                llm_config = LLMConfig(
-                    provider=llm_data.get("provider", "azure"),
-                    api_key=llm_data.get("api_key", ""),
-                    model=llm_data.get("model", "gpt-4o"),
-                    endpoint=llm_data.get("endpoint"),
-                    deployment_name=llm_data.get("deployment_name"),
-                    temperature=llm_data.get("temperature", 0.7),
-                    max_tokens=llm_data.get("max_tokens", 2000)
-                )
-                
-                # Parse embeddings config
-                embeddings_data = data.get("embeddings", {})
-                embeddings_config = EmbeddingsConfig(
-                    provider=embeddings_data.get("provider", "azure"),
-                    api_key=embeddings_data.get("api_key", ""),
-                    model=embeddings_data.get("model", "text-embedding-3-large"),
-                    endpoint=embeddings_data.get("endpoint"),
-                    deployment_name=embeddings_data.get("deployment_name")
-                )
-                
-                # Parse metadata
-                updated_at_str = data.get("updated_at")
-                updated_at = datetime.fromisoformat(updated_at_str) if updated_at_str else None
-                
-                # Parse useGeneralKnowledge (default True if not specified)
-                use_general_knowledge = data.get("useGeneralKnowledge", True)
-
-                # Parse documentRelevanceThreshold (default 0.65 if not specified)
-                doc_threshold = data.get("documentRelevanceThreshold", 0.65)
-
-                self._ui_config = AppConfig(
-                    llm=llm_config,
-                    embeddings=embeddings_config,
-                    useGeneralKnowledge=use_general_knowledge,
-                    documentRelevanceThreshold=doc_threshold,
-                    updated_at=updated_at,
-                    source="ui"
-                )
-                print(f"[CONFIG] Loaded UI configuration from {self.config_file}")
+            if self._is_valid_config(app_config):
+                print("[Config] Loaded valid environment configuration")
+                return app_config
             else:
-                print(f"[CONFIG] No UI configuration file found at {self.config_file}")
+                print("[Config] Environment configuration is incomplete")
+                return None
                 
         except Exception as e:
-            print(f"[CONFIG] Warning: Failed to load UI config: {e}")
-            self._ui_config = None
+            print(f"[Config] Error loading environment configuration: {e}")
+            return None
     
-    def _determine_active_config(self) -> None:
-        """Determine which configuration to use based on priority: UI > env."""
-        # If we have UI config, try to merge it with environment credentials
-        if self._ui_config and self._env_config:
-            # Use UI settings but fill in missing credentials from environment
-            merged_config = self._merge_configs(self._ui_config, self._env_config)
-            if self._is_valid_config(merged_config):
-                self._current_config = merged_config
-                print("[CONFIG] Using merged UI + environment configuration")
-                return
-        
-        # Fallback to individual configs
-        if self._ui_config and self._is_valid_config(self._ui_config):
-            self._current_config = self._ui_config
-            print("[CONFIG] Using UI configuration (priority)")
-        elif self._env_config and self._is_valid_config(self._env_config):
-            self._current_config = self._env_config
-            print("[CONFIG] Using environment configuration (fallback)")
-        else:
-            print("[CONFIG] Warning: No valid configuration found")
-            # Create minimal config that will require setup
-            self._current_config = AppConfig(
-                llm=LLMConfig(provider="azure", api_key="", model="gpt-4o"),
-                embeddings=EmbeddingsConfig(provider="azure", api_key="", model="text-embedding-3-large"),
-                useGeneralKnowledge=False,  # Default to False for minimal config
-                documentRelevanceThreshold=0.65,  # Default threshold
-                source="env"
-            )
-    
-    def _merge_configs(self, ui_config: AppConfig, env_config: AppConfig) -> AppConfig:
-        """Merge UI configuration with environment credentials."""
-        # Start with UI config
-        merged_llm = LLMConfig(
-            provider=ui_config.llm.provider,
-            api_key=ui_config.llm.api_key or env_config.llm.api_key,
-            model=ui_config.llm.model,
-            endpoint=ui_config.llm.endpoint or env_config.llm.endpoint,
-            deployment_name=ui_config.llm.deployment_name or env_config.llm.deployment_name,
-            temperature=ui_config.llm.temperature,
-            max_tokens=ui_config.llm.max_tokens
-        )
-        
-        merged_embeddings = EmbeddingsConfig(
-            provider=ui_config.embeddings.provider,
-            api_key=ui_config.embeddings.api_key or env_config.embeddings.api_key,
-            model=ui_config.embeddings.model,
-            endpoint=ui_config.embeddings.endpoint or env_config.embeddings.endpoint,
-            deployment_name=ui_config.embeddings.deployment_name or env_config.embeddings.deployment_name
-        )
-        
+    def _load_defaults(self) -> AppConfig:
+        """Load default configuration (requires user setup)."""
         return AppConfig(
-            llm=merged_llm,
-            embeddings=merged_embeddings,
-            useGeneralKnowledge=ui_config.useGeneralKnowledge,  # Always use UI setting
-            documentRelevanceThreshold=ui_config.documentRelevanceThreshold,  # Always use UI setting
-            updated_at=ui_config.updated_at,
-            source="ui"  # Mark as UI since UI settings take priority
+            llm=LLMConfig(
+                provider="azure",
+                api_key="",
+                model="gpt-4o",
+                endpoint="",
+                deployment_name="gpt-4o"
+            ),
+            embeddings=EmbeddingsConfig(
+                provider="azure",
+                api_key="",
+                model="text-embedding-3-large",
+                endpoint="",
+                deployment_name="text-embedding-3-large"
+            ),
+            document_limits=DocumentLimitsConfig(),  # Use default limits
+            useGeneralKnowledge=False,  # Conservative default
+            documentRelevanceThreshold=0.65,
+            source="defaults"
         )
     
     def _is_valid_config(self, config: AppConfig) -> bool:
-        """Check if configuration has required fields."""
+        """Validate configuration completeness."""
         try:
-            # LLM validation
+            # Check LLM configuration
             if not config.llm.api_key:
-                print("[CONFIG] LLM API key missing")
                 return False
             
             if config.llm.provider == "azure":
-                if not config.llm.endpoint:
-                    print("[CONFIG] Azure LLM endpoint missing")
-                    return False
-                if not config.llm.deployment_name:
-                    print("[CONFIG] Azure LLM deployment name missing")
+                if not config.llm.endpoint or not config.llm.deployment_name:
                     return False
             
-            # Embeddings validation
+            # Check embeddings configuration
             if not config.embeddings.api_key:
-                print("[CONFIG] Embeddings API key missing")
                 return False
             
             if config.embeddings.provider == "azure":
-                if not config.embeddings.endpoint:
-                    print("[CONFIG] Azure embeddings endpoint missing")  
-                    return False
-                if not config.embeddings.deployment_name:
-                    print("[CONFIG] Azure embeddings deployment name missing")
+                if not config.embeddings.endpoint or not config.embeddings.deployment_name:
                     return False
             
-            print("[CONFIG] Configuration validation passed")
             return True
-        except Exception as e:
-            print(f"[CONFIG] Validation error: {e}")
+        except Exception:
             return False
     
-    def save_ui_config(self, config_data: Dict[str, Any]) -> bool:
-        """Save configuration from UI."""
+    async def save_ui_config(self, config_data: Dict[str, Any]) -> bool:
+        """Save configuration from UI to database."""
+        if not self._db_connection:
+            print("[Config] Cannot save UI config: No database connection")
+            return False
+        
         try:
-            # Build LLM config
-            llm_config = LLMConfig(
-                provider=config_data.get("llmProvider", "azure"),
-                api_key=config_data.get(f"{config_data.get('llmProvider', 'azure')}ApiKey", ""),
-                model=config_data.get(f"{config_data.get('llmProvider', 'azure')}Model", "gpt-4o"),
-                endpoint=config_data.get("azureEndpoint") if config_data.get("llmProvider") == "azure" else None,
-                deployment_name=config_data.get("azureDeploymentName") if config_data.get("llmProvider") == "azure" else None,
-                temperature=config_data.get("temperature", 0.7),
-                max_tokens=config_data.get("maxTokens", 2000)
-            )
-            
-            # Build embeddings config
-            embeddings_config = EmbeddingsConfig(
-                provider=config_data.get("embeddingProvider", "azure"),
-                api_key=config_data.get("embeddingApiKey", ""),
-                model=config_data.get("embeddingModel", "text-embedding-3-large"),
-                endpoint=config_data.get("embeddingEndpoint") if config_data.get("embeddingProvider") == "azure" else None,
-                deployment_name=config_data.get("embeddingModel") if config_data.get("embeddingProvider") == "azure" else None
-            )
-            
-            # Create new config
-            new_config = AppConfig(
-                llm=llm_config,
-                embeddings=embeddings_config,
-                useGeneralKnowledge=config_data.get("useGeneralKnowledge", True),
-                documentRelevanceThreshold=config_data.get("documentRelevanceThreshold", 0.65),
-                updated_at=datetime.now(),
-                source="ui"
-            )
-            
-            # Save to file
-            config_dict = {
-                "llm": {
-                    "provider": llm_config.provider,
-                    "api_key": llm_config.api_key,
-                    "model": llm_config.model,
-                    "endpoint": llm_config.endpoint,
-                    "deployment_name": llm_config.deployment_name,
-                    "temperature": llm_config.temperature,
-                    "max_tokens": llm_config.max_tokens
-                },
-                "embeddings": {
-                    "provider": embeddings_config.provider,
-                    "api_key": embeddings_config.api_key,
-                    "model": embeddings_config.model,
-                    "endpoint": embeddings_config.endpoint,
-                    "deployment_name": embeddings_config.deployment_name
-                },
-                "updated_at": new_config.updated_at.isoformat(),
-                "source": "ui",
-                "useGeneralKnowledge": new_config.useGeneralKnowledge,
-                "documentRelevanceThreshold": new_config.documentRelevanceThreshold
+            # Build configuration data
+            llm_config_data = {
+                "provider": config_data.get("llmProvider", "azure"),
+                "api_key": config_data.get(f"{config_data.get('llmProvider', 'azure')}ApiKey", ""),
+                "model": config_data.get(f"{config_data.get('llmProvider', 'azure')}Model", "gpt-4o"),
+                "endpoint": config_data.get("azureEndpoint") if config_data.get("llmProvider") == "azure" else None,
+                "deployment_name": config_data.get("azureDeploymentName") if config_data.get("llmProvider") == "azure" else None,
+                "temperature": config_data.get("temperature", 0.7),
+                "max_tokens": config_data.get("maxTokens", 2000)
             }
             
-            # Ensure directory exists
-            self.config_file.parent.mkdir(parents=True, exist_ok=True)
+            embeddings_config_data = {
+                "provider": config_data.get("embeddingProvider", "azure"),
+                "api_key": config_data.get("embeddingApiKey", ""),
+                "model": config_data.get("embeddingModel", "text-embedding-3-large"),
+                "endpoint": config_data.get("embeddingEndpoint") if config_data.get("embeddingProvider") == "azure" else None,
+                "deployment_name": config_data.get("embeddingModel") if config_data.get("embeddingProvider") == "azure" else None
+            }
             
-            with open(self.config_file, 'w') as f:
-                json.dump(config_dict, f, indent=2)
+            new_config_data = {
+                "llm": llm_config_data,
+                "embeddings": embeddings_config_data,
+                "useGeneralKnowledge": config_data.get("useGeneralKnowledge", True),
+                "documentRelevanceThreshold": config_data.get("documentRelevanceThreshold", 0.65)
+            }
             
-            # Update internal state
-            self._ui_config = new_config
-            self._determine_active_config()
+            # Encrypt sensitive fields before storing
+            encrypted_config_data = encrypt_sensitive_config(new_config_data)
             
-            # Debug: Log the current config after save
-            current = self.get_current_config()
-            print(f"[CONFIG] After save - useGeneralKnowledge: {current.useGeneralKnowledge}, threshold: {current.documentRelevanceThreshold}")
+            # Generate version and checksum (use original data for checksum consistency)
+            import hashlib
+            config_json = json.dumps(new_config_data, sort_keys=True)
+            checksum = hashlib.sha256(config_json.encode()).hexdigest()[:16]
             
-            print(f"[CONFIG] Saved UI configuration to {self.config_file}")
+            # Get current version and increment
+            current_version = await self._db_connection.fetchone("""
+                SELECT version FROM config_versions 
+                WHERE environment = $1 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """, os.getenv("ENVIRONMENT", "production"))
+            
+            if current_version:
+                # Simple version increment (1.0.0 -> 1.0.1)
+                parts = current_version['version'].split('.')
+                parts[-1] = str(int(parts[-1]) + 1)
+                new_version = '.'.join(parts)
+            else:
+                new_version = "1.0.0"
+            
+            environment = os.getenv("ENVIRONMENT", "production")
+            
+            # Deactivate current active config
+            await self._db_connection.execute("""
+                UPDATE config_versions 
+                SET is_active = false 
+                WHERE environment = $1 AND is_active = true
+            """, environment)
+            
+            # Insert new configuration (with encrypted data)
+            await self._db_connection.execute("""
+                INSERT INTO config_versions (
+                    version, environment, config_data, is_active, 
+                    checksum, created_by, deployed_by, activated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """, 
+            new_version,
+            environment,
+            json.dumps(encrypted_config_data),  # Store encrypted data
+            True,  # Set as active
+            checksum,
+            "ui",
+            "ui",
+            datetime.now()
+            )
+            
+            print(f"[Config] Saved new UI configuration version {new_version}")
+            
+            # Reload configuration
+            await self._load_configuration()
+            
             return True
             
         except Exception as e:
-            print(f"[CONFIG] Error saving UI config: {e}")
+            print(f"[Config] Error saving UI configuration: {e}")
             return False
     
     def get_current_config(self) -> AppConfig:
         """Get the currently active configuration."""
+        if not self._current_config:
+            raise Exception("Configuration not initialized. Call initialize() first.")
         return self._current_config
     
     def get_config_for_frontend(self) -> Dict[str, Any]:
-        """Get configuration data formatted for frontend display."""
+        """Get configuration formatted for frontend display."""
         if not self._current_config:
-            return {}
+            return {"isValid": False, "source": "none"}
         
         config = self._current_config
         
-        # Build response based on current config
+        # Build response (don't expose full API keys for security)
         result = {
             "llmProvider": config.llm.provider,
             "embeddingProvider": config.embeddings.provider,
             "source": config.source,
+            "version": config.version,
+            "environment": config.environment,
             "isValid": self._is_valid_config(config),
             "useGeneralKnowledge": config.useGeneralKnowledge,
-            "documentRelevanceThreshold": config.documentRelevanceThreshold
+            "documentRelevanceThreshold": config.documentRelevanceThreshold,
+            "updatedAt": config.updated_at.isoformat() if config.updated_at else None
         }
         
-        # Add provider-specific fields (don't expose full API keys for security)
-        if config.llm.provider == "openai":
-            result.update({
-                "openaiApiKey": "***" if config.llm.api_key else "",
-                "openaiModel": config.llm.model
-            })
-        elif config.llm.provider == "azure":
+        # Add provider-specific fields (mask API keys for security)
+        if config.llm.provider == "azure":
             result.update({
                 "azureApiKey": "***" if config.llm.api_key else "",
                 "azureEndpoint": config.llm.endpoint or "",
                 "azureDeploymentName": config.llm.deployment_name or ""
+            })
+        elif config.llm.provider == "openai":
+            result.update({
+                "openaiApiKey": "***" if config.llm.api_key else "",
+                "openaiModel": config.llm.model
             })
         elif config.llm.provider == "gemini":
             result.update({
@@ -390,8 +476,7 @@ class ConfigurationManager:
         # Add embeddings info
         result.update({
             "embeddingApiKey": "***" if config.embeddings.api_key else "",
-            "embeddingModel": config.embeddings.model,
-            "useGeneralKnowledge": config.useGeneralKnowledge
+            "embeddingModel": config.embeddings.model
         })
         
         if config.embeddings.provider == "azure":
@@ -403,11 +488,14 @@ class ConfigurationManager:
         """Check if the system is properly configured."""
         return self._current_config and self._is_valid_config(self._current_config)
     
-    def reload_config(self) -> None:
+    async def reload_config(self):
         """Reload configuration from all sources."""
-        self._load_env_config()
-        self._load_ui_config()
-        self._determine_active_config()
+        await self._load_configuration()
+    
+    async def close(self):
+        """Close database connection."""
+        if self._db_connection:
+            await self._db_connection.close()
 
 # Global configuration manager instance
-config_manager = ConfigurationManager()
+config_manager = DatabaseFirstConfigManager()

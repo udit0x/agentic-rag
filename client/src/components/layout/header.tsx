@@ -4,6 +4,7 @@ import { ThemeToggle } from "./theme-toggle";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { DocumentUpload } from "@/components/upload/document-upload";
 import { DocumentLibrary } from "@/components/upload/document-library";
+import { useUploadContext } from "@/contexts/upload-context";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 interface Document {
@@ -29,6 +30,7 @@ export function Header({
   onDeleteDocument 
 }: HeaderProps) {
   const isMobile = useIsMobile();
+  const { hasActiveUploads, setUploadScreenOpen } = useUploadContext();
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -77,11 +79,16 @@ export function Header({
         </div>
 
         <div className="flex items-center gap-2">
-          <Sheet>
+          <Sheet onOpenChange={(open) => setUploadScreenOpen(open)}>
             <SheetTrigger asChild>
-              <Button variant="outline" size="default" data-testid="button-upload">
+              <Button variant="outline" size="default" data-testid="button-upload" className="relative">
                 <Upload className="h-4 w-4 mr-2" />
                 Upload
+                {hasActiveUploads && (
+                  <div className="absolute -top-1 -right-1 h-3 w-3 bg-primary rounded-full animate-pulse">
+                    <div className="absolute inset-0 bg-primary rounded-full animate-ping" />
+                  </div>
+                )}
               </Button>
             </SheetTrigger>
             <SheetContent side="right" className="w-full sm:max-w-md">

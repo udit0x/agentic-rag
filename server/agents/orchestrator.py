@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from server.agents.state import AgentState, WorkflowConfig, DEFAULT_CONFIG
+from server.agents.intent_router import intent_router_agent
 from server.agents.router import router_agent
 from server.agents.retriever import retriever_agent
 from server.agents.reasoning import reasoning_agent
@@ -15,6 +16,9 @@ from server.agents.simulation import simulation_agent
 from server.agents.temporal import temporal_agent
 from server.agents.general_knowledge import general_knowledge_agent
 from server.agents.query_refinement import query_refinement_agent
+from server.agents.conversation_memory import conversation_memory_agent
+from server.agents.meta_knowledge import meta_knowledge_agent
+from server.agents.cost_tracker import cost_tracker
 
 class MultiAgentOrchestrator:
     """LangGraph-based orchestrator for multi-agent RAG workflow."""
@@ -29,6 +33,8 @@ class MultiAgentOrchestrator:
         workflow = StateGraph(AgentState)
         
         # Add nodes for each agent
+        workflow.add_node("intent_router", self._intent_router_node)
+        workflow.add_node("conversation_memory", self._conversation_memory_node)
         workflow.add_node("router", self._router_node)
         workflow.add_node("query_refinement", self._query_refinement_node)
         workflow.add_node("retriever", self._retriever_node)
@@ -36,11 +42,25 @@ class MultiAgentOrchestrator:
         workflow.add_node("simulation", self._simulation_node)  # Placeholder for Phase 3
         workflow.add_node("temporal", self._temporal_node)      # Placeholder for Phase 4
         workflow.add_node("general_knowledge", self._general_knowledge_node)  # General knowledge agent
+        workflow.add_node("meta_knowledge", self._meta_knowledge_node)  # Meta knowledge agent
         
         # Define the workflow edges
-        workflow.set_entry_point("router")
+        workflow.set_entry_point("intent_router")
         
-        # Router determines the path based on classification
+        # Intent router determines initial routing
+        workflow.add_conditional_edges(
+            "intent_router",
+            self._intent_route_decision,
+            {
+                "chat": "conversation_memory",     # CHAT - use memory only
+                "rag": "router",                   # RAG - normal workflow
+                "hybrid": "router",                # HYBRID - router then memory
+                "meta": "meta_knowledge",          # META - application info
+                "stop": END                        # API error detected, stop workflow
+            }
+        )
+        
+        # Router determines the path based on classification (for RAG/HYBRID)
         workflow.add_conditional_edges(
             "router",
             self._error_check_route,
@@ -69,6 +89,7 @@ class MultiAgentOrchestrator:
                 "simulation": "simulation", 
                 "temporal": "temporal",
                 "general": "general_knowledge",  # Fallback to general knowledge if no docs
+                "hybrid": "conversation_memory", # For HYBRID - combine with memory
                 "stop": END                      # API error detected, stop workflow
             }
         )
@@ -78,9 +99,179 @@ class MultiAgentOrchestrator:
         workflow.add_edge("simulation", END)
         workflow.add_edge("temporal", END)
         workflow.add_edge("general_knowledge", END)
+        workflow.add_edge("conversation_memory", END)
+        workflow.add_edge("meta_knowledge", END)
         
         return workflow
     
+    async def _intent_router_node(self, state: AgentState) -> AgentState:
+        """Intent router agent node - determines CHAT/RAG/HYBRID routing."""
+        start_time = datetime.now()
+        
+        try:
+            intent_classification = await intent_router_agent.classify_intent(
+                state["query"],
+                state.get("session_id"),
+                enable_tracing=self.config["enable_tracing"]
+            )
+            
+            # Store as dict for consistent access
+            state["intent_classification"] = {
+                "route_type": intent_classification.route_type,
+                "confidence": intent_classification.confidence,
+                "reasoning": intent_classification.reasoning,
+                "conversation_references": intent_classification.conversation_references,
+                "needs_retrieval": intent_classification.needs_retrieval,
+                "reuse_cached_docs": intent_classification.reuse_cached_docs,
+                "reuse_refined_queries": intent_classification.reuse_refined_queries,
+                "suggest_threshold_adjustment": intent_classification.suggest_threshold_adjustment,
+                "threshold_suggestion_message": intent_classification.threshold_suggestion_message,
+                "force_rag_bypass": intent_classification.force_rag_bypass
+            }
+            
+            # Add trace if enabled
+            if self.config["enable_tracing"]:
+                state["agent_traces"].append({
+                    "agent_name": "intent_router",
+                    "start_time": start_time,
+                    "end_time": datetime.now(),
+                    "input_data": {"query": state["query"], "session_id": state.get("session_id")},
+                    "output_data": state["intent_classification"],
+                    "error": None,
+                    "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000)
+                })
+            
+            return state
+            
+        except Exception as e:
+            # Enhanced error detection and categorization
+            error_msg = str(e)
+            
+            # Detect specific API errors for better user feedback (order matters!)
+            if "401" in error_msg and "api" in error_msg.lower():
+                state["error_type"] = "api_authentication_failed"
+                state["error_message"] = "API authentication failed. Please check your API credentials."
+            elif "429" in error_msg and ("quota" in error_msg.lower() or "rate limit" in error_msg.lower()):
+                state["error_type"] = "api_quota_exceeded"
+                state["error_message"] = "API quota exceeded. Please try again later."
+            elif ("openai" in error_msg.lower() or "azure" in error_msg.lower()) and ("api" in error_msg.lower() or "connection" in error_msg.lower()):
+                state["error_type"] = "api_connection_error"
+                state["error_message"] = "Failed to connect to AI service. Please try again."
+            else:
+                state["error_type"] = "general_error"
+                state["error_message"] = f"Intent routing error: {error_msg}"
+            
+            if self.config["enable_tracing"]:
+                state["agent_traces"].append({
+                    "agent_name": "intent_router",
+                    "start_time": start_time,
+                    "end_time": datetime.now(),
+                    "input_data": {"query": state["query"]},
+                    "output_data": None,
+                    "error": error_msg,
+                    "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000)
+                })
+            
+            return state
+
+    async def _conversation_memory_node(self, state: AgentState) -> AgentState:
+        """Conversation memory agent node - handles CHAT and HYBRID responses."""
+        start_time = datetime.now()
+        
+        try:
+            intent_classification = state.get("intent_classification", {})
+            route_type = intent_classification.get("route_type", "CHAT")
+            session_id = state.get("session_id")
+            
+            print(f"[ORCHESTRATOR] Intent classification type: {type(intent_classification)}")
+            print(f"[ORCHESTRATOR] Intent classification content: {intent_classification}")
+            
+            # Check for threshold suggestion
+            threshold_suggestion = intent_classification.get("threshold_suggestion_message", "")
+            
+            print(f"[ORCHESTRATOR] Extracted threshold suggestion: '{threshold_suggestion}'")
+            
+            if route_type == "CHAT":
+                # Pure conversation memory response
+                response = await conversation_memory_agent.generate_chat_response(
+                    state["query"],
+                    session_id,
+                    enable_tracing=self.config["enable_tracing"],
+                    threshold_suggestion=threshold_suggestion
+                )
+                
+                state["memory_response"] = response
+                state["final_response"] = response
+                state["response_type"] = "chat"
+                state["sources"] = []
+                
+                # Track costs
+                cost_tracker.track_conversation_memory_cost(
+                    session_id,
+                    "chat",
+                    int((datetime.now() - start_time).total_seconds() * 1000)
+                )
+                
+            elif route_type == "HYBRID":
+                # Combine conversation memory with retrieved documents
+                retrieved_chunks = state.get("retrieved_chunks", [])
+                
+                response = await conversation_memory_agent.generate_hybrid_response(
+                    state["query"],
+                    session_id,
+                    retrieved_chunks,
+                    enable_tracing=self.config["enable_tracing"]
+                )
+                
+                state["memory_response"] = response
+                state["final_response"] = response
+                state["response_type"] = "hybrid"
+                state["sources"] = retrieved_chunks
+                
+                # Track costs
+                cost_tracker.track_conversation_memory_cost(
+                    session_id,
+                    "hybrid",
+                    int((datetime.now() - start_time).total_seconds() * 1000)
+                )
+            
+            # Add trace if enabled
+            if self.config["enable_tracing"]:
+                state["agent_traces"].append({
+                    "agent_name": "conversation_memory",
+                    "start_time": start_time,
+                    "end_time": datetime.now(),
+                    "input_data": {
+                        "query": state["query"], 
+                        "route_type": route_type,
+                        "session_id": session_id
+                    },
+                    "output_data": {"response_type": state.get("response_type")},
+                    "error": None,
+                    "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000)
+                })
+            
+            return state
+            
+        except Exception as e:
+            error_msg = f"Conversation memory agent failed: {str(e)}"
+            state["error_message"] = error_msg
+            state["final_response"] = "I encountered an error while processing your question using conversation history."
+            state["response_type"] = "error"
+            
+            if self.config["enable_tracing"]:
+                state["agent_traces"].append({
+                    "agent_name": "conversation_memory",
+                    "start_time": start_time,
+                    "end_time": datetime.now(),
+                    "input_data": {"query": state["query"]},
+                    "output_data": None,
+                    "error": error_msg,
+                    "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000)
+                })
+            
+            return state
+
     async def _router_node(self, state: AgentState) -> AgentState:
         """Router agent node - classifies the query."""
         start_time = datetime.now()
@@ -146,7 +337,9 @@ class MultiAgentOrchestrator:
         
         try:
             refinement = await query_refinement_agent.generate_related_questions(
-                state["query"]
+                state["query"],
+                session_id=state.get("session_id"),
+                force_regenerate=False  # Allow caching by default
             )
             
             # Check if refinement failed due to API error
@@ -191,6 +384,12 @@ class MultiAgentOrchestrator:
                 "query_category": refinement.query_category,
                 "refinement_reasoning": refinement.refinement_reasoning
             }
+            
+            # Track costs
+            cost_tracker.track_query_refinement_cost(
+                state.get("session_id"),
+                refinement.__dict__
+            )
             
             # Add trace if enabled
             if self.config["enable_tracing"]:
@@ -256,6 +455,10 @@ class MultiAgentOrchestrator:
             if not state.get("classification"):
                 raise ValueError("No classification available for retrieval")
             
+            # Check for force RAG bypass (lower threshold request)
+            intent_classification = state.get("intent_classification", {})
+            force_lower_threshold = intent_classification.get("force_rag_bypass", False)
+            
             # Get refined queries if available
             refined_queries = None
             if state.get("query_refinement"):
@@ -266,11 +469,20 @@ class MultiAgentOrchestrator:
                 state["classification"],
                 max_chunks=self.config["max_chunks"],
                 enable_tracing=self.config["enable_tracing"],
-                refined_queries=refined_queries
+                refined_queries=refined_queries,
+                session_id=state.get("session_id"),
+                force_retrieval=False,  # Allow caching by default
+                force_lower_threshold=force_lower_threshold
             )
             
             state["retrieved_chunks"] = chunks
             state["retrieval_metadata"] = metadata
+            
+            # Track costs
+            cost_tracker.track_retriever_cost(
+                state.get("session_id"),
+                metadata
+            )
             
             # Add trace if enabled
             if self.config["enable_tracing"]:
@@ -569,6 +781,56 @@ class MultiAgentOrchestrator:
             
             return state
     
+    
+    async def _meta_knowledge_node(self, state: AgentState) -> AgentState:
+        """Meta knowledge agent node - provides information about the application."""
+        start_time = datetime.now()
+        
+        try:
+            result = await meta_knowledge_agent.handle_meta_query(
+                state["query"],
+                state.get("session_id"),
+                enable_tracing=self.config["enable_tracing"]
+            )
+            
+            state["final_response"] = result["response"]
+            state["response_type"] = result["response_type"]
+            
+            # Add trace if enabled
+            if self.config["enable_tracing"]:
+                execution_time = (datetime.now() - start_time).total_seconds() * 1000
+                state["agent_traces"].append({
+                    "agent_name": "meta_knowledge",
+                    "operation": "handle_meta_query",
+                    "input": {"query": state["query"]},
+                    "output": {"response_length": len(result["response"])},
+                    "execution_time_ms": execution_time,
+                    "timestamp": start_time.isoformat(),
+                    "status": "success"
+                })
+            
+            return state
+            
+        except Exception as e:
+            error_msg = f"Meta knowledge agent failed: {str(e)}"
+            state["error_message"] = error_msg
+            state["final_response"] = "I encountered an error while trying to explain my capabilities. Please try again."
+            state["response_type"] = "error"
+            
+            if self.config["enable_tracing"]:
+                execution_time = (datetime.now() - start_time).total_seconds() * 1000
+                state["agent_traces"].append({
+                    "agent_name": "meta_knowledge",
+                    "operation": "handle_meta_query",
+                    "input": {"query": state["query"]},
+                    "output": {"error": error_msg},
+                    "execution_time_ms": execution_time,
+                    "timestamp": start_time.isoformat(),
+                    "status": "error"
+                })
+            
+            return state
+
     def _format_simulation_response(self, simulation_result: dict, parameters: dict) -> str:
         """Format simulation results into a readable response."""
         current = simulation_result["current_value"]
@@ -754,6 +1016,39 @@ Based on the scenario described in your query, here's the quantitative impact:
         
         return response
     
+    def _intent_route_decision(self, state: AgentState) -> str:
+        """Determine routing based on intent classification."""
+        # First check for API errors
+        error_message = state.get("error_message")
+        error_type = state.get("error_type")
+        
+        if error_message and error_type in ["api_quota_exceeded", "api_authentication_failed", "api_connection_error"]:
+            print(f"[ORCHESTRATOR] API error detected in intent router: {error_type}")
+            return "stop"
+        
+        # Check intent classification
+        intent_classification = state.get("intent_classification")
+        if not intent_classification:
+            print("[ORCHESTRATOR] No intent classification, defaulting to RAG")
+            return "rag"
+        
+        # Handle both Pydantic model and dict access
+        if hasattr(intent_classification, 'route_type'):
+            route_type = intent_classification.route_type
+        else:
+            route_type = intent_classification.get("route_type", "RAG")
+        
+        print(f"[ORCHESTRATOR] Intent routing decision: {route_type}")
+        
+        if route_type == "CHAT":
+            return "chat"
+        elif route_type == "HYBRID":
+            return "hybrid"
+        elif route_type == "META":
+            return "meta"
+        else:  # RAG or unknown
+            return "rag"
+
     def _error_check_route(self, state: AgentState) -> str:
         """Check for API errors and determine if workflow should continue or stop."""
         error_message = state.get("error_message")
@@ -795,18 +1090,36 @@ Based on the scenario described in your query, here's the quantitative impact:
         retrieved_chunks = state.get("retrieved_chunks", [])
         use_general_knowledge = classification.get("use_general_knowledge", False)
         
+        # Check if this is HYBRID routing (needs memory integration)
+        intent_classification = state.get("intent_classification", {})
+        
+        # Handle both Pydantic model and dict access
+        if hasattr(intent_classification, 'route_type'):
+            route_type = intent_classification.route_type
+        else:
+            route_type = intent_classification.get("route_type", "RAG") if intent_classification else "RAG"
+        
+        if route_type == "HYBRID" and retrieved_chunks:
+            print("[ORCHESTRATOR] HYBRID routing - combining retrieval with memory")
+            return "hybrid"
+        
         # If no documents found and general knowledge is enabled, route to general knowledge
         if not retrieved_chunks and use_general_knowledge:
+            print("[ORCHESTRATOR] No documents found, routing to general knowledge")
             return "general"
         
         # Otherwise route based on original classification
         if query_type == "factual":
+            print("[ORCHESTRATOR] Routing to reasoning agent")
             return "reasoning"
         elif query_type == "counterfactual":
+            print("[ORCHESTRATOR] Routing to simulation agent")
             return "simulation"  # Phase 3
         elif query_type == "temporal":
+            print("[ORCHESTRATOR] Routing to temporal agent")
             return "temporal"    # Phase 4
         else:
+            print(f"[ORCHESTRATOR] Unknown query type {query_type}, defaulting to reasoning")
             return "reasoning"   # Default fallback
     
     async def process_query(
@@ -833,9 +1146,12 @@ Based on the scenario described in your query, here's the quantitative impact:
             "query": query,
             "session_id": session_id,
             "user_id": user_id,
+            "intent_classification": None,
             "classification": None,
             "retrieved_chunks": [],
             "retrieval_metadata": None,
+            "conversation_context": None,
+            "memory_response": None,
             "reasoning_response": None,
             "simulation_parameters": None,
             "simulation_result": None,
@@ -843,6 +1159,7 @@ Based on the scenario described in your query, here's the quantitative impact:
             "final_response": "",
             "response_type": "reasoning",
             "sources": [],
+            "cost_summary": None,
             "agent_traces": [],
             "total_execution_time": None,
             "error_message": None,
@@ -877,6 +1194,14 @@ Based on the scenario described in your query, here's the quantitative impact:
                 end_time = datetime.now()
                 total_ms = int((end_time - start_time).total_seconds() * 1000)
                 final_state["total_execution_time"] = total_ms
+                
+                # Add cost summary to final state
+                if session_id:
+                    try:
+                        cost_summary = cost_tracker.get_session_cost_breakdown(session_id)
+                        final_state["cost_summary"] = cost_summary
+                    except Exception as cost_error:
+                        print(f"[ORCHESTRATOR] Error getting cost summary: {cost_error}")
                 
                 if self.config["debug_mode"]:
                     final_state["debug_info"] = {

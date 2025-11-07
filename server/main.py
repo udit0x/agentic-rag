@@ -17,16 +17,54 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from server.api.documents import router as documents_router
 from server.api.chat import router as chat_router
 from server.api.config import router as config_router
 from server.api.chat_history import router as chat_history_router
 from server.api.users import router as users_router
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager."""
+    # Startup
+    print("[Server] Starting RAG Orchestrator API...")
+    
+    # Initialize database connection at startup
+    try:
+        from server.database_interface import db_storage
+        await db_storage.initialize()
+        print("[Database] Initialization completed")
+    except Exception as e:
+        print(f"[Database] Initialization failed: {e}")
+        # Don't crash the app, but log the error
+    
+    # Initialize configuration manager
+    try:
+        from server.config_manager import config_manager
+        await config_manager.initialize()
+        current_config = config_manager.get_current_config()
+        print(f"[Config] Loaded configuration from {current_config.source} (version {current_config.version})")
+        if not config_manager.is_configured():
+            print("[Config] Warning: Configuration incomplete - setup required")
+    except Exception as e:
+        print(f"[Config] Configuration initialization failed: {e}")
+    
+    yield
+    
+    # Shutdown
+    print("[Server] Shutting down RAG Orchestrator API...")
+    try:
+        from server.config_manager import config_manager
+        await config_manager.close()
+    except Exception:
+        pass
+
 app = FastAPI(
     title="RAG Orchestrator API",
     description="Multi-Agent Document Intelligence System",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # CORS configuration

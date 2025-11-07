@@ -65,50 +65,33 @@ async def stream_query_with_refinement(request: QueryRequest):
     """
     
     async def generate_stream():
-        """Generate streaming response with refinement first, then main response."""
+        """Generate streaming response with main processing immediately, refinement in parallel."""
         try:
-            # Step 1: Generate and stream refined questions immediately
-            print(f"[STREAM] Generating refined questions for: {request.query}")
-            
-            refinement = await query_refinement_agent.generate_related_questions(request.query)
-            
-            # Check if refinement failed due to API error
-            if refinement.query_category == "api_error":
-                print("[STREAM] API error detected in query refinement - skipping refinement stream")
-                # Don't stream refinement questions, proceed directly to main processing
-                # The main processing will also fail and show the proper error message
-            else:
-                # Stream the refined questions only if no API error
-                refinement_data = {
-                    "type": "refinement",
-                    "data": {
-                        "refined_queries": refinement.refined_queries,
-                        "query_category": refinement.query_category,
-                        "refinement_reasoning": refinement.refinement_reasoning,
-                        "status": "generated"
-                    }
+            # Send immediate acknowledgment to show processing started
+            ack_data = {
+                "type": "started",
+                "data": {
+                    "status": "processing",
+                    "query": request.query
                 }
-                
-                yield f"data: {json.dumps(refinement_data)}\n\n"
-                
-                # Small delay to allow UI to process refinement
-                await asyncio.sleep(0.1)
+            }
+            yield f"data: {json.dumps(ack_data)}\n\n"
             
-            # Step 2: Process main query with standard workflow
-            print(f"[STREAM] Processing main query...")
+            # Start refinement generation in parallel (non-blocking)
+            refinement_task = asyncio.create_task(
+                query_refinement_agent.generate_related_questions(request.query)
+            )
+            
+            # Process main query immediately without waiting for refinement
             
             # Create or get session - always ensure we have a valid session
             session = None
             if request.sessionId:
                 try:
                     session = await storage.getChatSession(request.sessionId)
-                    if session:
-                        print(f"[STREAM] Using existing session: {request.sessionId}")
-                    else:
-                        print(f"[STREAM] Session {request.sessionId} not found, creating new session")
                 except Exception as e:
                     print(f"[STREAM] Error retrieving session {request.sessionId}: {e}")
-            
+
             # Create new session if we don't have one
             if not session:
                 session = await storage.createChatSession({
@@ -225,14 +208,34 @@ async def stream_query_with_refinement(request: QueryRequest):
                     "answer": agent_result["final_response"],
                     "sources": sources,
                     "classification": agent_result.get("classification"),
-                    "agentTraces": agent_traces,  # Now properly formatted!
+                    "agentTraces": agent_traces,
                     "executionTimeMs": agent_result.get("total_execution_time"),
                     "responseType": agent_result.get("response_type", "reasoning"),
-                    "refined_queries_used": refinement.refined_queries  # Include for reference
                 }
             }
             
             yield f"data: {json.dumps(completion_data)}\n\n"
+            
+            # Try to get refinement result if available (with timeout)
+            try:
+                refinement = await asyncio.wait_for(refinement_task, timeout=3.0)
+                # Stream refinement after main processing if it completed successfully
+                if refinement.query_category != "api_error":
+                    print(f"[STREAM] Refinement completed, streaming {len(refinement.refined_queries)} questions")
+                    refinement_data = {
+                        "type": "refinement",
+                        "data": {
+                            "refined_queries": refinement.refined_queries,
+                            "query_category": refinement.query_category,
+                            "refinement_reasoning": refinement.refinement_reasoning,
+                            "status": "generated"
+                        }
+                    }
+                    yield f"data: {json.dumps(refinement_data)}\n\n"
+            except asyncio.TimeoutError:
+                print("[STREAM] Refinement generation took too long, proceeding without it")
+            except Exception as e:
+                print(f"[STREAM] Refinement generation failed: {e}")
             
         except Exception as e:
             # Detect specific error types for better user feedback

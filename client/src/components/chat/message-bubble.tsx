@@ -12,7 +12,7 @@ import { useState, useEffect } from "react";
 interface MessageBubbleProps {
   message: Message;
   responseType?: string;
-  onCitationClick?: (sourceIndex: number) => void;
+  onCitationClick?: (sourceIndex: number, messageSources: Message["sources"]) => void;
   refinedQueries?: string[];
   showRefinedQueries?: boolean;
   onRefinedQueryClick?: (query: string) => void;
@@ -205,7 +205,7 @@ export function MessageBubble({
                       const index = parseInt(citationMatch[1], 10);
                       return (
                         <button
-                          onClick={() => onCitationClick?.(index)}
+                          onClick={() => onCitationClick?.(index, message.sources)}
                           className={cn(
                             "inline-flex items-center align-super font-medium text-primary hover:underline",
                             isMobile ? "text-[10px]" : "text-xs"
@@ -278,17 +278,22 @@ export function MessageBubble({
                       className="border-t border-gray-200 dark:border-gray-700"
                     >
                       <div className="p-3 space-y-2">
+                        {/* Explanation text - only shown when expanded */}
+                        {isQuestionsExpanded && (
+                          <div className="text-xs text-gray-500 dark:text-gray-400 italic mb-3">
+                            Related questions generated for better search accuracy and context understanding
+                          </div>
+                        )}
                         {refinedQueries.map((query, index) => (
-                          <motion.button
+                          <motion.div
                             key={index}
                             initial={{ opacity: 0, x: -10 }}
                             animate={{ opacity: 1, x: 0 }}
                             transition={{ delay: index * 0.1 }}
-                            onClick={() => onRefinedQueryClick?.(query)}
-                            className="w-full text-left p-2 text-sm text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700/50 rounded transition-colors"
+                            className="text-sm text-gray-600 dark:text-gray-300 py-1"
                           >
                             <span className="text-blue-500 font-medium">{index + 1}.</span> {query}
-                          </motion.button>
+                          </motion.div>
                         ))}
                       </div>
                     </motion.div>
@@ -342,7 +347,7 @@ export function MessageBubble({
                     return (
                       <button
                         key={filename}
-                        onClick={() => onCitationClick?.(data.citations[0] - 1)}
+                        onClick={() => onCitationClick?.(data.citations[0] - 1, message.sources)}
                         className={cn(
                           "group flex items-center gap-2 bg-background border border-border hover:border-primary/50 rounded-lg transition-all hover:shadow-sm",
                           isMobile ? "px-2.5 py-2 text-xs" : "px-3 py-2"

@@ -122,11 +122,11 @@ class MultiProviderRAGClient:
         else:
             print(f"[RAG_CLIENT] Azure Search not configured: endpoint={self.search_endpoint is not None}, key={self.search_key is not None}")
         
-        # Level 4: Enhanced text splitter with optimal chunk overlap (100-150 tokens)
-        # Assuming ~4 chars per token, 100-150 tokens ≈ 400-600 characters
+        # Optimized text splitter with reduced overlap for better performance
+        # Reduced chunk_overlap from 500 to 200 to minimize redundancy
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=500,  # Increased from 200 to 500 for better context continuity
+            chunk_size=1200,  # Slightly larger chunks for better content density
+            chunk_overlap=300,  # Reduced overlap for less redundancy and faster processing
             length_function=len,
             separators=["\n\n", "\n", ". ", "? ", "! ", "; ", ", ", " ", ""]  # Better sentence boundaries
         )
@@ -230,12 +230,70 @@ class MultiProviderRAGClient:
                 print(f"[RAG_CLIENT] Failed to create index: {create_error}")
                 return False
     
-    async def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for a list of texts."""
+    async def embed_documents(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+        """
+        Generate embeddings for a list of texts with optimized batching for better performance.
+        
+        Args:
+            texts: List of text strings to embed
+            batch_size: Number of texts to process in each batch (default: 100, increased from 20)
+            
+        Returns:
+            List of embedding vectors
+        """
         embeddings = self.get_embeddings()
         if not embeddings:
             raise ValueError("Embeddings provider not configured")
-        return await embeddings.aembed_documents(texts)
+        
+        if len(texts) <= batch_size:
+            # Small batch, process all at once
+            return await embeddings.aembed_documents(texts)
+        
+        # Large batch, process in chunks with concurrent processing
+        print(f"[EMBEDDINGS] Processing {len(texts)} texts in batches of {batch_size}")
+        
+        # Create batches
+        batches = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            batches.append(batch)
+        
+        # Process batches concurrently (limit concurrency to avoid rate limits)
+        import asyncio
+        semaphore = asyncio.Semaphore(3)  # Max 3 concurrent embedding requests
+        
+        async def process_batch_with_semaphore(batch_texts, batch_num, total_batches):
+            async with semaphore:
+                print(f"[EMBEDDINGS] Processing batch {batch_num}/{total_batches} ({len(batch_texts)} texts)")
+                try:
+                    return await embeddings.aembed_documents(batch_texts)
+                except Exception as e:
+                    print(f"[EMBEDDINGS] Batch {batch_num} failed: {e}")
+                    # Retry once with smaller batch if it fails
+                    if len(batch_texts) > 50:
+                        print(f"[EMBEDDINGS] Retrying batch {batch_num} with smaller chunks")
+                        mid = len(batch_texts) // 2
+                        chunk1 = await embeddings.aembed_documents(batch_texts[:mid])
+                        chunk2 = await embeddings.aembed_documents(batch_texts[mid:])
+                        return chunk1 + chunk2
+                    else:
+                        raise
+        
+        # Execute all batches concurrently
+        tasks = [
+            process_batch_with_semaphore(batch, i + 1, len(batches))
+            for i, batch in enumerate(batches)
+        ]
+        
+        batch_results = await asyncio.gather(*tasks)
+        
+        # Flatten results
+        all_embeddings = []
+        for batch_embeddings in batch_results:
+            all_embeddings.extend(batch_embeddings)
+        
+        print(f"[EMBEDDINGS] Completed: {len(all_embeddings)} embeddings generated")
+        return all_embeddings
     
     async def embed_query(self, text: str) -> List[float]:
         """Generate embedding for a single query."""
@@ -291,21 +349,36 @@ class MultiProviderRAGClient:
 
     async def upload_chunks_to_search(
         self, 
-        chunks: List[Dict[str, Any]]
+        chunks: List[Dict[str, Any]],
+        batch_size: int = 100,  # Increased from 50 to 100 for better throughput
+        skip_delete_check: bool = False  # Option to skip deletion check for new documents
     ):
-        """Upload document chunks with embeddings to Azure Cognitive Search."""
+        """
+        Upload document chunks with embeddings to Azure Cognitive Search using batching.
+        
+        Args:
+            chunks: List of chunk dictionaries with embeddings
+            batch_size: Number of chunks to upload per batch (default: 50)
+        """
         if not self.search_client:
             print("[DEBUG] Azure Search not configured, skipping upload")
             return
             
         try:
+            # Ensure index exists (cached check)
             await self.ensure_index_exists()
             
             # First, delete any existing chunks for this document (deduplication)
-            if chunks:
+            # Only check if we have chunks to upload and deletion check is not skipped
+            if chunks and not skip_delete_check:
                 filename = chunks[0]["filename"]
                 print(f"[DEBUG] Checking for existing chunks for document: {filename}")
                 await self.delete_document_chunks_from_search(filename)
+            elif chunks and skip_delete_check:
+                print(f"[DEBUG] Skipping delete check for new document: {chunks[0]['filename']}")
+            else:
+                print("[DEBUG] No chunks to upload")
+                return []
             
             # Prepare documents for upload
             documents = []
@@ -320,10 +393,55 @@ class MultiProviderRAGClient:
                 }
                 documents.append(doc)
             
-            # Upload in batches
-            result = self.search_client.upload_documents(documents=documents)
-            print(f"[DEBUG] Successfully uploaded {len(documents)} chunks to Azure Search")
-            return result
+            # Upload in batches to avoid Azure Search limits
+            if len(documents) <= batch_size:
+                # Small batch, upload all at once
+                result = self.search_client.upload_documents(documents=documents)
+                print(f"[DEBUG] Successfully uploaded {len(documents)} chunks to Azure Search")
+                return result
+            else:
+                # Large batch, split into smaller uploads with concurrent processing
+                print(f"[DEBUG] Uploading {len(documents)} chunks in batches of {batch_size}")
+                
+                # Create batches
+                batches = []
+                for i in range(0, len(documents), batch_size):
+                    batch = documents[i:i + batch_size]
+                    batches.append(batch)
+                
+                # Upload batches concurrently (limit concurrency to avoid overwhelming Azure)
+                import asyncio
+                semaphore = asyncio.Semaphore(3)  # Max 3 concurrent uploads
+                
+                async def upload_batch_with_semaphore(batch_data, batch_num, total_batches):
+                    async with semaphore:
+                        print(f"[DEBUG] Uploading batch {batch_num}/{total_batches} ({len(batch_data)} chunks)")
+                        try:
+                            # Run the synchronous upload in thread pool to avoid blocking
+                            loop = asyncio.get_event_loop()
+                            result = await loop.run_in_executor(
+                                None, 
+                                lambda: self.search_client.upload_documents(documents=batch_data)
+                            )
+                            print(f"[DEBUG] Batch {batch_num} completed successfully")
+                            return result
+                        except Exception as batch_error:
+                            print(f"[DEBUG] Batch {batch_num} upload failed: {batch_error}")
+                            return None
+                
+                # Execute all batch uploads concurrently
+                tasks = [
+                    upload_batch_with_semaphore(batch, i + 1, len(batches))
+                    for i, batch in enumerate(batches)
+                ]
+                
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Filter out failed uploads
+                successful_results = [r for r in results if r is not None and not isinstance(r, Exception)]
+                
+                print(f"[DEBUG] Successfully uploaded {len(documents)} chunks to Azure Search in {len(successful_results)}/{len(batches)} batches")
+                return successful_results
             
         except Exception as e:
             print(f"[DEBUG] Azure Search upload failed: {e}")

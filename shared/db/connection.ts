@@ -1,7 +1,12 @@
+// Load environment variables first
+import dotenv from "dotenv";
+dotenv.config();
+
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { drizzle as drizzlePg } from "drizzle-orm/neon-http";
+import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import Database from "better-sqlite3";
-import { neon } from "@neondatabase/serverless";
+import pkg from "pg";
+const { Pool } = pkg;
 import * as sqliteSchema from "../schemas/sqlite";
 import * as postgresSchema from "../schemas/postgresql";
 import fs from "fs";
@@ -43,8 +48,23 @@ export const createConnection = () => {
     }
     
     console.log(`🗄️ Connecting to PostgreSQL database`);
-    const sql = neon(databaseUrl);
-    dbConnection = drizzlePg(sql, { schema: postgresSchema });
+    
+    // Parse the DATABASE_URL to get connection details
+    const dbUrl = new URL(databaseUrl);
+    
+    const pool = new Pool({
+      host: dbUrl.hostname,
+      port: parseInt(dbUrl.port) || 5432,
+      user: dbUrl.username,
+      password: dbUrl.password,
+      database: dbUrl.pathname.substring(1), // Remove leading /
+      ssl: { rejectUnauthorized: false }, // For Azure PostgreSQL
+      max: 20, // Maximum pool size
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 2000,
+    });
+    
+    dbConnection = drizzlePg(pool, { schema: postgresSchema });
     console.log(`✅ Connected to PostgreSQL database`);
   } else {
     throw new Error(`Unsupported database type: ${DB_TYPE}. Use 'sqlite' or 'postgresql'`);

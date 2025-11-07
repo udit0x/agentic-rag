@@ -9,13 +9,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from server.config_manager import config_manager, LLMConfig, EmbeddingsConfig
 
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    GEMINI_AVAILABLE = True
-except ImportError:
-    print("[PROVIDER] Warning: Google Generative AI not available. Install langchain-google-genai to use Gemini.")
-    GEMINI_AVAILABLE = False
-
 class LLMProviderFactory:
     """Factory for creating LLM instances based on configuration."""
     
@@ -51,18 +44,6 @@ class LLMProviderFactory:
                 temperature=config.temperature,
                 max_tokens=config.max_tokens,
             )
-        
-        elif config.provider == "gemini":
-            if not GEMINI_AVAILABLE:
-                raise ValueError("Gemini provider is not available. Install langchain-google-genai.")
-            
-            return ChatGoogleGenerativeAI(
-                google_api_key=config.api_key,
-                model=config.model,
-                temperature=config.temperature,
-                max_output_tokens=config.max_tokens,
-            )
-        
         else:
             raise ValueError(f"Unsupported LLM provider: {config.provider}")
 

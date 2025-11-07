@@ -5,6 +5,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FileText, ExternalLink, Zap, Clock, BarChart3, Search, Brain, AlertCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { useState, useEffect } from "react";
 
 interface ContextPanelProps {
   sources?: Message["sources"];
@@ -74,8 +75,32 @@ export function ContextPanel({
   responseType,
   enableTracing = false
 }: ContextPanelProps) {
+  const [accordionValue, setAccordionValue] = useState<string | undefined>();
   const hasTraces = enableTracing && agentTraces && agentTraces.length > 0;
   const hasClassification = classification && classification.type;
+
+  // Update accordion when selectedSourceIndex changes
+  useEffect(() => {
+    if (selectedSourceIndex !== undefined && sources && Array.isArray(sources) && sources.length > 0) {
+      // Create the grouped sources to find which document contains the selected source
+      const sourcesWithIndex = sources.map((source: any, index: number) => ({ ...source, originalIndex: index }));
+      const groupedSources = sourcesWithIndex.reduce((acc: any, source: any) => {
+        const filename = source.metadata?.filename || source.filename || "Unknown Document";
+        if (!acc[filename]) acc[filename] = [];
+        acc[filename].push(source);
+        return acc;
+      }, {});
+
+      // Find the document that contains the selected source
+      const targetDocument = Object.keys(groupedSources).find(filename => 
+        (groupedSources[filename] as any[]).some((s: any) => s.originalIndex === selectedSourceIndex)
+      );
+
+      if (targetDocument) {
+        setAccordionValue(`doc-${targetDocument}`);
+      }
+    }
+  }, [selectedSourceIndex, sources]);
 
   if (!sources?.length && !hasTraces && !hasClassification) {
     return (
@@ -155,11 +180,8 @@ export function ContextPanel({
                       <Accordion
                         type="single"
                         collapsible
-                        defaultValue={selectedSourceIndex !== undefined ? 
-                          `doc-${Object.keys(groupedSources).find(filename => 
-                            (groupedSources[filename] as any[]).some((s: any) => s.originalIndex === selectedSourceIndex)
-                          )}` : undefined
-                        }
+                        value={accordionValue}
+                        onValueChange={setAccordionValue}
                         className="w-full"
                       >
                         {documentGroups.map(([filename, documentSources], docIndex) => {

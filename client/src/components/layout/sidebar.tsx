@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Menu, 
@@ -32,11 +32,13 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import { ProfileScreen } from "@/components/profile/profile-screen";
+import { TitleGenerationIndicator } from "@/components/ui/TitleGenerationIndicator";
+import { OrbitalLoader } from "@/components/ui/orbital-loader";
+import DecryptedText from "@/components/ui/DecryptedText";
 
 interface ChatHistoryItem {
   id: string;
   title: string;
-  lastMessage: string;
   createdAt: string;
   messageCount: number;
 }
@@ -62,6 +64,10 @@ interface SidebarProps {
   onLogout?: () => void;
   onUpdateRole?: (role: string) => void;
   className?: string;
+  isTitleGenerating?: boolean;
+  titleGeneratingChatId?: string;
+  isLoadingChat?: boolean;
+  loadingChatId?: string;
 }
 
 export function Sidebar({
@@ -76,15 +82,19 @@ export function Sidebar({
   onSettingsClick,
   onLogout,
   onUpdateRole,
-  className
+  className,
+  isTitleGenerating = false,
+  titleGeneratingChatId,
+  isLoadingChat = false,
+  loadingChatId
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const isMobile = useIsMobile();
+  const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const filteredHistory = chatHistory.filter(chat =>
-    chat.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    chat.lastMessage.toLowerCase().includes(searchQuery.toLowerCase())
+    chat.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const formatDate = (dateString: string) => {
@@ -104,6 +114,34 @@ export function Sidebar({
       return date.toLocaleDateString();
     }
   };
+
+  const handleChatClick = (chatId: string) => {
+    // Prevent multiple rapid clicks
+    if (clickTimeoutRef.current) {
+      return;
+    }
+    
+    // Prevent clicking when loading or if it's already the current chat
+    if ((isLoadingChat && loadingChatId === chatId) || currentChatId === chatId) {
+      return;
+    }
+    
+    // Set a brief timeout to prevent rapid clicking
+    clickTimeoutRef.current = setTimeout(() => {
+      clickTimeoutRef.current = null;
+    }, 300);
+    
+    onChatSelect(chatId);
+  };
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (clickTimeoutRef.current) {
+        clearTimeout(clickTimeoutRef.current);
+      }
+    };
+  }, []);
 
   return (
     <TooltipProvider>
@@ -159,6 +197,14 @@ export function Sidebar({
               )}>
                 Chat History
               </h1>
+              {isTitleGenerating && (
+                <div className="mt-1">
+                  <TitleGenerationIndicator 
+                    isGenerating={true}
+                    className="scale-90"
+                  />
+                </div>
+              )}
             </motion.div>
           ) : (
             !isMobile && ( // Don't show collapsed header on mobile
@@ -279,20 +325,24 @@ export function Sidebar({
           )}>
             <AnimatePresence>
               {filteredHistory.map((chat, index) => (
-                <motion.div
-                  key={chat.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ delay: index * 0.05 }}
-                  className={cn(
-                    "group relative rounded-lg transition-colors cursor-pointer",
-                    "hover:bg-muted/20 active:bg-muted/30", // Added active state for mobile
-                    currentChatId === chat.id && "bg-muted/30 border border-border",
-                    !isOpen && "mx-1"
-                  )}
-                  onClick={() => onChatSelect(chat.id)}
-                >
+                <div key={chat.id}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ delay: index * 0.05 }}
+                    className={cn(
+                      "group relative rounded-lg transition-colors",
+                      // Only make it clickable if not loading and not current chat
+                      !(isLoadingChat && loadingChatId === chat.id) && currentChatId !== chat.id && "cursor-pointer hover:bg-muted/20 active:bg-muted/30",
+                      // Show loading state styling
+                      isLoadingChat && loadingChatId === chat.id && "bg-muted/30 cursor-wait animate-pulse",
+                      // Current chat styling
+                      currentChatId === chat.id && "bg-muted/40 border-2 border-primary/30 shadow-sm cursor-default",
+                      !isOpen && "mx-1"
+                    )}
+                    onClick={() => handleChatClick(chat.id)}
+                  >
                   <div className={cn(
                     isMobile ? "p-2.5" : "p-3",
                     !isOpen && "px-1 py-3"
@@ -301,53 +351,112 @@ export function Sidebar({
                       <div className={cn("flex-1 min-w-0", !isOpen && "flex justify-center")}>
                         {isOpen ? (
                           <>
-                            <h3 className={cn(
-                              "font-medium text-foreground line-clamp-1 mb-1",
-                              isMobile ? "text-sm" : "text-sm"
-                            )}>
-                              {chat.title}
-                            </h3>
-                            <p className={cn(
-                              "text-muted-foreground line-clamp-2 mb-2",
-                              isMobile ? "text-xs" : "text-xs"
-                            )}>
-                              {chat.lastMessage}
-                            </p>
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <Clock className={cn(
-                                  "text-muted-foreground",
-                                  isMobile ? "h-2.5 w-2.5" : "h-3 w-3"
-                                )} />
-                                <span className={cn(
-                                  "text-muted-foreground",
-                                  isMobile ? "text-[10px]" : "text-xs"
-                                )}>
-                                  {formatDate(chat.createdAt)}
-                                </span>
+                            {/* Show loading state for this specific chat */}
+                            {isLoadingChat && loadingChatId === chat.id ? (
+                              <div className="flex items-center gap-3">
+                                <OrbitalLoader 
+                                  className="w-5 h-5"
+                                />
+                                <div className="flex-1">
+                                  <h3 className={cn(
+                                    "font-medium text-muted-foreground mb-2",
+                                    isMobile ? "text-sm" : "text-sm"
+                                  )}>
+                                    Loading...
+                                  </h3>
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                      <Clock className={cn(
+                                        "text-muted-foreground",
+                                        isMobile ? "h-2.5 w-2.5" : "h-3 w-3"
+                                      )} />
+                                      <span className={cn(
+                                        "text-muted-foreground",
+                                        isMobile ? "text-[10px]" : "text-xs"
+                                      )}>
+                                        {formatDate(chat.createdAt)}
+                                      </span>
+                                    </div>
+                                    <Badge variant="secondary" className={cn(
+                                      "px-2 py-0",
+                                      isMobile ? "text-[10px]" : "text-xs"
+                                    )}>
+                                      {chat.messageCount}
+                                    </Badge>
+                                  </div>
+                                </div>
                               </div>
-                              <Badge variant="secondary" className={cn(
-                                "px-2 py-0",
-                                isMobile ? "text-[10px]" : "text-xs"
-                              )}>
-                                {chat.messageCount}
-                              </Badge>
-                            </div>
+                            ) : (
+                              <>
+                                <h3 className={cn(
+                                  "font-medium text-foreground mb-2", // Allow wrapping by removing line-clamp-1
+                                  isMobile ? "text-sm" : "text-sm"
+                                )}>
+                                  {isTitleGenerating && titleGeneratingChatId === chat.id ? (
+                                    <DecryptedText
+                                      text={chat.title}
+                                      speed={80}
+                                      maxIterations={20}
+                                      animateOn="view"
+                                      className="text-foreground"
+                                      encryptedClassName="text-foreground/60"
+                                    />
+                                  ) : (
+                                    chat.title
+                                  )}
+                                </h3>
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <Clock className={cn(
+                                      "text-muted-foreground",
+                                      isMobile ? "h-2.5 w-2.5" : "h-3 w-3"
+                                    )} />
+                                    <span className={cn(
+                                      "text-muted-foreground",
+                                      isMobile ? "text-[10px]" : "text-xs"
+                                    )}>
+                                      {formatDate(chat.createdAt)}
+                                    </span>
+                                  </div>
+                                  <Badge variant="secondary" className={cn(
+                                    "px-2 py-0",
+                                    isMobile ? "text-[10px]" : "text-xs"
+                                  )}>
+                                    {chat.messageCount}
+                                  </Badge>
+                                </div>
+                              </>
+                            )}
                           </>
                         ) : (
                           !isMobile && ( // Don't show tooltip items on mobile
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <div className="flex items-center justify-center w-8 h-8 rounded-md bg-muted/50">
-                                  <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                                  {isLoadingChat && loadingChatId === chat.id ? (
+                                    <OrbitalLoader className="w-4 h-4" />
+                                  ) : (
+                                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                                  )}
                                 </div>
                               </TooltipTrigger>
                               <TooltipContent side="right" className="max-w-64">
                                 <div className="space-y-1">
-                                  <p className="font-medium text-sm">{chat.title}</p>
-                                  <p className="text-xs text-muted-foreground line-clamp-2">
-                                    {chat.lastMessage}
+                                  <p className="font-medium text-sm">
+                                    {isTitleGenerating && titleGeneratingChatId === chat.id ? (
+                                      <DecryptedText
+                                        text={chat.title}
+                                        speed={80}
+                                        maxIterations={20}
+                                        animateOn="view"
+                                        className="text-foreground"
+                                        encryptedClassName="text-foreground/60"
+                                      />
+                                    ) : (
+                                      chat.title
+                                    )}
                                   </p>
+
                                   <div className="flex items-center justify-between pt-1">
                                     <span className="text-xs text-muted-foreground">
                                       {formatDate(chat.createdAt)}
@@ -420,6 +529,12 @@ export function Sidebar({
                     </div>
                   </div>
                 </motion.div>
+                  
+                  {/* Subtle divider between chats */}
+                  {index < filteredHistory.length - 1 && (
+                    <div className="mx-3 my-2 border-b border-white/20" />
+                  )}
+                </div>
               ))}
             </AnimatePresence>
             

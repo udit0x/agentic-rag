@@ -1,3 +1,7 @@
+// Load environment variables first
+import dotenv from "dotenv";
+dotenv.config();
+
 process.on("warning", (warning) => {
   if (!warning.message.includes("A PostCSS plugin did not pass the `from` option")) {
     console.warn(warning);

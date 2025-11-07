@@ -13,6 +13,16 @@ class DocumentChunk(TypedDict):
     score: float
     metadata: Optional[Dict[str, Any]]
 
+class IntentClassification(TypedDict):
+    """Intent classification result from Intent Router Agent."""
+    route_type: str  # "CHAT", "RAG", "HYBRID"
+    confidence: float
+    reasoning: str
+    conversation_references: List[str]
+    needs_retrieval: bool
+    reuse_cached_docs: bool
+    reuse_refined_queries: bool
+
 class QueryClassification(TypedDict):
     """Query classification result from Router Agent."""
     type: str  # "factual", "counterfactual", "temporal"
@@ -72,6 +82,9 @@ class AgentState(TypedDict):
     session_id: Optional[str]
     user_id: Optional[str]
     
+    # Intent Router Agent outputs
+    intent_classification: Optional[IntentClassification]
+    
     # Router Agent outputs
     classification: Optional[QueryClassification]
     
@@ -81,6 +94,10 @@ class AgentState(TypedDict):
     # Retriever Agent outputs
     retrieved_chunks: List[DocumentChunk]
     retrieval_metadata: Optional[Dict[str, Any]]
+    
+    # Conversation Memory Agent outputs
+    conversation_context: Optional[str]
+    memory_response: Optional[str]
     
     # Reasoning Agent outputs
     reasoning_response: Optional[str]
@@ -94,8 +111,11 @@ class AgentState(TypedDict):
     
     # Final outputs
     final_response: str
-    response_type: str  # "reasoning", "simulation", "temporal"
+    response_type: str  # "reasoning", "simulation", "temporal", "chat", "hybrid"
     sources: List[DocumentChunk]
+    
+    # Cost tracking and optimization
+    cost_summary: Optional[Dict[str, Any]]
     
     # Execution metadata
     agent_traces: List[AgentTrace]

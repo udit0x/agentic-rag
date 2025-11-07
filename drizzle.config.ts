@@ -1,3 +1,7 @@
+// Load environment variables first
+import dotenv from "dotenv";
+dotenv.config();
+
 import { defineConfig } from "drizzle-kit";
 
 const DB_TYPE = process.env.DB_TYPE || "sqlite";

@@ -16,3 +16,13 @@ python-multipart
 aiofiles
 google-generativeai
 email-validator
+asyncpg
+psycopg2-binary
+azure-ai-formrecognizer
+pillow
+pytesseract
+unstructured
+pandas
+openpyxl
+python-docx
+python-pptx

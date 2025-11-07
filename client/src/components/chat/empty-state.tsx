@@ -118,7 +118,7 @@ export function EmptyState({ onSamplePromptClick, uploadedDocuments = [] }: Empt
         Upload documents and experience AI-powered intelligence with specialized reasoning modes
       </motion.p>
 
-      {/* Uploaded Documents Status */}
+      {/* Uploaded Documents Status with Subtle Animation */}
       {uploadedDocuments.length > 0 && (
         <motion.div
           initial={{ opacity: 0, y: 10 }}
@@ -126,14 +126,19 @@ export function EmptyState({ onSamplePromptClick, uploadedDocuments = [] }: Empt
           transition={{ delay: 0.5, duration: 0.3 }}
           className={cn(isMobile ? "mb-4" : "mb-6")}
         >
-          <Card className="p-4 bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800">
-            <div className="flex items-center gap-2 text-green-700 dark:text-green-300">
+          <div className="relative overflow-hidden rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/30">
+            {/* Subtle animated border */}
+            <div className="absolute inset-0 rounded-lg opacity-30">
+              <div className="absolute inset-0 rounded-lg border-2 border-green-400 dark:border-green-500 animate-pulse"></div>
+            </div>
+            
+            <div className="relative flex items-center gap-2 p-4 text-green-700 dark:text-green-300">
               <FileText className="h-5 w-5" />
               <span className="font-medium">
                 {uploadedDocuments.length} document{uploadedDocuments.length !== 1 ? 's' : ''} ready for querying
               </span>
             </div>
-          </Card>
+          </div>
         </motion.div>
       )}
 

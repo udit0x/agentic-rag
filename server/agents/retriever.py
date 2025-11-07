@@ -1,6 +1,8 @@
 """Retriever Agent for document search and ranking."""
-from typing import List, Dict, Any, Optional
-from datetime import datetime
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime, timedelta
+import hashlib
+import json
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -8,12 +10,43 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from server.azure_client import azure_client
 from server.agents.state import DocumentChunk, QueryClassification, AgentTrace
 from server.config_manager import config_manager
+from server.storage import storage
+
+class DocumentCache:
+    """Cache entry for retrieved documents."""
+    def __init__(self, session_id: str, query: str, query_hash: str, documents: List[DocumentChunk], metadata: Dict[str, Any]):
+        self.session_id = session_id
+        self.query = query
+        self.query_hash = query_hash
+        self.documents = documents
+        self.metadata = metadata
+        self.created_at = datetime.now()
+        self.reuse_count = 0
+        self.last_reused_at: Optional[datetime] = None
+        
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "query": self.query,
+            "query_hash": self.query_hash,
+            "documents": self.documents,
+            "metadata": self.metadata,
+            "created_at": self.created_at,
+            "reuse_count": self.reuse_count,
+            "last_reused_at": self.last_reused_at
+        }
+
 
 class RetrieverAgent:
     """Agent responsible for retrieving relevant document chunks."""
     
     def __init__(self):
         self.azure_client = azure_client
+        self.document_cache: Dict[str, List[DocumentCache]] = {}  # session_id -> cache entries
+        self.similarity_threshold = 0.75  # Higher threshold for document reuse
+        self.cache_expiry_hours = 6  # Shorter expiry for documents (more dynamic)
+        self.max_cache_per_session = 5  # Fewer cached documents per session
+        self.relevance_threshold = 0.6  # Minimum relevance for caching
     
     def _get_use_general_knowledge(self) -> bool:
         """Get the current useGeneralKnowledge setting from config."""
@@ -25,6 +58,122 @@ class RetrieverAgent:
         except Exception as e:
             print(f"[RETRIEVER_AGENT] Error getting useGeneralKnowledge config: {e}")
             return True  # Default to True
+    
+    def _generate_query_hash(self, query: str, classification: Dict[str, Any]) -> str:
+        """Generate a hash for the query and classification to use as cache key."""
+        # Include both query and classification in hash for more precise matching
+        combined = f"{query.lower().strip()}_{classification.get('type', 'factual')}"
+        return hashlib.md5(combined.encode()).hexdigest()[:16]
+    
+    def _calculate_query_similarity(self, query1: str, query2: str) -> float:
+        """Calculate similarity between two queries using word overlap."""
+        def get_words(text: str) -> set:
+            return set(text.lower().split())
+        
+        words1 = get_words(query1)
+        words2 = get_words(query2)
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        return len(intersection) / len(union) if union else 0.0
+    
+    def _find_similar_cached_documents(self, query: str, session_id: str) -> Optional[Tuple[DocumentCache, float]]:
+        """Find similar cached documents for the session."""
+        if session_id not in self.document_cache:
+            return None
+        
+        best_match = None
+        best_similarity = 0.0
+        
+        cached_entries = self.document_cache[session_id]
+        current_time = datetime.now()
+        
+        # Check all cached entries for this session
+        for entry in cached_entries:
+            # Skip expired entries
+            if (current_time - entry.created_at).total_seconds() > (self.cache_expiry_hours * 3600):
+                continue
+            
+            similarity = self._calculate_query_similarity(query, entry.query)
+            
+            if similarity > best_similarity and similarity >= self.similarity_threshold:
+                best_similarity = similarity
+                best_match = entry
+        
+        return (best_match, best_similarity) if best_match else None
+    
+    def _cache_documents(
+        self, 
+        session_id: str, 
+        query: str, 
+        classification: Dict[str, Any],
+        documents: List[DocumentChunk], 
+        metadata: Dict[str, Any]
+    ) -> None:
+        """Cache retrieved documents for future use."""
+        # Only cache if we have good quality documents
+        if not documents or len(documents) == 0:
+            return
+        
+        # Check if documents meet quality threshold
+        avg_score = sum(doc.get('score', 0) for doc in documents) / len(documents)
+        if avg_score < self.relevance_threshold:
+            print(f"[RETRIEVER_AGENT] Documents below quality threshold (avg_score: {avg_score:.2f}), not caching")
+            return
+        
+        if session_id not in self.document_cache:
+            self.document_cache[session_id] = []
+        
+        query_hash = self._generate_query_hash(query, classification)
+        
+        cache_entry = DocumentCache(
+            session_id=session_id,
+            query=query,
+            query_hash=query_hash,
+            documents=documents,
+            metadata=metadata
+        )
+        
+        # Add to cache
+        self.document_cache[session_id].append(cache_entry)
+        
+        # Limit cache size per session
+        if len(self.document_cache[session_id]) > self.max_cache_per_session:
+            # Remove oldest entry
+            self.document_cache[session_id].pop(0)
+        
+        print(f"[RETRIEVER_AGENT] Cached {len(documents)} documents for session {session_id} (avg_score: {avg_score:.2f})")
+    
+    def _update_cache_reuse_stats(self, cache_entry: DocumentCache) -> None:
+        """Update cache reuse statistics."""
+        cache_entry.reuse_count += 1
+        cache_entry.last_reused_at = datetime.now()
+    
+    def _clean_expired_cache_entries(self) -> int:
+        """Clean up expired cache entries across all sessions."""
+        current_time = datetime.now()
+        cleaned_count = 0
+        
+        for session_id in list(self.document_cache.keys()):
+            entries = self.document_cache[session_id]
+            valid_entries = []
+            
+            for entry in entries:
+                if (current_time - entry.created_at).total_seconds() <= (self.cache_expiry_hours * 3600):
+                    valid_entries.append(entry)
+                else:
+                    cleaned_count += 1
+            
+            if valid_entries:
+                self.document_cache[session_id] = valid_entries
+            else:
+                del self.document_cache[session_id]
+        
+        return cleaned_count
     
     def _enhance_query_for_type(
         self, 
@@ -829,10 +978,13 @@ Rank from 1 (most relevant) to N (least relevant).
         classification: QueryClassification,
         max_chunks: int = 5,
         enable_tracing: bool = True,
-        refined_queries: Optional[List[str]] = None
+        refined_queries: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        force_retrieval: bool = False,
+        force_lower_threshold: bool = False
     ) -> tuple[List[DocumentChunk], Dict[str, Any]]:
         """
-        Retrieve relevant document chunks with classification-aware enhancements.
+        Retrieve relevant document chunks with classification-aware enhancements and caching.
         
         Args:
             query: User's question
@@ -840,12 +992,41 @@ Rank from 1 (most relevant) to N (least relevant).
             max_chunks: Maximum number of chunks to return
             enable_tracing: Whether to track execution metadata
             refined_queries: Additional refined questions to search with
+            session_id: Session ID for caching (if None, no caching)
+            force_retrieval: Force new retrieval even if cached result exists
             
         Returns:
             Tuple of (retrieved chunks, retrieval metadata)
         """
         start_time = datetime.now() if enable_tracing else None
         use_general_knowledge = self._get_use_general_knowledge()
+        
+        # Check cache first (if session_id provided and not forcing retrieval)
+        if session_id and not force_retrieval:
+            cached_result = self._find_similar_cached_documents(query, session_id)
+            if cached_result:
+                cache_entry, similarity = cached_result
+                
+                # Update cache statistics
+                self._update_cache_reuse_stats(cache_entry)
+                
+                print(f"[RETRIEVER_AGENT] Using cached documents (similarity: {similarity:.2f})")
+                
+                # Return cached documents with updated metadata
+                cached_metadata = cache_entry.metadata.copy()
+                cached_metadata.update({
+                    "was_cached": True,
+                    "cache_similarity": similarity,
+                    "cache_reuse_count": cache_entry.reuse_count,
+                    "original_query": cache_entry.query,
+                    "retrieval_cost_savings": {
+                        "vector_searches_saved": 1 + len(refined_queries or []),
+                        "cache_hit": True,
+                        "processing_time_ms": int((datetime.now() - start_time).total_seconds() * 1000) if start_time else 0
+                    }
+                })
+                
+                return cache_entry.documents, cached_metadata
         
         try:
             # Enhance query based on classification
@@ -863,10 +1044,18 @@ Rank from 1 (most relevant) to N (least relevant).
             all_results = []
             batch_k = max_chunks * 2  # Get more results per query for better diversity
             
+            # Determine threshold based on force_lower_threshold flag
+            search_threshold = None
+            if force_lower_threshold:
+                # Use a significantly lower threshold for broader search
+                search_threshold = 0.3  # Much lower than default 0.65
+                print(f"[RETRIEVER] Using lower threshold {search_threshold} for broader search")
+            
             for i, search_query in enumerate(search_queries):
                 query_results = await self.azure_client.semantic_search(
                     query=search_query,
-                    top_k=batch_k
+                    top_k=batch_k,
+                    min_score_threshold=search_threshold
                 )
                 
                 # Tag results with source query for debugging
@@ -994,8 +1183,20 @@ Rank from 1 (most relevant) to N (least relevant).
                 "should_use_general_knowledge": False,  # Documents were found
                 "use_general_knowledge_enabled": use_general_knowledge,
                 "optimization_applied": True,
-                "queries_searched": len(search_queries)
+                "queries_searched": len(search_queries),
+                "was_cached": False,
+                "cache_similarity": 0.0,
+                "retrieval_cost_savings": {
+                    "vector_searches_saved": 0,
+                    "cache_hit": False,
+                    "processing_time_ms": int((datetime.now() - start_time).total_seconds() * 1000) if start_time else 0,
+                    "generated_fresh": True
+                }
             }
+            
+            # Cache the results for future use
+            if session_id and document_chunks:
+                self._cache_documents(session_id, query, classification, document_chunks, metadata)
             
             return document_chunks, metadata
             
@@ -1040,6 +1241,54 @@ Rank from 1 (most relevant) to N (least relevant).
             error=error,
             duration_ms=duration_ms
         )
+    
+    # Cache management methods
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics for monitoring."""
+        total_entries = sum(len(entries) for entries in self.document_cache.values())
+        total_reuses = sum(entry.reuse_count for entries in self.document_cache.values() for entry in entries)
+        total_docs = sum(len(entry.documents) for entries in self.document_cache.values() for entry in entries)
+        
+        return {
+            "total_sessions": len(self.document_cache),
+            "total_cached_retrievals": total_entries,
+            "total_cached_documents": total_docs,
+            "total_cache_reuses": total_reuses,
+            "cache_efficiency": (total_reuses / max(total_entries, 1)) * 100,
+            "cache_config": {
+                "similarity_threshold": self.similarity_threshold,
+                "cache_expiry_hours": self.cache_expiry_hours,
+                "max_cache_per_session": self.max_cache_per_session,
+                "relevance_threshold": self.relevance_threshold
+            }
+        }
+    
+    def clear_session_cache(self, session_id: str) -> bool:
+        """Clear cache for a specific session."""
+        if session_id in self.document_cache:
+            del self.document_cache[session_id]
+            return True
+        return False
+    
+    def clear_all_cache(self) -> int:
+        """Clear all cached documents."""
+        total_cleared = sum(len(entries) for entries in self.document_cache.values())
+        self.document_cache.clear()
+        return total_cleared
+    
+    async def cleanup_cache(self) -> Dict[str, int]:
+        """Cleanup expired cache entries and return statistics."""
+        expired_count = self._clean_expired_cache_entries()
+        
+        stats = {
+            "expired_entries_removed": expired_count,
+            "remaining_sessions": len(self.document_cache),
+            "remaining_entries": sum(len(entries) for entries in self.document_cache.values())
+        }
+        
+        print(f"[RETRIEVER_AGENT] Cache cleanup: {stats}")
+        return stats
+
 
 # Global retriever agent instance
 retriever_agent = RetrieverAgent()

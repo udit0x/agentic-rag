@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { File, ArrowRight, Database, Zap, CheckCircle2, AlertCircle, Loader2, X } from "lucide-react";
+import { File, ArrowRight, Database, Zap, CheckCircle2, AlertCircle, Loader2, X, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -20,6 +19,7 @@ interface UploadProgress {
   status: "uploading" | "processing" | "completed" | "error";
   currentStep: "upload" | "chunk" | "embed" | "save";
   error?: string;
+  completedAt?: number;
 }
 
 interface UploadProcessingVisualizerProps {
@@ -60,6 +60,32 @@ function SingleUploadVisualizer({
       status: "pending",
     },
   ]);
+
+  const [countdown, setCountdown] = useState<number | null>(null);
+
+  // Countdown timer for completed uploads
+  useEffect(() => {
+    if (upload.status === "completed" && upload.completedAt) {
+      const startCountdown = () => {
+        const elapsed = Date.now() - upload.completedAt!;
+        const remaining = Math.max(0, 3000 - elapsed);
+        
+        if (remaining > 0) {
+          setCountdown(Math.ceil(remaining / 1000));
+          const timer = setTimeout(() => {
+            startCountdown();
+          }, 100);
+          return () => clearTimeout(timer);
+        } else {
+          setCountdown(null);
+        }
+      };
+      
+      startCountdown();
+    } else {
+      setCountdown(null);
+    }
+  }, [upload.status, upload.completedAt]);
 
   // Update steps based on current upload state
   useEffect(() => {
@@ -112,7 +138,15 @@ function SingleUploadVisualizer({
         
         <div className="flex items-center gap-2 flex-shrink-0">
           {upload.status === "completed" && (
-            <CheckCircle2 className="h-5 w-5 text-green-600" />
+            <div className="flex items-center gap-1">
+              <CheckCircle2 className="h-5 w-5 text-green-600" />
+              {countdown && (
+                <div className="flex items-center gap-1 text-xs text-green-600">
+                  <Clock className="h-3 w-3" />
+                  <span>{countdown}s</span>
+                </div>
+              )}
+            </div>
           )}
           {upload.status === "error" && (
             <AlertCircle className="h-5 w-5 text-destructive" />
@@ -217,25 +251,23 @@ export function UploadProcessingVisualizer({
   }
 
   return (
-    <ScrollArea className="h-[400px] w-full">
-      <div className="space-y-3">
-        <AnimatePresence>
-          {uploads.map((upload) => (
-            <motion.div
-              key={upload.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              transition={{ duration: 0.2 }}
-            >
-              <SingleUploadVisualizer
-                upload={upload}
-                onRemove={onRemove}
-              />
-            </motion.div>
-          ))}
-        </AnimatePresence>
-      </div>
-    </ScrollArea>
+    <div className="space-y-3">
+      <AnimatePresence>
+        {uploads.map((upload) => (
+          <motion.div
+            key={upload.id}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            transition={{ duration: 0.2 }}
+          >
+            <SingleUploadVisualizer
+              upload={upload}
+              onRemove={onRemove}
+            />
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
   );
 }

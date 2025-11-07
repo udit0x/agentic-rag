@@ -14,6 +14,8 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { OrbitalLoader } from "@/components/ui/orbital-loader";
+import { LoadRipple } from "@/components/ui/load-ripple";
 import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { apiRequest } from "@/lib/queryClient";
@@ -63,7 +65,6 @@ export default function Chat() {
       return response.sessions.map(session => ({
         id: session.id,
         title: session.title,
-        lastMessage: session.lastMessage || "No messages yet",
         createdAt: session.createdAt,
         messageCount: session.messageCount,
       }));
@@ -92,6 +93,11 @@ export default function Chat() {
   const [refinedQueries, setRefinedQueries] = useState<string[]>([]);
   const [showRefinedQueries, setShowRefinedQueries] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isTitleGenerating, setIsTitleGenerating] = useState(false);
+  const [titleGeneratingChatId, setTitleGeneratingChatId] = useState<string | undefined>();
+  const [isLoadingChatHistory, setIsLoadingChatHistory] = useState(false);
+  const [loadingChatId, setLoadingChatId] = useState<string | undefined>();
+  const [isAppInitialized, setIsAppInitialized] = useState(false);
   const [uploadedDocuments, setUploadedDocuments] = useState<Array<{
     id: string;
     filename: string;
@@ -137,8 +143,56 @@ export default function Chat() {
     enabled: !!sessionId,
   });
 
+  // Handle loading state changes
+  useEffect(() => {
+    if (!isLoadingHistory && loadingChatId) {
+      console.log(`[Loading] Query finished for chat: ${loadingChatId}, clearing loading state`);
+      // Clear loading state when chat history finishes loading
+      const timer = setTimeout(() => {
+        setIsLoadingChatHistory(false);
+        setLoadingChatId(undefined);
+      }, 100); // Small delay to ensure smooth transition
+      
+      return () => clearTimeout(timer);
+    }
+  }, [isLoadingHistory, loadingChatId]);
+
+  // Also handle cases where the query might error or be cancelled
+  useEffect(() => {
+    if (loadingChatId && sessionId !== loadingChatId) {
+      // If the session changed but we're still showing loading for a different chat, clear it
+      setIsLoadingChatHistory(false);
+      setLoadingChatId(undefined);
+    }
+  }, [sessionId, loadingChatId]);
+
+  // Fallback timeout to clear loading state if it gets stuck
+  useEffect(() => {
+    if (isLoadingChatHistory && loadingChatId) {
+      const timeout = setTimeout(() => {
+        console.log('Loading timeout - clearing loading state');
+        setIsLoadingChatHistory(false);
+        setLoadingChatId(undefined);
+      }, 10000); // 10 second timeout
+      
+      return () => clearTimeout(timeout);
+    }
+  }, [isLoadingChatHistory, loadingChatId]);
+
+  // Handle initial app loading with minimum loading time
+  useEffect(() => {
+    // Set a minimum loading time to prevent flash of loading screen
+    const timer = setTimeout(() => {
+      setIsAppInitialized(true);
+    }, 1500); // 1.5 seconds minimum
+
+    // If data loads before the timer, the loading screen will still show until timer completes
+    // If data takes longer, initialization will be set once the timer completes
+    return () => clearTimeout(timer);
+  }, []); // Only run once on mount
+
   // Query to fetch uploaded documents
-  const { data: documentsData, refetch: refetchDocuments } = useQuery<Array<{
+  const { data: documentsData, isLoading: isLoadingDocuments, refetch: refetchDocuments } = useQuery<Array<{
     id: string;
     filename: string;
     size: number;
@@ -146,7 +200,6 @@ export default function Chat() {
   }>>({
     queryKey: ["documents"],
     queryFn: async () => {
-      console.log('[DEBUG] Fetching documents from API...');
       const data = await enhancedApiRequest<Array<{
         id: string;
         filename: string;
@@ -230,8 +283,22 @@ export default function Chat() {
       setCurrentResponseType(data.responseType);
       queryClient.invalidateQueries({ queryKey: ["chat-history", data.sessionId] });
       
-      // Refresh chat sessions to update metadata like message count
-      refetchChatSessions();
+      // Check if this is the first conversation and start title generation
+      if (sessionId && chatHistory?.messages?.length === 1) {
+        setIsTitleGenerating(true);
+        setTitleGeneratingChatId(data.sessionId);
+        
+        // Simulate title generation completion after a delay
+        setTimeout(() => {
+          setIsTitleGenerating(false);
+          setTitleGeneratingChatId(undefined);
+          // Refresh chat sessions to get the updated title
+          refetchChatSessions();
+        }, 3000); // Increased to 3 seconds to see the animation
+      } else {
+        // Refresh chat sessions to update metadata like message count
+        refetchChatSessions();
+      }
     },
     onError: (error: Error) => {
       toast({
@@ -290,7 +357,9 @@ export default function Chat() {
             try {
               const data = JSON.parse(line.slice(6));
               
-              if (data.type === "refinement") {
+              if (data.type === "started") {
+                // Backend acknowledged - processing has started
+              } else if (data.type === "refinement") {
                 // Handle refined questions
                 setRefinedQueries(data.data.refined_queries);
                 setShowRefinedQueries(true);
@@ -308,8 +377,22 @@ export default function Chat() {
                 setCurrentResponseType(data.data.responseType);
                 queryClient.invalidateQueries({ queryKey: ["chat-history", data.data.sessionId] });
                 
-                // Refresh chat sessions to update metadata
-                refetchChatSessions();
+                // Check if this is the first conversation and start title generation
+                if (data.data.messageId && sessionId && chatHistory?.messages?.length === 1) {
+                  setIsTitleGenerating(true);
+                  setTitleGeneratingChatId(data.data.sessionId);
+                  
+                  // Simulate title generation completion after a delay
+                  setTimeout(() => {
+                    setIsTitleGenerating(false);
+                    setTitleGeneratingChatId(undefined);
+                    // Refresh chat sessions to get the updated title
+                    refetchChatSessions();
+                  }, 3000); // Increased to 3 seconds to see the animation
+                } else {
+                  // Refresh chat sessions to update metadata
+                  refetchChatSessions();
+                }
               } else if (data.type === "error") {
                 // Handle API errors by creating an assistant message
                 if (pendingUserMessage) {
@@ -380,7 +463,14 @@ export default function Chat() {
     // If no session exists, create a new one
     if (!sessionId) {
       try {
-        // Create a new chat session
+        
+        // Add user message to UI IMMEDIATELY
+        setPendingUserMessage(message);
+        
+        // Small delay to ensure UI updates before network call
+        await new Promise(resolve => setTimeout(resolve, 0));
+        
+        // Create a new chat session (this takes time, but UI already updated)
         const newSession = await enhancedApiRequest<{
           id: string;
           title: string;
@@ -399,15 +489,14 @@ export default function Chat() {
           }),
         });
         
+        
+        // Set session ID first
         setSessionId(newSession.id);
         
         // Refresh chat sessions list to include the new session
         refetchChatSessions();
         
-        // Store the pending user message - but add it to query cache immediately for new session
-        setPendingUserMessage(message);
-        
-        // Add the user message to the new session's cache immediately
+        // Update the cache with the real session ID and message
         queryClient.setQueryData(["chat-history", newSession.id], {
           messages: [{
             id: `user-${Date.now()}`,
@@ -427,7 +516,7 @@ export default function Chat() {
           }]
         });
         
-        // Clear pending message since we added it to cache
+        // Clear pending message since we have real session now
         setPendingUserMessage(null);
         
         // Start the query with the new session ID
@@ -463,6 +552,7 @@ export default function Chat() {
         parentMessageId: null,
       };
       
+      
       return {
         messages: [...(oldData?.messages || []), newUserMessage]
       };
@@ -484,8 +574,9 @@ export default function Chat() {
     console.log("Upload handled by DocumentUpload component:", file.name);
   };
 
-  const handleCitationClick = (index: number) => {
+  const handleCitationClick = (index: number, messageSources: Message["sources"]) => {
     setSelectedSourceIndex(index);
+    setCurrentSources(messageSources);
   };
 
   const handleSamplePromptClick = (prompt: string) => {
@@ -602,14 +693,35 @@ export default function Chat() {
   };
 
   const handleChatSelect = (chatId: string) => {
-    // Load selected chat session
-    setSessionId(chatId);
-    // Clear current context when switching chats
+    console.log(`[Chat Select] Attempting to select chat: ${chatId}, current: ${sessionId}, loading: ${isLoadingChatHistory}`);
+    
+    // Prevent selecting the same chat that's already loaded
+    if (sessionId === chatId && !isLoadingChatHistory) {
+      console.log(`[Chat Select] Already on this chat, ignoring`);
+      return;
+    }
+    
+    // Set loading state immediately
+    console.log(`[Chat Select] Setting loading state for chat: ${chatId}`);
+    setIsLoadingChatHistory(true);
+    setLoadingChatId(chatId);
+    
+    // Clear current context first to show loading state
     setCurrentSources(undefined);
     setCurrentClassification(undefined);
     setCurrentAgentTraces(undefined);
     setCurrentExecutionTime(undefined);
     setCurrentResponseType(undefined);
+    
+    // Invalidate and refetch the query for the new chat
+    queryClient.invalidateQueries({ 
+      queryKey: ["chat-history", chatId],
+      exact: true 
+    });
+    
+    // Set the new session ID - this will trigger the query
+    console.log(`[Chat Select] Setting new session ID: ${chatId}`);
+    setSessionId(chatId);
     
     // On mobile, close sidebar after selection
     if (isMobile) {
@@ -641,24 +753,49 @@ export default function Chat() {
 
   const handleDeleteChat = async (chatId: string) => {
     try {
-      await enhancedApiRequest(API_ENDPOINTS.DELETE_CHAT_SESSION(chatId), {
-        method: "DELETE",
+      // Optimistically remove from local state IMMEDIATELY
+      queryClient.setQueryData(["chat-sessions"], (oldData: any[] | undefined) => {
+        return oldData?.filter(chat => chat.id !== chatId) || [];
       });
       
-      // Refresh the chat sessions list
-      refetchChatSessions();
-      
-      // If the deleted chat was the current session, clear it
+      // If the deleted chat was the current session, clear it immediately
       if (sessionId === chatId) {
         handleNewChat();
       }
       
+      // Show success toast immediately
       toast({
         title: "Chat deleted",
         description: "The conversation has been removed successfully.",
       });
+      
+      // Fire DELETE call in background (non-blocking)
+      enhancedApiRequest(API_ENDPOINTS.DELETE_CHAT_SESSION(chatId), {
+        method: "DELETE",
+      })
+        .then(() => {
+          // Sync with backend to ensure consistency
+          refetchChatSessions();
+        })
+        .catch(error => {
+          console.error("Failed to delete chat:", error);
+          
+          // Revert optimistic update on failure
+          refetchChatSessions();
+          
+          toast({
+            title: "Delete failed", 
+            description: error instanceof Error ? error.message : "Failed to delete the conversation.",
+            variant: "destructive",
+          });
+        });
+        
     } catch (error) {
       console.error("Failed to delete chat:", error);
+      
+      // Revert optimistic update and show error
+      refetchChatSessions();
+      
       toast({
         title: "Delete failed",
         description: error instanceof Error ? error.message : "Failed to delete the conversation.",
@@ -728,8 +865,75 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory?.messages, queryMutation.isPending, pendingUserMessage]);
 
+  // Additional effect to ensure scrolling when chat loads
+  useEffect(() => {
+    if (chatHistory?.messages && chatHistory.messages.length > 0 && !isLoadingHistory) {
+      // Use a small timeout to ensure the DOM is updated
+      const timer = setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      }, 100);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [chatHistory?.messages, isLoadingHistory]);
+
+  // Scroll to bottom when chat selection changes and loading completes
+  useEffect(() => {
+    if (!isLoadingChatHistory && sessionId && chatHistory?.messages && chatHistory.messages.length > 0) {
+      // Use immediate scroll for chat switching, no animation to make it feel instant
+      const timer = setTimeout(() => {
+        if (messagesEndRef.current) {
+          // First try scrollIntoView with instant behavior
+          messagesEndRef.current.scrollIntoView({ behavior: "instant", block: "end" });
+          
+          // Also try direct scroll on the parent container as fallback
+          const scrollArea = messagesEndRef.current.closest('[data-radix-scroll-area-viewport]');
+          if (scrollArea) {
+            scrollArea.scrollTop = scrollArea.scrollHeight;
+          }
+        }
+      }, 50);
+      
+      // Additional delayed scroll to ensure it happens after animations
+      const delayedTimer = setTimeout(() => {
+        if (messagesEndRef.current) {
+          messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+        }
+      }, 400); // Wait for animations to complete
+      
+      return () => {
+        clearTimeout(timer);
+        clearTimeout(delayedTimer);
+      };
+    }
+  }, [isLoadingChatHistory, sessionId, chatHistory?.messages]);
+
   const messages = chatHistory?.messages || [];
   const hasMessages = messages.length > 0;
+
+  // Check if the app is still loading initial data
+  const isInitialLoading = !isAppInitialized || isLoadingChatSessions || isLoadingDocuments;
+
+  // Show loading screen while initial data is being fetched
+  if (isInitialLoading) {
+    return (
+      <div className="flex h-screen bg-background relative overflow-hidden">
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <LoadRipple />
+            <div className="mt-6 space-y-2">
+              <h2 className="text-xl font-semibold text-foreground">
+                Loading Application
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Initializing database and loading content...
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-background relative overflow-hidden">
@@ -759,6 +963,10 @@ export default function Chat() {
         onSettingsClick={() => setIsSettingsOpen(true)}
         onUpdateRole={handleUpdateRole}
         onLogout={handleLogout}
+        isTitleGenerating={isTitleGenerating}
+        titleGeneratingChatId={titleGeneratingChatId}
+        isLoadingChat={isLoadingChatHistory}
+        loadingChatId={loadingChatId}
       />
 
       {/* Main Content */}
@@ -787,7 +995,21 @@ export default function Chat() {
                 ]
               )}>
                 <AnimatePresence mode="wait">
-                  {!hasMessages && !queryMutation.isPending && !pendingUserMessage ? (
+                  {isLoadingChatHistory && loadingChatId ? (
+                    <motion.div 
+                      key="loading-chat"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="h-full flex items-center justify-center min-h-[calc(100vh-16rem)]"
+                    >
+                      <OrbitalLoader 
+                        message="Loading conversation..."
+                        messagePlacement="bottom"
+                        className="w-20 h-20"
+                      />
+                    </motion.div>
+                  ) : !hasMessages && !queryMutation.isPending && !pendingUserMessage ? (
                     <div className="w-full">
                       <EmptyState 
                         onSamplePromptClick={handleSamplePromptClick}
@@ -842,12 +1064,15 @@ export default function Chat() {
                           const isLastUserMessage = message.role === "user" && 
                             index === messages.length - 1;
                           
+                          // Reduce animation delay when switching chats to improve scroll timing
+                          const animationDelay = loadingChatId === sessionId ? 0 : index * 0.05;
+                          
                           return (
                             <motion.div
                               key={message.id}
                               initial={{ opacity: 0, y: 20 }}
                               animate={{ opacity: 1, y: 0 }}
-                              transition={{ delay: index * 0.1 }}
+                              transition={{ delay: animationDelay, duration: 0.3 }}
                             >
                               <MessageBubble
                                 message={message}

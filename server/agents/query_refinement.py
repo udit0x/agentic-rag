@@ -1,11 +1,27 @@
 """Query Refinement Agent for generating related questions using the 5-question technique."""
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime, timedelta
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
+import hashlib
+import json
 
 from server.providers import get_llm
+from server.storage import storage
+
+
+class QueryRefinementCache(BaseModel):
+    """Cache entry for refined queries."""
+    session_id: str
+    original_query: str
+    query_hash: str
+    refined_queries: List[str]
+    query_category: str
+    created_at: datetime
+    reuse_count: int = 0
+    last_reused_at: Optional[datetime] = None
 
 
 class QueryRefinement(BaseModel):
@@ -14,6 +30,9 @@ class QueryRefinement(BaseModel):
     refined_queries: List[str] = Field(description="5 related questions for deeper exploration")
     query_category: str = Field(description="Category of the query (temporal, factual, counterfactual)")
     refinement_reasoning: str = Field(description="Why these specific questions were chosen")
+    was_cached: bool = Field(default=False, description="Whether this result was retrieved from cache")
+    cache_similarity: float = Field(default=0.0, description="Similarity score with cached query")
+    cost_savings: Dict[str, Any] = Field(default_factory=dict, description="Cost optimization metrics")
 
 
 class QueryRefinementAgent:
@@ -21,6 +40,10 @@ class QueryRefinementAgent:
     
     def __init__(self):
         self.name = "query_refinement"
+        self.query_cache: Dict[str, QueryRefinementCache] = {}  # session_id -> cache entries
+        self.similarity_threshold = 0.7  # Threshold for query reuse
+        self.cache_expiry_hours = 24  # Cache expiry time
+        self.max_cache_per_session = 10  # Max cached queries per session
         self._setup_prompt()
     
     def _setup_prompt(self):
@@ -77,17 +100,150 @@ Output:
 **DO NOT include any comments (//) or code blocks (```) in your JSON response.**
 """)
 
+    def _generate_query_hash(self, query: str) -> str:
+        """Generate a hash for the query to use as cache key."""
+        # Normalize query for better matching
+        normalized = query.lower().strip()
+        return hashlib.md5(normalized.encode()).hexdigest()[:16]
     
-    async def generate_related_questions(self, query: str) -> QueryRefinement:
+    def _calculate_query_similarity(self, query1: str, query2: str) -> float:
+        """Calculate similarity between two queries using word overlap."""
+        def get_words(text: str) -> set:
+            return set(text.lower().split())
+        
+        words1 = get_words(query1)
+        words2 = get_words(query2)
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        return len(intersection) / len(union) if union else 0.0
+    
+    def _find_similar_cached_query(self, query: str, session_id: str) -> Optional[Tuple[QueryRefinementCache, float]]:
+        """Find a similar cached query for the session."""
+        if session_id not in self.query_cache:
+            return None
+        
+        best_match = None
+        best_similarity = 0.0
+        
+        cached_entries = self.query_cache[session_id]
+        current_time = datetime.now()
+        
+        # Check all cached entries for this session
+        for entry in cached_entries:
+            # Skip expired entries
+            if (current_time - entry.created_at).total_seconds() > (self.cache_expiry_hours * 3600):
+                continue
+            
+            similarity = self._calculate_query_similarity(query, entry.original_query)
+            
+            if similarity > best_similarity and similarity >= self.similarity_threshold:
+                best_similarity = similarity
+                best_match = entry
+        
+        return (best_match, best_similarity) if best_match else None
+    
+    def _cache_query_refinement(self, session_id: str, refinement: QueryRefinement) -> None:
+        """Cache a query refinement result."""
+        if session_id not in self.query_cache:
+            self.query_cache[session_id] = []
+        
+        cache_entry = QueryRefinementCache(
+            session_id=session_id,
+            original_query=refinement.original_query,
+            query_hash=self._generate_query_hash(refinement.original_query),
+            refined_queries=refinement.refined_queries,
+            query_category=refinement.query_category,
+            created_at=datetime.now()
+        )
+        
+        # Add to cache
+        self.query_cache[session_id].append(cache_entry)
+        
+        # Limit cache size per session
+        if len(self.query_cache[session_id]) > self.max_cache_per_session:
+            # Remove oldest entry
+            self.query_cache[session_id].pop(0)
+    
+    def _update_cache_reuse_stats(self, cache_entry: QueryRefinementCache) -> None:
+        """Update cache reuse statistics."""
+        cache_entry.reuse_count += 1
+        cache_entry.last_reused_at = datetime.now()
+    
+    def _clean_expired_cache_entries(self) -> int:
+        """Clean up expired cache entries across all sessions."""
+        current_time = datetime.now()
+        cleaned_count = 0
+        
+        for session_id in list(self.query_cache.keys()):
+            entries = self.query_cache[session_id]
+            valid_entries = []
+            
+            for entry in entries:
+                if (current_time - entry.created_at).total_seconds() <= (self.cache_expiry_hours * 3600):
+                    valid_entries.append(entry)
+                else:
+                    cleaned_count += 1
+            
+            if valid_entries:
+                self.query_cache[session_id] = valid_entries
+            else:
+                del self.query_cache[session_id]
+        
+        return cleaned_count
+
+    
+    async def generate_related_questions(
+        self, 
+        query: str, 
+        session_id: Optional[str] = None,
+        force_regenerate: bool = False
+    ) -> QueryRefinement:
         """
-        Generate 5 related questions for the given query.
+        Generate 5 related questions for the given query with smart caching.
         
         Args:
             query: The original user query
+            session_id: Session ID for caching (if None, no caching)
+            force_regenerate: Force regeneration even if cached result exists
             
         Returns:
             QueryRefinement with related questions and metadata
         """
+        start_time = datetime.now()
+        
+        # Check cache first (if session_id provided and not forcing regeneration)
+        if session_id and not force_regenerate:
+            cached_result = self._find_similar_cached_query(query, session_id)
+            if cached_result:
+                cache_entry, similarity = cached_result
+                
+                # Update cache statistics
+                self._update_cache_reuse_stats(cache_entry)
+                
+                print(f"[QUERY_REFINEMENT] Using cached result (similarity: {similarity:.2f})")
+                
+                # Return cached result with metadata
+                return QueryRefinement(
+                    original_query=query,
+                    refined_queries=cache_entry.refined_queries,
+                    query_category=cache_entry.query_category,
+                    refinement_reasoning=f"Reused cached refinement (similarity: {similarity:.2f}, reuse_count: {cache_entry.reuse_count})",
+                    was_cached=True,
+                    cache_similarity=similarity,
+                    cost_savings={
+                        "llm_calls_saved": 1,
+                        "cache_reuse_count": cache_entry.reuse_count,
+                        "processing_time_ms": int((datetime.now() - start_time).total_seconds() * 1000),
+                        "cache_hit": True
+                    }
+                )
+        
+        # Generate new refinement
         try:
             llm = get_llm()
             if not llm:
@@ -98,7 +254,27 @@ Output:
             chain = self.refinement_prompt | llm | parser
             
             result = await chain.ainvoke({"query": query})
-            return QueryRefinement(**result)
+            
+            # Create refinement object with cost tracking
+            refinement = QueryRefinement(
+                **result,
+                was_cached=False,
+                cache_similarity=0.0,
+                cost_savings={
+                    "llm_calls_saved": 0,
+                    "cache_reuse_count": 0,
+                    "processing_time_ms": int((datetime.now() - start_time).total_seconds() * 1000),
+                    "cache_hit": False,
+                    "generated_fresh": True
+                }
+            )
+            
+            # Cache the result for future use
+            if session_id:
+                self._cache_query_refinement(session_id, refinement)
+                print(f"[QUERY_REFINEMENT] Cached new refinement for session {session_id}")
+            
+            return refinement
             
         except Exception as e:
             error_msg = str(e)
@@ -124,7 +300,16 @@ Output:
                     original_query=query,
                     refined_queries=[query],  # Only return original query
                     query_category="api_error",
-                    refinement_reasoning=reasoning
+                    refinement_reasoning=reasoning,
+                    was_cached=False,
+                    cache_similarity=0.0,
+                    cost_savings={
+                        "llm_calls_saved": 0,
+                        "cache_reuse_count": 0,
+                        "processing_time_ms": int((datetime.now() - start_time).total_seconds() * 1000),
+                        "cache_hit": False,
+                        "api_error": True
+                    }
                 )
             
             # Try alternative approach with raw LLM response cleaning for non-API errors
@@ -137,7 +322,27 @@ Output:
                     
                     import json
                     parsed_data = json.loads(cleaned_json)
-                    return QueryRefinement(**parsed_data)
+                    
+                    refinement = QueryRefinement(
+                        **parsed_data,
+                        was_cached=False,
+                        cache_similarity=0.0,
+                        cost_savings={
+                            "llm_calls_saved": 0,
+                            "cache_reuse_count": 0,
+                            "processing_time_ms": int((datetime.now() - start_time).total_seconds() * 1000),
+                            "cache_hit": False,
+                            "generated_fresh": True,
+                            "required_cleanup": True
+                        }
+                    )
+                    
+                    # Cache the result
+                    if session_id:
+                        self._cache_query_refinement(session_id, refinement)
+                    
+                    return refinement
+                    
             except Exception as cleanup_error:
                 print(f"[QUERY_REFINEMENT] JSON cleanup failed: {cleanup_error}")
                 
@@ -161,11 +366,33 @@ Output:
                         original_query=query,
                         refined_queries=[query],
                         query_category="api_error", 
-                        refinement_reasoning=reasoning
+                        refinement_reasoning=reasoning,
+                        was_cached=False,
+                        cache_similarity=0.0,
+                        cost_savings={
+                            "llm_calls_saved": 0,
+                            "cache_reuse_count": 0,
+                            "processing_time_ms": int((datetime.now() - start_time).total_seconds() * 1000),
+                            "cache_hit": False,
+                            "api_error": True
+                        }
                     )
             
             # Only use fallback for non-API errors (like parsing issues)
-            return self._fallback_refinement(query)
+            fallback_result = self._fallback_refinement(query)
+            fallback_result.cost_savings = {
+                "llm_calls_saved": 1,  # Saved LLM call by using fallback
+                "cache_reuse_count": 0,
+                "processing_time_ms": int((datetime.now() - start_time).total_seconds() * 1000),
+                "cache_hit": False,
+                "used_fallback": True
+            }
+            
+            # Cache fallback result too
+            if session_id:
+                self._cache_query_refinement(session_id, fallback_result)
+            
+            return fallback_result
     
     def _clean_json_response(self, response: str) -> str:
         """Clean LLM response to extract valid JSON."""
@@ -278,7 +505,16 @@ Output:
             original_query=query,
             refined_queries=fallback_questions,
             query_category="factual",
-            refinement_reasoning=f"Generated contextually appropriate questions for {topic} based on query pattern analysis (LLM parsing error fallback)"
+            refinement_reasoning=f"Generated contextually appropriate questions for {topic} based on query pattern analysis (LLM parsing error fallback)",
+            was_cached=False,
+            cache_similarity=0.0,
+            cost_savings={
+                "llm_calls_saved": 1,  # Saved LLM call by using pattern-based fallback
+                "cache_reuse_count": 0,
+                "processing_time_ms": 0,  # Will be updated by caller
+                "cache_hit": False,
+                "used_fallback": True
+            }
         )
     
     def _extract_main_topic(self, query: str) -> str:
@@ -302,6 +538,51 @@ Output:
             # Take first 2 content words for better topic extraction
             return ' '.join(content_words[:2])
         return "this topic"
+
+
+    # Cache management methods
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics for monitoring."""
+        total_entries = sum(len(entries) for entries in self.query_cache.values())
+        total_reuses = sum(entry.reuse_count for entries in self.query_cache.values() for entry in entries)
+        
+        return {
+            "total_sessions": len(self.query_cache),
+            "total_cached_queries": total_entries,
+            "total_cache_reuses": total_reuses,
+            "cache_efficiency": (total_reuses / max(total_entries, 1)) * 100,
+            "cache_config": {
+                "similarity_threshold": self.similarity_threshold,
+                "cache_expiry_hours": self.cache_expiry_hours,
+                "max_cache_per_session": self.max_cache_per_session
+            }
+        }
+    
+    def clear_session_cache(self, session_id: str) -> bool:
+        """Clear cache for a specific session."""
+        if session_id in self.query_cache:
+            del self.query_cache[session_id]
+            return True
+        return False
+    
+    def clear_all_cache(self) -> int:
+        """Clear all cached queries."""
+        total_cleared = sum(len(entries) for entries in self.query_cache.values())
+        self.query_cache.clear()
+        return total_cleared
+    
+    async def cleanup_cache(self) -> Dict[str, int]:
+        """Cleanup expired cache entries and return statistics."""
+        expired_count = self._clean_expired_cache_entries()
+        
+        stats = {
+            "expired_entries_removed": expired_count,
+            "remaining_sessions": len(self.query_cache),
+            "remaining_entries": sum(len(entries) for entries in self.query_cache.values())
+        }
+        
+        print(f"[QUERY_REFINEMENT] Cache cleanup: {stats}")
+        return stats
 
 
 # Global instance

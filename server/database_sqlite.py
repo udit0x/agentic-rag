@@ -182,6 +182,62 @@ class DatabaseStorage:
             (embedding_id, chunk_id)
         )
 
+    async def createDocumentChunksBatch(self, chunks_data: List[dict]) -> List[dict]:
+        """Create multiple document chunks in a single batch operation."""
+        await self.ensure_initialized()
+        
+        if not chunks_data:
+            return []
+        
+        chunk_records = []
+        insert_data = []
+        
+        for data in chunks_data:
+            chunk_id = str(uuid.uuid4())
+            now = datetime.now().isoformat()
+            
+            chunk_records.append({
+                "id": chunk_id,
+                "documentId": data["documentId"],
+                "content": data["content"],
+                "chunkIndex": data.get("chunkIndex", 0),
+                "metadata": data.get("metadata", {}),
+                "embeddingId": data.get("embeddingId"),
+                "createdAt": now
+            })
+            
+            insert_data.append((
+                chunk_id,
+                data["documentId"],
+                data.get("chunkIndex", 0),
+                data["content"],
+                json.dumps(data.get("metadata", {})),
+                data.get("embeddingId"),
+                now
+            ))
+        
+        # Batch insert all chunks
+        await self.db.executemany(
+            """INSERT INTO document_chunks (id, document_id, chunk_index, content, metadata, embedding_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            insert_data
+        )
+        
+        return chunk_records
+
+    async def updateChunkEmbeddingIdsBatch(self, chunk_embedding_pairs: List[tuple]) -> None:
+        """Update embedding IDs for multiple chunks in a single batch operation."""
+        await self.ensure_initialized()
+        
+        if not chunk_embedding_pairs:
+            return
+        
+        # Batch update all embedding IDs
+        await self.db.executemany(
+            "UPDATE document_chunks SET embedding_id = ? WHERE id = ?",
+            chunk_embedding_pairs
+        )
+
     # Chat session operations
     async def createChatSession(self, data: dict) -> dict:
         """Create a new chat session."""
@@ -313,7 +369,7 @@ class DatabaseStorage:
         
         # Get last message
         last_message_result = await self.db.fetchone(
-            """SELECT content, created_at FROM messages 
+            """SELECT content, created_at, role FROM messages 
                WHERE session_id = ? 
                ORDER BY sequence_number DESC 
                LIMIT 1""",
@@ -325,7 +381,29 @@ class DatabaseStorage:
         
         if last_message_result:
             content = last_message_result["content"]
-            last_message = content[:100] + "..." if len(content) > 100 else content
+            role = last_message_result["role"]
+            
+            # Generate a smarter preview - prioritize user questions over AI responses
+            if role == "user":
+                # For user messages, show the question directly
+                last_message = content[:100] + "..." if len(content) > 100 else content
+            else:
+                # For AI responses, create a summary or show key points
+                words = content.split()
+                if len(words) > 15:
+                    # Take key part of the response (skip common starting phrases)
+                    start_idx = 0
+                    skip_phrases = ["I understand", "I can help", "Here's", "Let me", "Based on", "According to"]
+                    for i, word in enumerate(words[:10]):
+                        if any(content.startswith(phrase) for phrase in skip_phrases):
+                            start_idx = min(i + 2, len(words) - 5)
+                            break
+                    
+                    preview_words = words[start_idx:start_idx + 12]
+                    last_message = " ".join(preview_words) + "..."
+                else:
+                    last_message = content[:100] + "..." if len(content) > 100 else content
+            
             last_message_at = last_message_result["created_at"]
         
         # Get total message count
