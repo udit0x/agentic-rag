@@ -1046,6 +1046,28 @@ export default function Chat() {
       return;
     }
     
+    // 🔥 CRITICAL FIX: Set loading state FIRST before any other changes
+    // This ensures loader shows immediately without any flash of empty state
+    setIsLoadingChatHistory(true);
+    setLoadingChatId(chatId);
+    
+    // Clear current session data to prevent flash of old messages
+    if (sessionId && sessionId !== chatId) {
+      queryClient.setQueryData(["chat-history", sessionId], { messages: [] });
+    }
+    
+    // Clear current context immediately
+    setCurrentSources(undefined);
+    setCurrentClassification(undefined);
+    setCurrentAgentTraces(undefined);
+    setCurrentExecutionTime(undefined);
+    setCurrentResponseType(undefined);
+    
+    // Clear refined queries state
+    setRefinedQueries([]);
+    setShowRefinedQueries(false);
+    setRefinedQueriesMessageId(undefined);
+    
     // Try to get cached data immediately (without API call)
     const cachedHistory = getChatSessionHistory(chatId);
     
@@ -1053,18 +1075,6 @@ export default function Chat() {
     if (cachedHistory && Array.isArray(cachedHistory) && cachedHistory.length > 0) {
       // Set session immediately
       setSessionId(chatId);
-      
-      // Clear current context
-      setCurrentSources(undefined);
-      setCurrentClassification(undefined);
-      setCurrentAgentTraces(undefined);
-      setCurrentExecutionTime(undefined);
-      setCurrentResponseType(undefined);
-      
-      // Clear refined queries state
-      setRefinedQueries([]);
-      setShowRefinedQueries(false);
-      setRefinedQueriesMessageId(undefined);
       
       // Update React Query cache with cached data
       queryClient.setQueryData(["chat-history", chatId], { messages: cachedHistory });
@@ -1081,17 +1091,6 @@ export default function Chat() {
       }, 500);
       
     } else {
-      // Set loading state for API fetch
-      setIsLoadingChatHistory(true);
-      setLoadingChatId(chatId);
-      
-      // Clear current context first to show loading state
-      setCurrentSources(undefined);
-      setCurrentClassification(undefined);
-      setCurrentAgentTraces(undefined);
-      setCurrentExecutionTime(undefined);
-      setCurrentResponseType(undefined);
-      
       // Invalidate and refetch the query for the new chat
       queryClient.invalidateQueries({ 
         queryKey: ["chat-history", chatId],
