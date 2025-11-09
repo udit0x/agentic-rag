@@ -17,6 +17,7 @@ export const API_ENDPOINTS = {
   // Python FastAPI endpoints
   QUERY: `${API_CONFIG.PYTHON_BASE_URL}/api/query`,
   QUERY_STREAM: `${API_CONFIG.PYTHON_BASE_URL}/api/query/stream`,
+  GENERATE_TITLE: `${API_CONFIG.PYTHON_BASE_URL}/api/generate-title`,
   CONFIG_SAVE: `${API_CONFIG.PYTHON_BASE_URL}/api/config/save`,
   CONFIG_CURRENT: `${API_CONFIG.PYTHON_BASE_URL}/api/config/current`,
   CHAT_HISTORY: (sessionId: string) => `${API_CONFIG.PYTHON_BASE_URL}/api/chat/${sessionId}`,

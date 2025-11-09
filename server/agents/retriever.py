@@ -981,7 +981,8 @@ Rank from 1 (most relevant) to N (least relevant).
         refined_queries: Optional[List[str]] = None,
         session_id: Optional[str] = None,
         force_retrieval: bool = False,
-        force_lower_threshold: bool = False
+        force_lower_threshold: bool = False,
+        document_ids: Optional[List[str]] = None
     ) -> tuple[List[DocumentChunk], Dict[str, Any]]:
         """
         Retrieve relevant document chunks with classification-aware enhancements and caching.
@@ -994,12 +995,19 @@ Rank from 1 (most relevant) to N (least relevant).
             refined_queries: Additional refined questions to search with
             session_id: Session ID for caching (if None, no caching)
             force_retrieval: Force new retrieval even if cached result exists
+            document_ids: Optional list of document IDs to filter search scope
             
         Returns:
             Tuple of (retrieved chunks, retrieval metadata)
         """
         start_time = datetime.now() if enable_tracing else None
         use_general_knowledge = self._get_use_general_knowledge()
+        
+        # Debug logging for document filtering
+        if document_ids:
+            print(f"[RETRIEVER_DEBUG] Document filtering requested: {document_ids}")
+        else:
+            print("[RETRIEVER_DEBUG] No document filtering - searching all documents")
         
         # Check cache first (if session_id provided and not forcing retrieval)
         if session_id and not force_retrieval:
@@ -1055,7 +1063,8 @@ Rank from 1 (most relevant) to N (least relevant).
                 query_results = await self.azure_client.semantic_search(
                     query=search_query,
                     top_k=batch_k,
-                    min_score_threshold=search_threshold
+                    min_score_threshold=search_threshold,
+                    document_ids=document_ids
                 )
                 
                 # Tag results with source query for debugging

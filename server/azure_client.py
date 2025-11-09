@@ -547,7 +547,8 @@ class MultiProviderRAGClient:
         self, 
         query: str, 
         top_k: int = 5,
-        min_score_threshold: float = None
+        min_score_threshold: float = None,
+        document_ids: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
         Perform semantic search using vector similarity with precision filtering and caching.
@@ -664,10 +665,19 @@ class MultiProviderRAGClient:
                 # Fall back to in-memory search immediately
                 return await self._fallback_search(query, top_k, min_score_threshold)
             
+            # Build OData filter for document IDs if provided
+            search_filter = None
+            if document_ids and len(document_ids) > 0:
+                # Create an OData filter to include only specified documents
+                document_filter_parts = [f"documentId eq '{doc_id}'" for doc_id in document_ids]
+                search_filter = " or ".join(document_filter_parts)
+                print(f"[DEBUG] Applied document filter: {search_filter}")
+            
             results = self.search_client.search(
                 search_text=None,  # Use pure vector search instead of hybrid
                 vector_queries=[vector_query],
                 select=select_fields,
+                filter=search_filter,  # Add document filtering
                 top=top_k
             )
             

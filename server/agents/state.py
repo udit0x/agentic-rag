@@ -81,6 +81,7 @@ class AgentState(TypedDict):
     query: str
     session_id: Optional[str]
     user_id: Optional[str]
+    document_ids: Optional[List[str]]  # Document filtering support
     
     # Intent Router Agent outputs
     intent_classification: Optional[IntentClassification]

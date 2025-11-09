@@ -55,18 +55,26 @@ Previous Retrieval Context:
 
 **CURRENT USER QUERY:** "{current_query}"
 
+**DOCUMENT FILTER CONTEXT:**
+{document_filter_context}
+
 **ROUTING OPTIONS:**
 1. **CHAT** - Use conversation memory only
    - User refers to assistant's previous response ("you said", "that", "it", "earlier")
    - Clarification requests about previous answers
    - Follow-up questions that don't need new information
    - **REPEATED QUERIES after insufficient responses** (suggest threshold adjustment)
+   - **EXCEPTION: If documents are filtered AND query is about document content → RAG**
 
 2. **RAG** - Retrieve fresh documents 
    - New factual questions unrelated to conversation
    - Requests for specific information not in conversation
    - Different topic from recent conversation
    - **THRESHOLD OVERRIDE requests** (user wants broader search)
+   - **DOCUMENT FILTERED QUERIES: If user has selected specific documents and asks about them**
+     * "What does this document do", "What is in this document", "Tell me about this document"
+     * "What does this file contain", "Summarize this document", "What is this document about"
+     * These queries indicate user wants to retrieve information from the selected documents
 
 3. **HYBRID** - Combine conversation context + retrieval
    - References previous conversation AND asks for new information
@@ -303,6 +311,60 @@ Analyze the query and return JSON:
                     print(f"[INTENT_ROUTER] - Found previous threshold suggestion, forcing RAG bypass")
                     return True
         return False
+    
+    def _is_query_about_document_content(self, query: str) -> bool:
+        """
+        Detect if query is asking about document content (when documents are filtered).
+        
+        Patterns that indicate user wants to know about the selected documents:
+        - "What does this document do"
+        - "What is in this document"
+        - "Tell me about this document"
+        - "What does this file contain"
+        - "Summarize this document"
+        - "What is this document about"
+        """
+        query_lower = query.lower()
+        
+        # Document content query patterns
+        document_content_patterns = [
+            r'\bwhat (does|is|do) (this|the|these) (document|file|doc|pdf|text)\b',
+            r'\btell me (about|what is in) (this|the|these) (document|file|doc)\b',
+            r'\bwhat (does|is) (this|the) (document|file) (contain|do|say|about|include)\b',
+            r'\bsummarize (this|the|these) (document|file|doc)\b',
+            r'\bwhat (is|are) (this|the|these) (document|file|doc) (about|for)\b',
+            r'\bexplain (this|the|these) (document|file|doc)\b',
+            r'\bdescribe (this|the|these) (document|file|doc)\b',
+            r'\bwhat (information|content|details) (is|are) in (this|the|these) (document|file|doc)\b',
+            r'\bwhat (does|do) (this|the|these) (document|file|doc) (say|tell|show|explain)\b',
+            r'\b(show|give) me (what|information) (is|are) in (this|the|these) (document|file|doc)\b',
+            r'\bwhat (can|should) i (learn|find|know) (from|about) (this|the|these) (document|file|doc)\b',
+            r'\b(what|tell me) (about|regarding) (this|the|these) (document|file|doc)\b',
+        ]
+        
+        for pattern in document_content_patterns:
+            if re.search(pattern, query_lower):
+                print(f"[INTENT_ROUTER] Document content query detected: '{query}' matches pattern '{pattern}'")
+                return True
+        
+        # Also check for pronouns that might refer to documents when context suggests it
+        # "What does it do", "What is it about" when documents are selected
+        pronoun_patterns = [
+            r'\bwhat (does|is|do) (it|they) (do|say|contain|tell|show|explain|about)\b',
+            r'\bwhat (is|are) (it|they) (about|for)\b',
+            r'\btell me (about|what is in) (it|them)\b',
+            r'\bexplain (it|them)\b',
+            r'\bdescribe (it|them)\b',
+        ]
+        
+        # Only match pronouns if query is relatively short (likely referring to selected docs)
+        if len(query.split()) <= 10:
+            for pattern in pronoun_patterns:
+                if re.search(pattern, query_lower):
+                    print(f"[INTENT_ROUTER] Document content query detected (pronoun): '{query}' matches pattern '{pattern}'")
+                    return True
+        
+        return False
 
     def _analyze_query_similarity(self, current_query: str, recent_queries: List[str]) -> float:
         """Calculate similarity between current and recent queries (simple approach)."""
@@ -334,9 +396,28 @@ Analyze the query and return JSON:
         self, 
         query: str, 
         recent_messages: List[Dict[str, Any]], 
-        previous_retrieval: Optional[Dict[str, Any]]
+        previous_retrieval: Optional[Dict[str, Any]],
+        document_ids: Optional[List[str]] = None
     ) -> IntentClassification:
         """Fallback classification when LLM is unavailable."""
+        
+        # 🚀 NEW: Check if documents are filtered and query is about document content
+        # This should be checked first, even in fallback
+        if document_ids and len(document_ids) > 0:
+            if self._is_query_about_document_content(query):
+                print(f"[INTENT_ROUTER] Fallback: Document filter detected ({len(document_ids)} docs) + document content query → RAG routing")
+                return IntentClassification(
+                    route_type="RAG",
+                    confidence=0.95,
+                    reasoning=f"User has selected {len(document_ids)} document(s) and is asking about document content - routing to RAG for retrieval",
+                    conversation_references=[],
+                    needs_retrieval=True,
+                    reuse_cached_docs=False,
+                    reuse_refined_queries=False,
+                    suggest_threshold_adjustment=False,
+                    threshold_suggestion_message="",
+                    force_rag_bypass=False
+                )
         
         # Check for threshold override keywords first
         force_rag_bypass = self._check_for_threshold_override(query)
@@ -473,7 +554,8 @@ Analyze the query and return JSON:
         self, 
         query: str, 
         session_id: Optional[str] = None,
-        enable_tracing: bool = True
+        enable_tracing: bool = True,
+        document_ids: Optional[List[str]] = None
     ) -> IntentClassification:
         """
         Classify user intent for routing decision.
@@ -482,6 +564,8 @@ Analyze the query and return JSON:
             query: Current user query
             session_id: Chat session ID for conversation context
             enable_tracing: Whether to track execution time
+            document_ids: Optional list of document IDs that user has selected to filter search.
+                         If provided and query is about document content, routes to RAG.
             
         Returns:
             IntentClassification with routing decision
@@ -489,6 +573,24 @@ Analyze the query and return JSON:
         start_time = datetime.now() if enable_tracing else None
         
         try:
+            # 🚀 NEW: Check if documents are filtered and query is about document content
+            # If user has selected specific documents and asks about them, route to RAG
+            if document_ids and len(document_ids) > 0:
+                if self._is_query_about_document_content(query):
+                    print(f"[INTENT_ROUTER] Document filter detected ({len(document_ids)} docs) + document content query → RAG routing")
+                    return IntentClassification(
+                        route_type="RAG",
+                        confidence=0.95,
+                        reasoning=f"User has selected {len(document_ids)} document(s) and is asking about document content - routing to RAG for retrieval",
+                        conversation_references=[],
+                        needs_retrieval=True,
+                        reuse_cached_docs=False,
+                        reuse_refined_queries=False,
+                        suggest_threshold_adjustment=False,
+                        threshold_suggestion_message="",
+                        force_rag_bypass=False
+                    )
+            
             # Get conversation context
             recent_messages = []
             previous_retrieval = None
@@ -564,10 +666,16 @@ Analyze the query and return JSON:
                         source_files = [s.get('filename', 'unknown') for s in previous_retrieval.get('sources', [])]
                         retrieval_context = f"Previous query about: {source_files}"
                     
+                    # Format document filter context for prompt
+                    document_filter_context = "No document filter - searching all documents"
+                    if document_ids and len(document_ids) > 0:
+                        document_filter_context = f"User has selected {len(document_ids)} specific document(s) to search in. If the query asks about document content (e.g., 'What does this document do', 'What is in this document'), route to RAG to retrieve information from these selected documents."
+                    
                     print(f"[INTENT_ROUTER] LLM input context:")
                     print(f"[INTENT_ROUTER] - Query: {query}")
                     print(f"[INTENT_ROUTER] - Messages context: {messages_context}")
                     print(f"[INTENT_ROUTER] - Retrieval context: {retrieval_context}")
+                    print(f"[INTENT_ROUTER] - Document filter context: {document_filter_context}")
                     
                     parser = JsonOutputParser(pydantic_object=IntentClassification)
                     chain = self.intent_prompt | llm | parser
@@ -575,7 +683,8 @@ Analyze the query and return JSON:
                     result = await chain.ainvoke({
                         "current_query": query,
                         "recent_messages": messages_context,
-                        "previous_retrieval_context": retrieval_context
+                        "previous_retrieval_context": retrieval_context,
+                        "document_filter_context": document_filter_context
                     })
                     
                     print(f"[INTENT_ROUTER] LLM classification result: {result}")
@@ -588,7 +697,7 @@ Analyze the query and return JSON:
                     pass
             
             # Fallback to rule-based classification
-            return self._fallback_classification(query, recent_messages, previous_retrieval)
+            return self._fallback_classification(query, recent_messages, previous_retrieval, document_ids)
             
         except Exception as e:
             print(f"[INTENT_ROUTER] Classification error: {e}")

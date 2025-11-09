@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { File, ArrowRight, Database, Zap, CheckCircle2, AlertCircle, Loader2, X, Clock } from "lucide-react";
+import { File, ArrowRight, Database, Zap, CheckCircle2, AlertCircle, Loader2, X, Clock, FileWarning } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -20,6 +20,7 @@ interface UploadProgress {
   currentStep: "upload" | "chunk" | "embed" | "save";
   error?: string;
   completedAt?: number;
+  warnings?: string[]; // Array of warning messages
 }
 
 interface UploadProcessingVisualizerProps {
@@ -62,6 +63,29 @@ function SingleUploadVisualizer({
   ]);
 
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [showLargeFileMessage, setShowLargeFileMessage] = useState(false);
+
+  // Helper function to check if file has large content warning
+  const hasLargeFileWarning = () => {
+    return upload.warnings?.some(warning => 
+      warning.toLowerCase().includes('large content warning') || 
+      warning.toLowerCase().includes('large document') ||
+      warning.toLowerCase().includes('hang on')
+    ) || false;
+  };
+
+  // Delayed large file message display
+  useEffect(() => {
+    if (hasLargeFileWarning() && (upload.status === "uploading" || upload.status === "processing")) {
+      const timer = setTimeout(() => {
+        setShowLargeFileMessage(true);
+      }, 2000); // 2 second delay
+      
+      return () => clearTimeout(timer);
+    } else {
+      setShowLargeFileMessage(false);
+    }
+  }, [upload.warnings, upload.status]);
 
   // Countdown timer for completed uploads
   useEffect(() => {
@@ -121,7 +145,7 @@ function SingleUploadVisualizer({
   }, [upload.currentStep, upload.status]);
 
   return (
-    <Card className="p-4 space-y-4 w-full max-w-full overflow-hidden">
+    <Card className="p-4 space-y-4 w-full max-w-full overflow-visible relative">
       {/* File Info Header */}
       <div className="flex items-center justify-between min-w-0">
         <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -129,7 +153,9 @@ function SingleUploadVisualizer({
             <File className="h-5 w-5 text-primary" />
           </div>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-foreground truncate">{upload.fileName}</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium text-foreground truncate">{upload.fileName}</p>
+            </div>
             <p className="text-xs text-muted-foreground">
               {(upload.fileSize / 1024).toFixed(1)} KB
             </p>
@@ -235,6 +261,53 @@ function SingleUploadVisualizer({
             className="p-2 bg-destructive/10 border border-destructive/20 rounded text-xs text-destructive"
           >
             {upload.error}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Integrated Large File Warning Slider */}
+      <AnimatePresence>
+        {showLargeFileMessage && (
+          <motion.div
+            initial={{ opacity: 0, height: 0, marginTop: 0 }}
+            animate={{ 
+              opacity: 1, 
+              height: "auto",
+              marginTop: 16,
+              transition: { 
+                duration: 0.4,
+                ease: "easeOut"
+              }
+            }}
+            exit={{ 
+              opacity: 0, 
+              height: 0,
+              marginTop: 0,
+              transition: { 
+                duration: 0.3,
+                ease: "easeIn"
+              }
+            }}
+            className="absolute left-0 right-0 -bottom-2 bg-card border border-border rounded-b-lg border-t-0 shadow-sm"
+            style={{ 
+              borderTopLeftRadius: 0, 
+              borderTopRightRadius: 0,
+              marginLeft: '0px',
+              marginRight: '0px',
+              transform: 'translateY(8px)'
+            }}
+          >
+            <div className="px-4 py-2 bg-muted/30">
+              <div className="flex items-center justify-center gap-2">
+                <FileWarning className="h-3 w-3 text-muted-foreground" />
+                <span className="text-xs font-medium text-muted-foreground">Large document - Hang on</span>
+                <div className="flex items-center gap-1">
+                  <div className="w-1 h-1 bg-muted-foreground rounded-full animate-pulse"></div>
+                  <div className="w-1 h-1 bg-muted-foreground rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+                  <div className="w-1 h-1 bg-muted-foreground rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+                </div>
+              </div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

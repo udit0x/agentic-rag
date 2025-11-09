@@ -14,6 +14,7 @@ from server.azure_client import azure_client
 from server.rag_chain import create_rag_answer
 from server.agents.orchestrator import orchestrator
 from server.agents.query_refinement import query_refinement_agent
+from server.agents.title_generator import title_generator
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -24,6 +25,7 @@ class QueryRequest(BaseModel):
     enableTracing: bool = True
     debugMode: bool = False
     minScoreThreshold: float = 0.65  # Level 1: Add score threshold parameter
+    documentIds: Optional[List[str]] = None  # Document filtering support
 
 class SourceInfo(BaseModel):
     documentId: str
@@ -46,6 +48,15 @@ class ChatHistoryResponse(BaseModel):
     sessionId: str
     messages: List[Dict[str, Any]]
 
+class GenerateTitleRequest(BaseModel):
+    sessionId: str
+    query: str
+    assistantResponse: Optional[str] = None
+
+class GenerateTitleResponse(BaseModel):
+    sessionId: str
+    title: str
+
 class StreamedQueryRefinement(BaseModel):
     type: str  # "refinement" or "completion" 
     data: Dict[str, Any]
@@ -67,37 +78,49 @@ async def stream_query_with_refinement(request: QueryRequest):
     async def generate_stream():
         """Generate streaming response with main processing immediately, refinement in parallel."""
         try:
-            # Send immediate acknowledgment to show processing started
-            ack_data = {
-                "type": "started",
-                "data": {
-                    "status": "processing",
-                    "query": request.query
-                }
-            }
-            yield f"data: {json.dumps(ack_data)}\n\n"
+            # Debug logging for document filtering
+            if request.documentIds:
+                print(f"[STREAM_DEBUG] Received document filter: {request.documentIds}")
+            else:
+                print("[STREAM_DEBUG] No document filter provided - searching all documents")
             
             # Start refinement generation in parallel (non-blocking)
             refinement_task = asyncio.create_task(
                 query_refinement_agent.generate_related_questions(request.query)
             )
+            refinement_streamed = False  # Track if we've already streamed refinement
             
-            # Process main query immediately without waiting for refinement
-            
-            # Create or get session - always ensure we have a valid session
+            # 🚀 OPTIMIZATION: Create or get session FIRST (before sending started event)
+            # This allows us to include session ID in the started event for immediate frontend updates
             session = None
-            if request.sessionId:
+            # Skip lookup for temp session IDs or None - create immediately
+            if request.sessionId and not request.sessionId.startswith("temp-session-"):
                 try:
                     session = await storage.getChatSession(request.sessionId)
+                    print(f"[STREAM] Using existing session: {session['id']}")
                 except Exception as e:
-                    print(f"[STREAM] Error retrieving session {request.sessionId}: {e}")
+                    print(f"[STREAM] Error retrieving session {request.sessionId}: {e}, creating new one")
 
             # Create new session if we don't have one
             if not session:
+                # 🚀 OPTIMIZATION: Use simple temporary title to avoid blocking on LLM call
+                # The proper title will be generated later with assistant response context
+                temporary_title = request.query[:50] + "..." if len(request.query) > 50 else request.query
                 session = await storage.createChatSession({
-                    "title": request.query[:50] + "..." if len(request.query) > 50 else request.query
+                    "title": temporary_title
                 })
-                print(f"[STREAM] Created new session: {session['id']}")
+                print(f"[STREAM] Created new session: {session['id']} with temporary title: {temporary_title}")
+            
+            # Send immediate acknowledgment with session ID for fast frontend updates
+            ack_data = {
+                "type": "started",
+                "data": {
+                    "status": "processing",
+                    "query": request.query,
+                    "sessionId": session["id"]  # Include session ID so frontend can update immediately
+                }
+            }
+            yield f"data: {json.dumps(ack_data)}\n\n"
             
             # Save user message
             user_message = await storage.createMessage({
@@ -119,12 +142,45 @@ async def stream_query_with_refinement(request: QueryRequest):
             }
             orchestrator.config = config
             
+            # Helper function to check and stream refinement if ready
+            async def check_and_stream_refinement():
+                nonlocal refinement_streamed
+                if not refinement_streamed and refinement_task.done():
+                    try:
+                        refinement = refinement_task.result()
+                        if refinement.query_category != "api_error":
+                            print(f"[STREAM] Refinement completed early, streaming {len(refinement.refined_queries)} questions")
+                            refinement_data = {
+                                "type": "refinement",
+                                "data": {
+                                    "userMessageId": user_message["id"],
+                                    "refined_queries": refinement.refined_queries,
+                                    "query_category": refinement.query_category,
+                                    "refinement_reasoning": refinement.refinement_reasoning,
+                                    "status": "generated"
+                                }
+                            }
+                            yield f"data: {json.dumps(refinement_data)}\n\n"
+                            refinement_streamed = True
+                    except Exception as e:
+                        print(f"[STREAM] Refinement check failed: {e}")
+                        refinement_streamed = True  # Mark as done to avoid repeated checks
+            
+            # Check if refinement is ready before starting main processing
+            async for chunk in check_and_stream_refinement():
+                yield chunk
+            
             # Execute multi-agent workflow
             agent_result = await orchestrator.process_query(
                 query=request.query,
                 session_id=session["id"],
-                user_id=None
+                user_id=None,
+                document_ids=request.documentIds
             )
+            
+            # Check if refinement completed during main processing
+            async for chunk in check_and_stream_refinement():
+                yield chunk
             
             # Check for agent-level errors and propagate them
             if agent_result.get("error_message"):
@@ -205,6 +261,7 @@ async def stream_query_with_refinement(request: QueryRequest):
                 "data": {
                     "sessionId": session["id"],
                     "messageId": assistant_message["id"],
+                    "userMessageId": user_message["id"],  # Include user message ID for refined queries mapping
                     "answer": agent_result["final_response"],
                     "sources": sources,
                     "classification": agent_result.get("classification"),
@@ -216,26 +273,53 @@ async def stream_query_with_refinement(request: QueryRequest):
             
             yield f"data: {json.dumps(completion_data)}\n\n"
             
-            # Try to get refinement result if available (with timeout)
+            # Generate final title with assistant response context (non-blocking)
             try:
-                refinement = await asyncio.wait_for(refinement_task, timeout=3.0)
-                # Stream refinement after main processing if it completed successfully
-                if refinement.query_category != "api_error":
-                    print(f"[STREAM] Refinement completed, streaming {len(refinement.refined_queries)} questions")
-                    refinement_data = {
-                        "type": "refinement",
+                final_title = await title_generator.generate_title(
+                    query=request.query,
+                    assistant_response=agent_result["final_response"],
+                    enable_tracing=False
+                )
+                # Update session title if it's different and better
+                if final_title != session.get("title"):
+                    await storage.updateChatSession(session["id"], {"title": final_title})
+                    print(f"[STREAM] Updated session title to: {final_title}")
+                    
+                    # Stream title update event to notify frontend
+                    title_update_data = {
+                        "type": "title_update",
                         "data": {
-                            "refined_queries": refinement.refined_queries,
-                            "query_category": refinement.query_category,
-                            "refinement_reasoning": refinement.refinement_reasoning,
-                            "status": "generated"
+                            "sessionId": session["id"],
+                            "title": final_title,
+                            "status": "updated"
                         }
                     }
-                    yield f"data: {json.dumps(refinement_data)}\n\n"
-            except asyncio.TimeoutError:
-                print("[STREAM] Refinement generation took too long, proceeding without it")
+                    yield f"data: {json.dumps(title_update_data)}\n\n"
             except Exception as e:
-                print(f"[STREAM] Refinement generation failed: {e}")
+                print(f"[STREAM] Failed to generate final title: {e}")
+            
+            # Final fallback: try to get refinement result if we haven't streamed it yet
+            if not refinement_streamed:
+                try:
+                    refinement = await asyncio.wait_for(refinement_task, timeout=1.0)  # Shorter timeout since this is fallback
+                    # Stream refinement only if we haven't already
+                    if refinement.query_category != "api_error":
+                        print(f"[STREAM] Refinement completed (fallback), streaming {len(refinement.refined_queries)} questions")
+                        refinement_data = {
+                            "type": "refinement",
+                            "data": {
+                                "userMessageId": user_message["id"],  # Consistent field name with completion event
+                                "refined_queries": refinement.refined_queries,
+                                "query_category": refinement.query_category,
+                                "refinement_reasoning": refinement.refinement_reasoning,
+                                "status": "generated"
+                            }
+                        }
+                        yield f"data: {json.dumps(refinement_data)}\n\n"
+                except asyncio.TimeoutError:
+                    print("[STREAM] Refinement generation took too long, proceeding without it")
+                except Exception as e:
+                    print(f"[STREAM] Refinement generation failed: {e}")
             
         except Exception as e:
             # Detect specific error types for better user feedback
@@ -296,12 +380,24 @@ async def query_documents(request: QueryRequest):
         if request.sessionId:
             session = await storage.getChatSession(request.sessionId)
             if not session:
+                # Generate a proper title for new session
+                initial_title = await title_generator.generate_title(
+                    query=request.query,
+                    assistant_response=None,
+                    enable_tracing=False
+                )
                 session = await storage.createChatSession({
-                    "title": request.query[:50] + "..." if len(request.query) > 50 else request.query
+                    "title": initial_title
                 })
         else:
+            # Generate a proper title for new session
+            initial_title = await title_generator.generate_title(
+                query=request.query,
+                assistant_response=None,
+                enable_tracing=False
+            )
             session = await storage.createChatSession({
-                "title": request.query[:50] + "..." if len(request.query) > 50 else request.query
+                "title": initial_title
             })
         
         # Save user message
@@ -359,6 +455,19 @@ async def query_documents(request: QueryRequest):
             "sources": sources,
         })
         
+        # Generate final title with assistant response context
+        try:
+            final_title = await title_generator.generate_title(
+                query=request.query,
+                assistant_response=agent_result["final_response"],
+                enable_tracing=False
+            )
+            # Update session title if it's different and better
+            if final_title != session.get("title"):
+                await storage.updateChatSession(session["id"], {"title": final_title})
+        except Exception as e:
+            print(f"[QUERY] Failed to generate final title: {e}")
+        
         # Format agent traces for response (if tracing enabled)
         agent_traces = None
         if request.enableTracing and agent_result.get("agent_traces"):
@@ -401,6 +510,37 @@ async def query_documents(request: QueryRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+@router.post("/generate-title", response_model=GenerateTitleResponse)
+async def generate_title(request: GenerateTitleRequest):
+    """
+    Generate a concise title for a chat session based on the user query and assistant response.
+    """
+    try:
+        # Verify session exists
+        session = await storage.getChatSession(request.sessionId)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Generate title using the title generator
+        title = await title_generator.generate_title(
+            query=request.query,
+            assistant_response=request.assistantResponse,
+            enable_tracing=False
+        )
+        
+        # Update the session with the new title
+        await storage.updateChatSession(request.sessionId, {"title": title})
+        
+        return GenerateTitleResponse(
+            sessionId=request.sessionId,
+            title=title
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Title generation failed: {str(e)}")
 
 @router.get("/chat/{session_id}", response_model=ChatHistoryResponse)
 async def get_chat_history(session_id: str):

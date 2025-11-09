@@ -90,6 +90,7 @@ export function Sidebar({
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [deletingChats, setDeletingChats] = useState<Set<string>>(new Set());
   const isMobile = useIsMobile();
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -97,23 +98,29 @@ export function Sidebar({
     chat.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffInMs = now.getTime() - date.getTime();
-    const diffInHours = diffInMs / (1000 * 60 * 60);
-    const diffInDays = diffInMs / (1000 * 60 * 60 * 24);
+const formatDate = (dateString: string): string => {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHour = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHour / 24);
 
-    if (diffInHours < 1) {
-      return "Just now";
-    } else if (diffInHours < 24) {
-      return `${Math.floor(diffInHours)}h ago`;
-    } else if (diffInDays < 7) {
-      return `${Math.floor(diffInDays)}d ago`;
-    } else {
-      return date.toLocaleDateString();
-    }
-  };
+  if (diffSec < 10) return "Just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHour < 24) return `${diffHour}h ago`;
+  if (diffDay < 7) return `${diffDay}d ago`;
+
+  // More than a week — show month and day, optionally year
+  const options: Intl.DateTimeFormatOptions =
+    date.getFullYear() === now.getFullYear()
+      ? { month: "short", day: "numeric" }
+      : { month: "short", day: "numeric", year: "numeric" };
+
+  return date.toLocaleDateString(undefined, options);
+};
 
   const handleChatClick = (chatId: string) => {
     // Prevent multiple rapid clicks
@@ -132,6 +139,29 @@ export function Sidebar({
     }, 300);
     
     onChatSelect(chatId);
+  };
+
+  const handleDeleteChat = (chatId: string) => {
+    // Prevent multiple deletions of the same chat
+    if (deletingChats.has(chatId)) {
+      console.log(`[SIDEBAR] Chat ${chatId} already being deleted, ignoring`);
+      return;
+    }
+    
+    // Mark as being deleted
+    setDeletingChats(prev => new Set(prev).add(chatId));
+    
+    // Call the actual delete function
+    onDeleteChat(chatId);
+    
+    // Remove from deleting set after a delay (cleanup)
+    setTimeout(() => {
+      setDeletingChats(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(chatId);
+        return newSet;
+      });
+    }, 2000);
   };
 
   // Cleanup timeout on unmount
@@ -246,7 +276,11 @@ export function Sidebar({
       <div className={cn(isMobile ? "p-2.5" : "p-3")}>
         {isOpen ? (
           <Button
-            onClick={onNewChat}
+            onClick={() => {
+              console.log('🔘 New Chat button clicked in Sidebar');
+              console.log('🔘 onNewChat handler:', typeof onNewChat, onNewChat);
+              onNewChat?.();
+            }}
             className="w-full justify-start gap-2 font-normal"
             variant="outline"
             size={isMobile ? "sm" : "default"}
@@ -272,7 +306,11 @@ export function Sidebar({
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  onClick={onNewChat}
+                  onClick={() => {
+                    // console.log('New Chat button clicked in Sidebar (collapsed)');
+                    // console.log('onNewChat handler:', typeof onNewChat, onNewChat);
+                    onNewChat?.();
+                  }}
                   className="w-full px-3"
                   variant="outline"
                 >
@@ -511,17 +549,19 @@ export function Sidebar({
                             <DropdownMenuItem 
                               onClick={(e) => {
                                 e.stopPropagation();
-                                onDeleteChat(chat.id);
+                                handleDeleteChat(chat.id);
                               }}
+                              disabled={deletingChats.has(chat.id)}
                               className={cn(
                                 "text-destructive focus:text-destructive cursor-pointer",
+                                deletingChats.has(chat.id) && "opacity-50 cursor-not-allowed",
                                 isMobile && [
                                   "py-2.5 px-3", // Slightly smaller padding
                                   "text-sm" // Smaller text
                                 ]
                               )}
                             >
-                              Delete conversation
+                              {deletingChats.has(chat.id) ? "Deleting..." : "Delete conversation"}
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>

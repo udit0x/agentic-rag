@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Library, File, Eye, Calendar, Trash2, Download, Search } from "lucide-react";
+import { Library, File, Eye, Calendar, Trash2, Download, Search, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { API_ENDPOINTS, apiRequest } from "@/lib/api-config";
+import { useCachedDocuments, useCachedDocumentContent } from "@/hooks/use-cached-api";
 
 // Custom scrollbar styles
 const scrollbarStyles = `
@@ -81,9 +81,15 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true); // Start with loading true
   const [error, setError] = useState<string | null>(null);
+  const { fetchDocumentContent } = useCachedDocumentContent();
 
   const getFileExtension = (filename: string) => {
     return filename.split('.').pop()?.toUpperCase() || 'FILE';
+  };
+
+  const isTxtFile = (filename: string) => {
+    const ext = getFileExtension(filename).toLowerCase();
+    return ['txt', 'text', 'log', 'md', 'readme'].includes(ext);
   };
 
   // Auto-load preview when component mounts
@@ -93,11 +99,8 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
       setError(null);
       
       try {
-        //console.log(`[DEBUG] Loading preview for document: ${document.id}`);
-        // Fetch document content from Python API
-        const data = await apiRequest<{content: string}>(API_ENDPOINTS.DOCUMENT_CONTENT(document.id));
-        //console.log(`[DEBUG] Content loaded successfully, length: ${data.content?.length || 0}`);
-        setContent(data.content || 'No content available');
+        const documentContent = await fetchDocumentContent(document.id);
+        setContent(documentContent || 'No content available');
         setLoading(false);
       } catch (err) {
         console.error('Error loading document preview:', err);
@@ -107,7 +110,7 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
     };
 
     loadPreview();
-  }, [document.id]); // Re-load if document changes
+  }, [document.id, fetchDocumentContent]); // Re-load if document changes
 
   const retryLoad = async () => {
     setLoading(true);
@@ -115,9 +118,8 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
     
     try {
       console.log(`[DEBUG] Retrying preview load for document: ${document.id}`);
-      const data = await apiRequest<{content: string}>(API_ENDPOINTS.DOCUMENT_CONTENT(document.id));
-      //console.log(`[DEBUG] Content loaded successfully on retry, length: ${data.content?.length || 0}`);
-      setContent(data.content || 'No content available');
+      const documentContent = await fetchDocumentContent(document.id);
+      setContent(documentContent || 'No content available');
       setLoading(false);
     } catch (err) {
       console.error('Error loading document preview on retry:', err);
@@ -154,15 +156,15 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
         </div>        <div
           className="relative border rounded-md bg-background h-[60vh] w-full custom-scroll"
           style={{
-            overflowX: "auto",
+            overflowX: isTxtFile(document.filename) ? "hidden" : "auto",
             overflowY: "auto",
           }}
         >
           <div
             className="absolute inset-0 p-4"
             style={{
-              width: "fit-content",
-              minWidth: "100%",
+              width: isTxtFile(document.filename) ? "100%" : "fit-content",
+              minWidth: isTxtFile(document.filename) ? "auto" : "100%",
             }}
           >
             {loading && (
@@ -179,11 +181,16 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
 
             {content && (
               <pre
-                className="text-xs leading-relaxed font-mono whitespace-pre"
+                className={`text-xs leading-relaxed font-mono ${
+                  isTxtFile(document.filename) 
+                    ? "whitespace-pre-wrap word-break-break-word" 
+                    : "whitespace-pre"
+                }`}
                 style={{
-                  display: "inline-block",
-                  minWidth: "800px",
+                  display: "block",
+                  minWidth: isTxtFile(document.filename) ? "auto" : "800px",
                   paddingBottom: "2rem",
+                  width: "100%",
                 }}
               >
                 {content}
@@ -238,11 +245,58 @@ function AnimatedDeleteButton({
   );
 }
 
-export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }: DocumentLibraryProps) {
+export function DocumentLibrary({ documents: propDocuments = [], onRefresh, onDeleteDocument }: DocumentLibraryProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
   const [deletingDocuments, setDeletingDocuments] = useState<Set<string>>(new Set());
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
+  
+  // Use cached documents hook
+  const { fetchDocuments, refreshDocuments, deleteDocument: deleteCachedDocument } = useCachedDocuments();
+  const [documents, setDocuments] = useState<Document[]>(propDocuments);
+
+  // Load documents with cache on component mount
+  useEffect(() => {
+    const loadDocuments = async () => {
+      // If we already have prop documents, don't show loading
+      if (propDocuments.length === 0) {
+        setIsLoading(true);
+      }
+      
+      try {
+        const cachedDocs = await fetchDocuments();
+        // Only update if we got valid data
+        if (Array.isArray(cachedDocs)) {
+          setDocuments(cachedDocs);
+          console.log(`📋 Loaded ${cachedDocs.length} documents from cache/API`);
+        }
+      } catch (error) {
+        console.error('Error loading documents from cache:', error);
+        // Keep prop documents if cache fails and we don't have cached data
+        if (documents.length === 0 && propDocuments.length > 0) {
+          console.log('📋 Fallback to prop documents');
+          setDocuments(propDocuments);
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    // Only load if we don't have documents or if forced refresh
+    if (documents.length === 0 || isRefreshing) {
+      loadDocuments();
+    }
+  }, []); // Only run once on mount
+
+  // Update documents when props change (fallback)
+  useEffect(() => {
+    if (propDocuments.length > 0 && documents.length === 0 && !isLoading) {
+      console.log('📋 Using prop documents as fallback');
+      setDocuments(propDocuments);
+    }
+  }, [propDocuments, documents.length, isLoading]);
 
   const filteredDocuments = documents.filter(doc =>
     doc.filename.toLowerCase().includes(searchTerm.toLowerCase())
@@ -261,18 +315,24 @@ export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }:
   };
 
   const handleDelete = async (documentId: string, filename: string) => {
-    if (!onDeleteDocument) return;
-    
     // Add document to deleting set
     setDeletingDocuments(prev => new Set(prev).add(documentId));
     
     try {
-      await onDeleteDocument(documentId);
+      // Use cached delete if available, otherwise use prop callback
+      if (deleteCachedDocument) {
+        await deleteCachedDocument(documentId);
+      } else if (onDeleteDocument) {
+        await onDeleteDocument(documentId);
+      }
+      
       toast({
         title: "Document deleted",
         description: `${filename} has been removed from the library.`,
       });
-      onRefresh();
+      
+      // Refresh documents list
+      handleRefresh();
     } catch (error) {
       toast({
         title: "Delete failed",
@@ -286,6 +346,34 @@ export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }:
         newSet.delete(documentId);
         return newSet;
       });
+    }
+  };
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      // Invalidate cache and fetch fresh data
+      refreshDocuments();
+      const freshDocs = await fetchDocuments(true); // Force refresh
+      setDocuments(freshDocs);
+      
+      // Also call the prop callback if provided
+      if (onRefresh) {
+        onRefresh();
+      }
+      
+      toast({
+        title: "Library refreshed",
+        description: "Document library has been updated.",
+      });
+    } catch (error) {
+      toast({
+        title: "Refresh failed",
+        description: "Failed to refresh the library. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -317,7 +405,16 @@ export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }:
           {/* Document List */}
           <ScrollArea className="h-96">
             <AnimatePresence>
-              {filteredDocuments.length === 0 ? (
+              {isLoading ? (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="flex flex-col items-center justify-center h-32 text-muted-foreground"
+                >
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mb-2"></div>
+                  <p>Loading documents...</p>
+                </motion.div>
+              ) : filteredDocuments.length === 0 ? (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -395,12 +492,10 @@ export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }:
                                 )}
                               </Dialog>
                               
-                              {onDeleteDocument && (
-                                <AnimatedDeleteButton
-                                  isDeleting={deletingDocuments.has(document.id)}
-                                  onClick={() => handleDelete(document.id, document.filename)}
-                                />
-                              )}
+                              <AnimatedDeleteButton
+                                isDeleting={deletingDocuments.has(document.id)}
+                                onClick={() => handleDelete(document.id, document.filename)}
+                              />
                             </div>
                           </div>
                         </CardContent>
@@ -417,10 +512,12 @@ export function DocumentLibrary({ documents = [], onRefresh, onDeleteDocument }:
             <Button
               variant="outline"
               size="sm"
-              onClick={onRefresh}
+              onClick={handleRefresh}
+              disabled={isRefreshing}
               className="w-full"
             >
-              Refresh Library
+              <RotateCcw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+              {isRefreshing ? 'Refreshing...' : 'Refresh Library'}
             </Button>
           </div>
         </CardContent>

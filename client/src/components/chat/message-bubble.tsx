@@ -12,7 +12,9 @@ import { useState, useEffect } from "react";
 interface MessageBubbleProps {
   message: Message;
   responseType?: string;
-  onCitationClick?: (sourceIndex: number, messageSources: Message["sources"]) => void;
+  selected?: boolean; // Whether this message is currently selected in context panel
+  onCitationClick?: (sourceIndex: number, messageSources: Message["sources"], messageId: string, agentTraces?: any[]) => void;
+  onMessageClick?: (messageId: string, sources?: Message["sources"], agentTraces?: any[]) => void; // Added for selecting message in context panel
   refinedQueries?: string[];
   showRefinedQueries?: boolean;
   onRefinedQueryClick?: (query: string) => void;
@@ -68,8 +70,10 @@ function CodeBlock({ language, children }: CodeBlockProps) {
 
 export function MessageBubble({ 
   message, 
-  responseType, 
-  onCitationClick, 
+  responseType,
+  selected = false,
+  onCitationClick,
+  onMessageClick,
   refinedQueries, 
   showRefinedQueries = false,
   onRefinedQueryClick 
@@ -166,6 +170,10 @@ export function MessageBubble({
               : "bg-card border border-card-border"
           )}
           data-testid="message-content"
+          onClick={!isUser ? () => {
+            // Only allow clicking on assistant messages to show their context
+            onMessageClick?.(message.id, message.sources, message.agentTraces as any[]);
+          } : undefined}
         >
           {isUser ? (
             <p className={cn(
@@ -205,7 +213,7 @@ export function MessageBubble({
                       const index = parseInt(citationMatch[1], 10);
                       return (
                         <button
-                          onClick={() => onCitationClick?.(index, message.sources)}
+                          onClick={() => onCitationClick?.(index, message.sources, message.id, message.agentTraces as any[])}
                           className={cn(
                             "inline-flex items-center align-super font-medium text-primary hover:underline",
                             isMobile ? "text-[10px]" : "text-xs"
@@ -347,7 +355,7 @@ export function MessageBubble({
                     return (
                       <button
                         key={filename}
-                        onClick={() => onCitationClick?.(data.citations[0] - 1, message.sources)}
+                        onClick={() => onCitationClick?.(data.citations[0] - 1, message.sources, message.id, message.agentTraces as any[])}
                         className={cn(
                           "group flex items-center gap-2 bg-background border border-border hover:border-primary/50 rounded-lg transition-all hover:shadow-sm",
                           isMobile ? "px-2.5 py-2 text-xs" : "px-3 py-2"

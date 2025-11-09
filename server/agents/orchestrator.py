@@ -112,7 +112,8 @@ class MultiAgentOrchestrator:
             intent_classification = await intent_router_agent.classify_intent(
                 state["query"],
                 state.get("session_id"),
-                enable_tracing=self.config["enable_tracing"]
+                enable_tracing=self.config["enable_tracing"],
+                document_ids=state.get("document_ids")  # Pass document filter to intent router
             )
             
             # Store as dict for consistent access
@@ -472,7 +473,8 @@ class MultiAgentOrchestrator:
                 refined_queries=refined_queries,
                 session_id=state.get("session_id"),
                 force_retrieval=False,  # Allow caching by default
-                force_lower_threshold=force_lower_threshold
+                force_lower_threshold=force_lower_threshold,
+                document_ids=state.get("document_ids")  # Pass document filtering
             )
             
             state["retrieved_chunks"] = chunks
@@ -1126,7 +1128,8 @@ Based on the scenario described in your query, here's the quantitative impact:
         self, 
         query: str, 
         session_id: str = None,
-        user_id: str = None
+        user_id: str = None,
+        document_ids: List[str] = None
     ) -> AgentState:
         """
         Process a query through the multi-agent workflow.
@@ -1135,6 +1138,7 @@ Based on the scenario described in your query, here's the quantitative impact:
             query: User's question
             session_id: Optional session identifier
             user_id: Optional user identifier
+            document_ids: Optional list of document IDs to filter search
             
         Returns:
             Final state with response and traces
@@ -1146,6 +1150,7 @@ Based on the scenario described in your query, here's the quantitative impact:
             "query": query,
             "session_id": session_id,
             "user_id": user_id,
+            "document_ids": document_ids,
             "intent_classification": None,
             "classification": None,
             "retrieved_chunks": [],
