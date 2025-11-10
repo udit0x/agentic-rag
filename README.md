@@ -1,6 +1,7 @@
 # Agentic RAG Orchestrator
 
 A production-ready multi-agent RAG (Retrieval-Augmented Generation) system that intelligently processes documents and provides contextually-aware responses using multiple specialized AI agents.
+<img width="2558" height="1225" alt="RAG image" src="https://github.com/user-attachments/assets/470e597b-db38-4734-b9d7-dc14973afca8" />
 
 ## 🚀 Features
 
@@ -233,4 +234,5 @@ This project is licensed under the MIT License.
 For questions and support:
 - Check the troubleshooting section
 - Review the API documentation at `/docs`
+
 - Open an issue in the repository
