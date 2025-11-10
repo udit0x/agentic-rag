@@ -604,6 +604,12 @@ class MultiAgentOrchestrator:
                 enable_tracing=self.config["enable_tracing"]
             )
             
+            # Check if simulation is applicable (has quantitative elements)
+            if simulation_result.get("current_value") is None and simulation_result.get("projected_value") is None:
+                print(f"[ORCHESTRATOR] Simulation not applicable - falling back to reasoning agent")
+                # Fallback to reasoning agent for non-quantitative queries
+                return await self._reasoning_node(state)
+            
             # Format response for simulation
             response = self._format_simulation_response(simulation_result, parameters)
             

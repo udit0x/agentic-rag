@@ -277,8 +277,8 @@ const formatDate = (dateString: string): string => {
         {isOpen ? (
           <Button
             onClick={() => {
-              console.log('🔘 New Chat button clicked in Sidebar');
-              console.log('🔘 onNewChat handler:', typeof onNewChat, onNewChat);
+              // console.log('New Chat button clicked in Sidebar');
+              // console.log('onNewChat handler:', typeof onNewChat, onNewChat);
               onNewChat?.();
             }}
             className="w-full justify-start gap-2 font-normal"

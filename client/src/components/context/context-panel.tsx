@@ -242,13 +242,13 @@ export function ContextPanel({
                                         <p className="text-xs text-muted-foreground font-mono">
                                           Relevance: {((source.score || 0) * 100).toFixed(1)}%
                                         </p>
-                                        <button
+                                        {/* <button
                                           className="text-xs text-primary hover:underline flex items-center gap-1 flex-shrink-0"
                                           data-testid="link-view-document"
                                         >
                                           View document
                                           <ExternalLink className="h-3 w-3" />
-                                        </button>
+                                        </button> */}
                                       </div>
                                     </Card>
                                   ))}
@@ -269,11 +269,16 @@ export function ContextPanel({
             <ScrollArea className="h-full">
               <div className="p-4 space-y-3">
                 {!hasTraces ? (
-                  <div className="text-center py-8">
+                  <div className="text-center py-8 px-4">
                     <Brain className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-                    <p className="text-sm text-muted-foreground">
+                    <p className="text-sm text-muted-foreground mb-2">
                       {enableTracing ? "No agent traces available" : "Enable tracing to see agent activity"}
                     </p>
+                    {enableTracing && (
+                      <p className="text-xs text-muted-foreground/80 max-w-xs mx-auto">
+                        Agent activity is shown only for the most recent query. Switching between chat history tabs will clear this view.
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-3 w-full">

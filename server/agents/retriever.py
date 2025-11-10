@@ -762,11 +762,38 @@ Document {i} (ID: {doc_id}):
         self, 
         results: List[Dict[str, Any]], 
         query: str,
-        target_count: int
+        target_count: int,
+        classification: Optional[QueryClassification] = None
     ) -> List[Dict[str, Any]]:
         """Apply lightweight filtering to reduce result set without heavy AI processing."""
         if not results or len(results) <= target_count:
             return results
+        
+        # OPTIMIZATION: Boost chunks with numerical data for simulation/counterfactual queries
+        if classification and classification.get('type') == 'counterfactual':
+            import re
+            for result in results:
+                content = result.get('content', '')
+                
+                # Detect financial/numerical indicators
+                has_currency = bool(re.search(r'\$\d+', content))
+                has_percentage = bool(re.search(r'\d+(?:\.\d+)?%', content))
+                has_large_numbers = bool(re.search(r'\d{1,3}(?:,\d{3})+', content))
+                has_numbers_with_units = bool(re.search(r'\d+\s*(credits|dollars|months|years|GB|MB)', content, re.IGNORECASE))
+                
+                # Count numerical indicators
+                num_indicators = sum([has_currency, has_percentage, has_large_numbers, has_numbers_with_units])
+                
+                if num_indicators > 0:
+                    # Boost score for chunks with numbers (max 15% boost)
+                    boost_factor = 1.0 + (0.05 * num_indicators)  # 5% per indicator, max 20%
+                    result['score'] = min(result.get('score', 0) * boost_factor, 0.99)
+                    result['has_numbers'] = True
+                    result['num_indicators'] = num_indicators
+            
+            # Re-sort after boosting
+            results = sorted(results, key=lambda x: x.get('score', 0), reverse=True)
+            print(f"[RETRIEVER] Boosted {sum(1 for r in results if r.get('has_numbers'))} chunks with numerical data for counterfactual query")
         
         # Simple score-based filtering - keep results above average score
         scores = [r.get('score', 0) for r in results]
@@ -781,6 +808,61 @@ Document {i} (ID: {doc_id}):
 
         #print(f"[RETRIEVER] Lightweight filtering: score threshold {score_threshold:.3f}, kept {len(filtered)}/{len(results)}")
         return filtered
+
+    async def _expand_with_neighboring_chunks(
+        self, 
+        results: List[Dict[str, Any]], 
+        document_ids: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch neighboring chunks for better context continuity.
+        Only applies when searching within a specific single document.
+        """
+        if not document_ids or len(document_ids) != 1:
+            return results  # Only expand for single-document queries
+        
+        if not results:
+            return results
+        
+        expanded = list(results)  # Start with original results
+        chunks_to_fetch = []
+        
+        # Collect neighboring chunk indices
+        for result in results:
+            chunk_index = result.get('chunkIndex', 0)
+            doc_id = result.get('documentId', '')
+            
+            # Add neighboring chunk indices (previous and next)
+            if chunk_index > 0:
+                chunks_to_fetch.append((doc_id, chunk_index - 1))  # Previous chunk
+            chunks_to_fetch.append((doc_id, chunk_index + 1))      # Next chunk
+        
+        # Fetch all chunks from storage to find neighbors
+        all_chunks = await storage.getAllChunks()
+        
+        # Find and add neighboring chunks
+        for doc_id, target_chunk_idx in chunks_to_fetch:
+            # Check if we already have this chunk in results
+            already_have = any(
+                r.get('chunkIndex') == target_chunk_idx and r.get('documentId') == doc_id 
+                for r in expanded
+            )
+            
+            if not already_have:
+                # Find this chunk in storage
+                for chunk in all_chunks:
+                    if chunk.get('documentId') == doc_id and chunk.get('chunkIndex') == target_chunk_idx:
+                        # Add with context score (lower than direct matches)
+                        chunk_copy = chunk.copy()
+                        chunk_copy['score'] = 0.60  # Context score
+                        chunk_copy['is_context_expansion'] = True
+                        expanded.append(chunk_copy)
+                        break
+        
+        if len(expanded) > len(results):
+            print(f"[RETRIEVER] Context expansion: {len(results)} -> {len(expanded)} chunks (added {len(expanded) - len(results)} neighboring chunks)")
+        
+        return expanded
 
     def _deduplicate_content(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Remove chunks with very similar content to avoid showing duplicates."""
@@ -1050,14 +1132,24 @@ Rank from 1 (most relevant) to N (least relevant).
             
             # OPTIMIZATION: Batch search with higher k, then deduplicate
             all_results = []
-            batch_k = max_chunks * 2  # Get more results per query for better diversity
             
-            # Determine threshold based on force_lower_threshold flag
+            # OPTIMIZATION: Increase k for single-document queries (more aggressive retrieval)
+            if document_ids and len(document_ids) == 1:
+                batch_k = max_chunks * 4  # 20 chunks for single document (4x5)
+                print(f"[RETRIEVER] Single document mode: using expanded k={batch_k}")
+            else:
+                batch_k = max_chunks * 2  # 10 chunks for multi-document (2x5)
+            
+            # Determine threshold based on force_lower_threshold flag or single-document mode
             search_threshold = None
             if force_lower_threshold:
                 # Use a significantly lower threshold for broader search
                 search_threshold = 0.3  # Much lower than default 0.65
                 print(f"[RETRIEVER] Using lower threshold {search_threshold} for broader search")
+            elif document_ids and len(document_ids) == 1:
+                # Auto-enable lower threshold for single-document queries
+                search_threshold = 0.55  # More permissive than 0.65, but not as low as 0.3
+                print(f"[RETRIEVER] Single document mode: using permissive threshold {search_threshold}")
             
             for i, search_query in enumerate(search_queries):
                 query_results = await self.azure_client.semantic_search(
@@ -1083,6 +1175,10 @@ Rank from 1 (most relevant) to N (least relevant).
                 if chunk_id not in seen_chunks:
                     seen_chunks.add(chunk_id)
                     unique_results.append(result)
+            
+            # OPTIMIZATION: Context expansion for single-document queries
+            if document_ids and len(document_ids) == 1:
+                unique_results = await self._expand_with_neighboring_chunks(unique_results, document_ids)
             
             # Take top results after deduplication - increased limit for better filtering
             raw_results = sorted(unique_results, key=lambda x: x.get('score', 0), reverse=True)[:max_chunks * 3]
@@ -1116,7 +1212,7 @@ Rank from 1 (most relevant) to N (least relevant).
             # Apply basic relevance filtering only if we have many results
             if len(raw_results) > max_chunks * 2:
                 # Use lightweight filtering for performance, but fall back to AI if results are poor
-                filtered_results = await self._apply_lightweight_filtering(raw_results, query, max_chunks * 2)
+                filtered_results = await self._apply_lightweight_filtering(raw_results, query, max_chunks * 2, classification)
                 
                 # If lightweight filtering removes too many good results, use AI filtering
                 if len(filtered_results) < max_chunks and len(raw_results) >= max_chunks:

@@ -1,4 +1,4 @@
-import { type Message } from "@shared/schema";
+import { type Message } from "@/lib/chat-cache";  // Use extended Message type with serverId
 import { cn } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { User, Bot, Copy, Check, ChevronDown, ChevronUp } from "lucide-react";
@@ -81,22 +81,26 @@ export function MessageBubble({
   const isUser = message.role === "user";
   const isMobile = useIsMobile();
   const [isQuestionsExpanded, setIsQuestionsExpanded] = useState(false);
-  const [showQuestions, setShowQuestions] = useState(showRefinedQueries);
 
-  // Auto-show questions when they become available, then auto-hide after delay
+  // Auto-show questions when they become available, then auto-collapse after delay
   useEffect(() => {
     if (refinedQueries && refinedQueries.length > 0 && showRefinedQueries) {
-      setShowQuestions(true);
+      // console.log('[MessageBubble] Showing refined queries:', {
+      //   count: refinedQueries.length,
+      //   showRefinedQueries,
+      //   messageId: message.id,
+      //   messageServerId: message.serverId
+      // });
+      setIsQuestionsExpanded(true); // Auto-expand initially
       
-      // Auto-hide after 4 seconds and collapse
+      // Auto-collapse after 6 seconds (keep header visible, just collapse the list)
       const timer = setTimeout(() => {
-        setShowQuestions(false);
-        setIsQuestionsExpanded(false);
-      }, 4000);
+        setIsQuestionsExpanded(false); // Only collapse, don't hide completely
+      }, 6000);
       
       return () => clearTimeout(timer);
     }
-  }, [refinedQueries, showRefinedQueries]);
+  }, [refinedQueries, showRefinedQueries, message.id]);
 
   const hasRefinedQueries = refinedQueries && refinedQueries.length > 0;
 
@@ -247,69 +251,70 @@ export function MessageBubble({
 
         {/* Refined Questions Section - Only for user messages */}
         {isUser && hasRefinedQueries && (
-          <AnimatePresence>
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ 
-                opacity: showQuestions ? 1 : 0.7, 
-                height: "auto" 
-              }}
-              exit={{ opacity: 0, height: 0 }}
-              transition={{ duration: 0.3, ease: "easeInOut" }}
-              className="mt-2"
-            >
-              <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
-                {/* Header with toggle */}
-                <button
-                  onClick={() => setIsQuestionsExpanded(!isQuestionsExpanded)}
-                  className="w-full flex items-center justify-between px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
-                >
-                  <span className="flex items-center gap-2">
-                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                    Related Questions ({refinedQueries.length})
-                  </span>
-                  {isQuestionsExpanded ? (
-                    <ChevronUp className="h-4 w-4" />
-                  ) : (
-                    <ChevronDown className="h-4 w-4" />
-                  )}
-                </button>
-                
-                {/* Questions List */}
-                <AnimatePresence>
-                  {(isQuestionsExpanded || showQuestions) && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="border-t border-gray-200 dark:border-gray-700"
-                    >
-                      <div className="p-3 space-y-2">
-                        {/* Explanation text - only shown when expanded */}
-                        {isQuestionsExpanded && (
-                          <div className="text-xs text-gray-500 dark:text-gray-400 italic mb-3">
-                            Related questions generated for better search accuracy and context understanding
-                          </div>
-                        )}
-                        {refinedQueries.map((query, index) => (
-                          <motion.div
-                            key={index}
-                            initial={{ opacity: 0, x: -10 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: index * 0.1 }}
-                            className="text-sm text-gray-600 dark:text-gray-300 py-1"
-                          >
-                            <span className="text-blue-500 font-medium">{index + 1}.</span> {query}
-                          </motion.div>
-                        ))}
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          </AnimatePresence>
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ 
+              opacity: 1, 
+              height: "auto"
+            }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ 
+              duration: 0.3, 
+              ease: [0.4, 0.0, 0.2, 1]
+            }}
+            className="mt-2"
+          >
+            <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+              {/* Header with toggle */}
+              <button
+                onClick={() => setIsQuestionsExpanded(!isQuestionsExpanded)}
+                className="w-full flex items-center justify-between px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  <div className={cn(
+                    "w-2 h-2 rounded-full transition-all",
+                    isQuestionsExpanded ? "bg-blue-500 animate-pulse" : "bg-gray-400"
+                  )}></div>
+                  Related Questions ({refinedQueries.length})
+                </span>
+                {isQuestionsExpanded ? (
+                  <ChevronUp className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
+              </button>
+              
+              {/* Questions List */}
+              <AnimatePresence>
+                {isQuestionsExpanded && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ 
+                      duration: 0.4,
+                      ease: [0.4, 0.0, 0.2, 1]
+                    }}
+                    className="border-t border-gray-200 dark:border-gray-700"
+                  >
+                    <div className="p-3 space-y-2">
+                      {refinedQueries.map((query, index) => (
+                        <motion.div
+                          key={index}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: index * 0.1 }}
+                          className="text-sm text-gray-600 dark:text-gray-300 py-1"
+                        >
+                          <span className="text-blue-500 font-medium">{index + 1}.</span> {query}
+                        </motion.div>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </motion.div>
         )}
 
         {!isUser && (

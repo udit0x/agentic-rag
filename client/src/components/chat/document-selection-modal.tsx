@@ -450,7 +450,9 @@ export function DocumentSelectionModal({
             <div className="text-xs text-muted-foreground">
               {tempSelectedIds.length === 0 
                 ? "No filters applied - will search all documents"
-                : `Will search in ${tempSelectedIds.length} document${tempSelectedIds.length !== 1 ? 's' : ''}`
+                : tempSelectedIds.length === 1
+                ? "Searching 1 document - optimal for best results"
+                : `Will search in ${tempSelectedIds.length} documents. Tip: Works best with a single document.`
               }
             </div>
             

@@ -7,6 +7,7 @@ import json
 import asyncio
 import sys
 from pathlib import Path
+from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from server.storage import storage
@@ -84,12 +85,6 @@ async def stream_query_with_refinement(request: QueryRequest):
             else:
                 print("[STREAM_DEBUG] No document filter provided - searching all documents")
             
-            # Start refinement generation in parallel (non-blocking)
-            refinement_task = asyncio.create_task(
-                query_refinement_agent.generate_related_questions(request.query)
-            )
-            refinement_streamed = False  # Track if we've already streamed refinement
-            
             # 🚀 OPTIMIZATION: Create or get session FIRST (before sending started event)
             # This allows us to include session ID in the started event for immediate frontend updates
             session = None
@@ -111,24 +106,34 @@ async def stream_query_with_refinement(request: QueryRequest):
                 })
                 print(f"[STREAM] Created new session: {session['id']} with temporary title: {temporary_title}")
             
-            # Send immediate acknowledgment with session ID for fast frontend updates
-            ack_data = {
-                "type": "started",
-                "data": {
-                    "status": "processing",
-                    "query": request.query,
-                    "sessionId": session["id"]  # Include session ID so frontend can update immediately
-                }
-            }
-            yield f"data: {json.dumps(ack_data)}\n\n"
-            
-            # Save user message
+            # Create user message in database
+            # Note: Frontend already has optimistic message displayed
+            # We just need to persist it in the database for history
             user_message = await storage.createMessage({
                 "sessionId": session["id"],
-                "role": "user", 
-                "content": request.query,
-                "sources": None,
+                "role": "user",
+                "content": request.query
             })
+            
+            # Send "started" event with session ID and user message ID
+            # Frontend needs the user message ID to link optimistic message to server record
+            started_data = {
+                "type": "started",
+                "data": {
+                    "sessionId": session["id"],
+                    "userMessageId": user_message["id"]  # Send ID for frontend to link optimistic → server
+                }
+            }
+            yield f"data: {json.dumps(started_data)}\n\n"
+            
+            # ============================================
+            # PHASE 3: Parallel execution with timeout
+            # ============================================
+            
+            # Start refinement with timeout
+            refinement_task = asyncio.create_task(
+                query_refinement_agent.generate_related_questions(request.query)
+            )
             
             # Configure orchestrator
             from server.agents.state import WorkflowConfig
@@ -142,45 +147,83 @@ async def stream_query_with_refinement(request: QueryRequest):
             }
             orchestrator.config = config
             
-            # Helper function to check and stream refinement if ready
-            async def check_and_stream_refinement():
-                nonlocal refinement_streamed
-                if not refinement_streamed and refinement_task.done():
-                    try:
-                        refinement = refinement_task.result()
-                        if refinement.query_category != "api_error":
-                            print(f"[STREAM] Refinement completed early, streaming {len(refinement.refined_queries)} questions")
-                            refinement_data = {
-                                "type": "refinement",
-                                "data": {
-                                    "userMessageId": user_message["id"],
-                                    "refined_queries": refinement.refined_queries,
-                                    "query_category": refinement.query_category,
-                                    "refinement_reasoning": refinement.refinement_reasoning,
-                                    "status": "generated"
-                                }
-                            }
-                            yield f"data: {json.dumps(refinement_data)}\n\n"
-                            refinement_streamed = True
-                    except Exception as e:
-                        print(f"[STREAM] Refinement check failed: {e}")
-                        refinement_streamed = True  # Mark as done to avoid repeated checks
-            
-            # Check if refinement is ready before starting main processing
-            async for chunk in check_and_stream_refinement():
-                yield chunk
-            
-            # Execute multi-agent workflow
-            agent_result = await orchestrator.process_query(
-                query=request.query,
-                session_id=session["id"],
-                user_id=None,
-                document_ids=request.documentIds
+            # Start orchestrator
+            orchestrator_task = asyncio.create_task(
+                orchestrator.process_query(
+                    query=request.query,
+                    session_id=session["id"],
+                    user_id=None,
+                    document_ids=request.documentIds
+                )
             )
             
-            # Check if refinement completed during main processing
-            async for chunk in check_and_stream_refinement():
-                yield chunk
+            # ============================================
+            # PHASE 4: Wait for refinement with timeout (GUARANTEED DELIVERY)
+            # ============================================
+            refinement_result = None
+            try:
+                # Wait max 8 seconds for refinement
+                refinement_result = await asyncio.wait_for(
+                    refinement_task, 
+                    timeout=8.0
+                )
+                
+                if refinement_result and refinement_result.query_category != "api_error":
+                    print(f"[STREAM] ✅ Refinement completed: {len(refinement_result.refined_queries)} questions")
+                    refinement_data = {
+                        "type": "refinement",
+                        "data": {
+                            "userMessageId": user_message["id"],
+                            "refined_queries": refinement_result.refined_queries,
+                            "query_category": refinement_result.query_category,
+                            "refinement_reasoning": refinement_result.refinement_reasoning,
+                            "status": "generated"
+                        }
+                    }
+                    yield f"data: {json.dumps(refinement_data)}\n\n"
+                else:
+                    # API error - send empty refinement
+                    print(f"[STREAM] ⚠️ Refinement API error, sending empty")
+                    refinement_data = {
+                        "type": "refinement",
+                        "data": {
+                            "userMessageId": user_message["id"],
+                            "refined_queries": [],
+                            "status": "skipped_api_error"
+                        }
+                    }
+                    yield f"data: {json.dumps(refinement_data)}\n\n"
+                    
+            except asyncio.TimeoutError:
+                # Timeout - send empty refinement
+                print(f"[STREAM] ⏱️ Refinement timeout, sending empty")
+                refinement_data = {
+                    "type": "refinement",
+                    "data": {
+                        "userMessageId": user_message["id"],
+                        "refined_queries": [],
+                        "status": "timeout"
+                    }
+                }
+                yield f"data: {json.dumps(refinement_data)}\n\n"
+                
+            except Exception as e:
+                # Any error - send empty refinement
+                print(f"[STREAM] ❌ Refinement failed: {e}, sending empty")
+                refinement_data = {
+                    "type": "refinement",
+                    "data": {
+                        "userMessageId": user_message["id"],
+                        "refined_queries": [],
+                        "status": "error"
+                    }
+                }
+                yield f"data: {json.dumps(refinement_data)}\n\n"
+            
+            # ============================================
+            # PHASE 5: Wait for orchestrator result
+            # ============================================
+            agent_result = await orchestrator_task
             
             # Check for agent-level errors and propagate them
             if agent_result.get("error_message"):
@@ -297,29 +340,6 @@ async def stream_query_with_refinement(request: QueryRequest):
                     yield f"data: {json.dumps(title_update_data)}\n\n"
             except Exception as e:
                 print(f"[STREAM] Failed to generate final title: {e}")
-            
-            # Final fallback: try to get refinement result if we haven't streamed it yet
-            if not refinement_streamed:
-                try:
-                    refinement = await asyncio.wait_for(refinement_task, timeout=1.0)  # Shorter timeout since this is fallback
-                    # Stream refinement only if we haven't already
-                    if refinement.query_category != "api_error":
-                        print(f"[STREAM] Refinement completed (fallback), streaming {len(refinement.refined_queries)} questions")
-                        refinement_data = {
-                            "type": "refinement",
-                            "data": {
-                                "userMessageId": user_message["id"],  # Consistent field name with completion event
-                                "refined_queries": refinement.refined_queries,
-                                "query_category": refinement.query_category,
-                                "refinement_reasoning": refinement.refinement_reasoning,
-                                "status": "generated"
-                            }
-                        }
-                        yield f"data: {json.dumps(refinement_data)}\n\n"
-                except asyncio.TimeoutError:
-                    print("[STREAM] Refinement generation took too long, proceeding without it")
-                except Exception as e:
-                    print(f"[STREAM] Refinement generation failed: {e}")
             
         except Exception as e:
             # Detect specific error types for better user feedback

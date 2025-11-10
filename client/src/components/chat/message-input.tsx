@@ -39,6 +39,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isMobile = useIsMobile();
+  
+  const MAX_CHARACTERS = 2000;
+  const isNearLimit = message.length > MAX_CHARACTERS * 0.9; // Show warning at 90%
+  const isOverLimit = message.length > MAX_CHARACTERS;
 
   useImperativeHandle(ref, () => ({
     focus: () => {
@@ -47,7 +51,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
   }));
 
   const handleSubmit = () => {
-    if (message.trim() && !disabled) {
+    if (message.trim() && !disabled && !isOverLimit) {
       onSubmit(message.trim(), selectedDocumentIds);
       setMessage("");
       // Reset textarea height to minimum after submit
@@ -185,9 +189,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
                 : placeholder
             }
             disabled={disabled}
+            maxLength={MAX_CHARACTERS}
             className={cn(
-              "resize-none flex-1 text-base transition-all overflow-hidden",
+              "resize-none flex-1 text-base transition-all overflow-y-auto",
               "focus-visible:ring-2 focus-visible:ring-ring",
+              "[&::-webkit-scrollbar]:w-2",
+              "[&::-webkit-scrollbar-track]:bg-transparent",
+              "[&::-webkit-scrollbar-thumb]:bg-gray-400 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-0",
+              "[&::-webkit-scrollbar-thumb]:hover:bg-gray-500",
+              "dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 dark:[&::-webkit-scrollbar-thumb]:hover:bg-gray-500",
+              isOverLimit && "ring-2 ring-destructive focus-visible:ring-destructive",
               isMobile ? [
                 "min-h-[2.75rem] max-h-[7.5rem]", // Mobile: 44px to 120px
                 "text-[16px] leading-5", // Ensure 16px+ to prevent zoom on iOS
@@ -212,7 +223,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
           />
           <Button
             onClick={handleSubmit}
-            disabled={disabled || !message.trim()}
+            disabled={disabled || !message.trim() || isOverLimit}
             size="icon"
             className={cn(
               "flex-shrink-0 transition-all",
@@ -234,6 +245,18 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
             <span className="sr-only">Send message</span>
           </Button>
         </div>
+        
+        {/* Character counter */}
+        {message.length > 0 && (
+          <div className={cn(
+            "text-xs text-right transition-colors",
+            isOverLimit ? "text-destructive font-medium" : 
+            isNearLimit ? "text-orange-500 font-medium" : 
+            "text-muted-foreground"
+          )}>
+            {message.length} / {MAX_CHARACTERS}
+          </div>
+        )}
       </div>
 
       {/* Document Selection Modal */}

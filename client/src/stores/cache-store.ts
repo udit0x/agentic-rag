@@ -112,43 +112,50 @@ const getStringSize = (str: string): number => {
   return new Blob([str]).size;
 };
 
-// Similarity check for queries (basic Levenshtein distance)
+// Similarity check for queries (optimized with early exit)
 const calculateSimilarity = (str1: string, str2: string): number => {
   const longer = str1.length > str2.length ? str1 : str2;
   const shorter = str1.length > str2.length ? str2 : str1;
   
   if (longer.length === 0) return 1.0;
   
+  // Early exit if length difference is too large
+  if (longer.length - shorter.length > longer.length * 0.3) {
+    return 0;
+  }
+  
   const distance = levenshteinDistance(longer, shorter);
   return (longer.length - distance) / longer.length;
 };
 
 const levenshteinDistance = (str1: string, str2: string): number => {
-  const matrix: number[][] = [];
+  // Optimize for very short strings
+  if (str1.length === 0) return str2.length;
+  if (str2.length === 0) return str1.length;
   
-  for (let i = 0; i <= str2.length; i++) {
-    matrix[i] = [i];
-  }
-  
-  for (let j = 0; j <= str1.length; j++) {
-    matrix[0][j] = j;
-  }
+  // Use single array instead of matrix for better memory performance
+  const row: number[] = Array.from({ length: str1.length + 1 }, (_, i) => i);
   
   for (let i = 1; i <= str2.length; i++) {
+    let prev = i;
     for (let j = 1; j <= str1.length; j++) {
+      let val;
       if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1];
+        val = row[j - 1];
       } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1,
-          matrix[i][j - 1] + 1,
-          matrix[i - 1][j] + 1
+        val = Math.min(
+          row[j - 1] + 1, // substitution
+          prev + 1,       // insertion
+          row[j] + 1      // deletion
         );
       }
+      row[j - 1] = prev;
+      prev = val;
     }
+    row[str1.length] = prev;
   }
   
-  return matrix[str2.length][str1.length];
+  return row[str1.length];
 };
 
 export const useCacheStore = create<CacheState>()(

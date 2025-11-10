@@ -202,6 +202,11 @@ class SimulationAgent:
     
     def _extract_numbers_regex(self, text: str) -> List[float]:
         """Extract numbers from text using regex as fallback."""
+        # First, remove common question number patterns to avoid false positives
+        # Remove patterns like "148. " or "Q148: " at the start of lines
+        cleaned_text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+        cleaned_text = re.sub(r'^\s*Q\d+[:\s]+', '', cleaned_text, flags=re.MULTILINE)
+        
         # Match various number formats: 15%, $100, 1.5, 1,000, etc.
         patterns = [
             r'\$\d+(?:,\d{3})*(?:\.\d{2})?',  # Currency first (priority)
@@ -211,14 +216,15 @@ class SimulationAgent:
         
         numbers = []
         for pattern in patterns:
-            matches = re.findall(pattern, text)
+            matches = re.findall(pattern, cleaned_text)
             for match in matches:
                 # Clean and convert
                 clean_num = re.sub(r'[%$,]', '', match)
                 try:
                     num_value = float(clean_num)
                     # Skip very small numbers that are likely not financial values
-                    if num_value >= 1:
+                    # Use a reasonable minimum threshold for financial data
+                    if num_value >= 1000:  # Minimum $1,000 for financial values
                         numbers.append(num_value)
                 except ValueError:
                     continue
@@ -396,10 +402,42 @@ class SimulationAgent:
         """
         start_time = datetime.now() if enable_tracing else None
         
+        # Initialize LLM and chains if not already done
+        self._get_llm()
+        
         try:
+            # Pre-check: Skip simulation for non-quantitative queries
+            # Look for numerical indicators in the query
+            has_numbers_in_query = bool(re.search(r'\d+(?:\.\d+)?%|\$\d+|\d+(?:,\d{3})*(?:\.\d+)?', query))
+            quantitative_keywords = ['increase', 'decrease', 'double', 'triple', 'multiply', 'revenue', 
+                                    'cost', 'profit', 'price', 'percentage', 'amount', 'salary', 'budget']
+            has_quantitative_context = any(keyword in query.lower() for keyword in quantitative_keywords)
+            
+            # If query has no numbers and no quantitative keywords, skip simulation
+            if not has_numbers_in_query and not has_quantitative_context:
+                print(f"[SIMULATION_AGENT] Skipping simulation - query lacks quantitative elements")
+                # Return null result to signal this isn't a simulation scenario
+                return (
+                    SimulationResult(
+                        current_value=None,
+                        projected_value=None,
+                        change_amount=0,
+                        change_percentage=0,
+                        assumptions=["Not a quantitative simulation query"],
+                        methodology="Skipped - no numerical parameters detected"
+                    ),
+                    SimulationParameters(
+                        base_value=None,
+                        change_percentage=None,
+                        scenario_description=query,
+                        variables={}
+                    )
+                )
+            
             # Step 1: Extract parameters from query and documents
             if self.extraction_chain:
                 # Use LLM for parameter extraction
+                print(f"[SIMULATION_AGENT] Using AI for parameter extraction")
                 context = self._format_context(chunks)
                 extraction_result = await self.extraction_chain.ainvoke({
                     "query": query,
@@ -416,12 +454,14 @@ class SimulationAgent:
                 
             else:
                 # Fallback to rule-based extraction
+                print(f"[SIMULATION_AGENT] Using rule-based parameter extraction (LLM not available)")
                 parameters = self._fallback_parameter_extraction(query, chunks)
                 operation = "increase"  # Default operation
             
             # Step 2: Calculate projections
             if self.simulation_chain and parameters.get("base_value") is not None:
                 # Use LLM for advanced calculations
+                print(f"[SIMULATION_AGENT] Using AI for simulation calculations")
                 simulation_input = {
                     "base_value": parameters["base_value"],
                     "operation": operation,
@@ -441,6 +481,7 @@ class SimulationAgent:
                 )
             else:
                 # Fallback calculation
+                print(f"[SIMULATION_AGENT] Using manual calculation (LLM not available or no base value)")
                 simulation_result = self._calculate_projection(parameters, operation)
             
             return simulation_result, parameters

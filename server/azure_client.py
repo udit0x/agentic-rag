@@ -451,43 +451,37 @@ class MultiProviderRAGClient:
     
     def _normalize_azure_search_score(self, score: float, max_score: float = None) -> float:
         """
-        Normalize Azure Search scores to a user-friendly percentage.
-        For vector similarity scores (0-1 range), we interpret them as direct similarity percentages.
-        For hybrid search scores (typically 0.01-0.05), we scale them up appropriately.
+        Apply moderate user-friendly boosting to raw vector similarity scores.
+        
+        Backend uses real scores for filtering/ranking (honest quality assessment).
+        Frontend receives slightly boosted scores for better user perception.
+        
+        Boosting strategy (conservative):
+        - 0.70+ (already good) → +10% boost (e.g., 0.72 → 0.79)
+        - 0.60-0.69 (moderate) → +15% boost (e.g., 0.65 → 0.75)
+        - 0.50-0.59 (borderline) → +20% boost (e.g., 0.55 → 0.66)
+        - <0.50 (poor) → minimal boost (cap at 0.60)
+        
+        This balances transparency with user-friendly presentation.
         """
         if score <= 0:
             return 0.0
         
-        # Detect if this is a vector similarity score (typically 0.5-1.0 range for good matches)
-        # vs hybrid search score (typically 0.01-0.05 range)
-        
-        if score > 0.1:  # This is likely a vector similarity score
-            # Vector similarity scores are already in a meaningful 0-1 range
-            # Convert directly to percentage, with slight scaling to make good scores more apparent
-            if score >= 0.95:  # Perfect match
-                return 0.99
-            elif score >= 0.80:  # Excellent match
-                return min(0.95, score * 1.05)  # Slight boost for display
-            elif score >= 0.60:  # Very good match
-                return min(0.90, score * 1.1)   # Small boost for display
-            elif score >= 0.40:  # Good match
-                return min(0.75, score * 1.2)   # Moderate boost for display
-            elif score >= 0.20:  # Fair match
-                return min(0.60, score * 1.5)   # Larger boost for lower scores
-            else:  # Poor match
-                return min(0.40, score * 2.0)   # Maximum boost for very low scores
+        # Apply user-friendly boost for display
+        if score >= 0.70:
+            # Already good - small boost for confidence
+            boosted = min(score * 1.10, 0.95)  # +10%, cap at 95%
+        elif score >= 0.60:
+            # Moderate match - medium boost
+            boosted = min(score * 1.15, 0.90)  # +15%, cap at 90%
+        elif score >= 0.50:
+            # Borderline - larger boost to show it passed threshold
+            boosted = min(score * 1.20, 0.75)  # +20%, cap at 75%
         else:
-            # This is likely a hybrid search score - scale up significantly
-            if score >= 0.04:  # Excellent match
-                return min(0.95, score * 20)  # Cap at 95%
-            elif score >= 0.03:  # Very good match  
-                return min(0.80, score * 25)
-            elif score >= 0.02:  # Good match
-                return min(0.65, score * 30)
-            elif score >= 0.01:  # Fair match
-                return min(0.50, score * 35)
-            else:  # Poor match
-                return min(0.30, score * 40)
+            # Poor match - minimal boost, show it's weak
+            boosted = min(score * 1.15, 0.60)  # Small boost, cap at 60%
+        
+        return min(boosted, 0.99)  # Never show 100%
     
     def _adapt_user_threshold_to_vector_reality(self, user_threshold: float) -> float:
         """

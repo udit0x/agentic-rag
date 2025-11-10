@@ -37,13 +37,13 @@ export const useCachedDocuments = () => {
     if (!forceRefresh) {
       const cached = getDocumentLibrary();
       if (cached) {
-        console.log('📋 Using cached document library');
+        console.log('Using cached document library');
         return cached;
       }
     }
 
     try {
-      console.log('🔄 Fetching fresh document library from API');
+      //console.log('Fetching fresh document library from API');
       const documents = await apiRequest<Document[]>(
         API_ENDPOINTS.DOCUMENTS
       );
@@ -58,18 +58,18 @@ export const useCachedDocuments = () => {
       // Fallback to cache if API fails
       const cached = getDocumentLibrary();
       if (cached) {
-        console.log('⚠️ API failed, using stale cache');
+        console.log('API failed, using stale cache');
         return cached;
       }
       
       // If no cache available, return empty array but don't throw
-      console.log('⚠️ No cache available, returning empty array');
+      console.log('No cache available, returning empty array');
       return [];
     }
   };
 
   const refreshDocuments = () => {
-    console.log('🗑️ Invalidating document library cache');
+    console.log('Invalidating document library cache');
     invalidateDocumentLibrary();
   };
 
@@ -83,7 +83,7 @@ export const useCachedDocuments = () => {
       invalidateDocumentLibrary();
       
     } catch (error) {
-      console.error('❌ Error deleting document:', error);
+      console.error('Error deleting document:', error);
       throw error;
     }
   };
@@ -110,7 +110,7 @@ export const useCachedDocumentContent = () => {
     }
 
     try {
-      console.log(`🔄 Fetching fresh content for document: ${documentId}`);
+      console.log(`Fetching fresh content for document: ${documentId}`);
       const response = await apiRequest<{ content: string }>(
         API_ENDPOINTS.DOCUMENT_CONTENT(documentId)
       );
@@ -122,7 +122,7 @@ export const useCachedDocumentContent = () => {
       
       return content;
     } catch (error) {
-      console.error(`❌ Error fetching document content for ${documentId}:`, error);
+      console.error(`Error fetching document content for ${documentId}:`, error);
       throw error;
     }
   };
@@ -147,7 +147,7 @@ export const useCachedQueries = () => {
     const similar = findSimilarQuery(query, 0.85); // 85% similarity threshold
     
     if (similar && JSON.stringify(similar.documentIds.sort()) === JSON.stringify(documentIds.sort())) {
-      console.log('💭 Using cached query result for similar query');
+      console.log('Using cached query result for similar query');
       return {
         result: similar.result,
         fromCache: true,
@@ -155,7 +155,7 @@ export const useCachedQueries = () => {
     }
 
     try {
-      console.log('🔄 Executing fresh query');
+      console.log('Executing fresh query');
       
       const requestBody = {
         message: query,
@@ -181,7 +181,7 @@ export const useCachedQueries = () => {
         fromCache: false,
       };
     } catch (error) {
-      console.error('❌ Error executing query:', error);
+      console.error('Error executing query:', error);
       throw error;
     }
   };
@@ -241,17 +241,17 @@ export const useCachedChatHistory = () => {
       
       return messages;
     } catch (error) {
-      console.error(`❌ Error fetching chat history for ${sessionId}:`, error);
+      console.error(`Error fetching chat history for ${sessionId}:`, error);
       
       // Fallback to cache if API fails
       const cached = getChatSessionHistory(sessionId);
       if (cached) {
-        console.log('⚠️ API failed, using stale cache');
+        console.log('API failed, using stale cache');
         return cached;
       }
       
       // If no cache available, return empty array
-      console.log('⚠️ No cache available, returning empty array');
+      console.log('No cache available, returning empty array');
       return [];
     }
   };
@@ -266,7 +266,7 @@ export const useCachedChatHistory = () => {
         preloadChatSession(session.id, session.messages);
       }
     });
-    console.log(`🚀 Preloaded ${sessions.length} chat sessions`);
+    console.log(`Preloaded ${sessions.length} chat sessions`);
   };
 
   const invalidateSession = (sessionId: string) => {
