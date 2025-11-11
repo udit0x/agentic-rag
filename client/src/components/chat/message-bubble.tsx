@@ -47,7 +47,7 @@ function CodeBlock({ language, children }: CodeBlockProps) {
   };
 
   return (
-    <div className="relative group">
+    <div className="relative group my-3 w-full rounded-md bg-[#1e1e1e]">
       <button
         onClick={handleCopy}
         className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 rounded transition-colors opacity-0 group-hover:opacity-100"
@@ -65,13 +65,30 @@ function CodeBlock({ language, children }: CodeBlockProps) {
           </>
         )}
       </button>
-      <SyntaxHighlighter
-        style={oneDark as any}
-        language={language}
-        PreTag="div"
-      >
-        {children}
-      </SyntaxHighlighter>
+
+      <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-gray-900 rounded-md">
+        <SyntaxHighlighter
+          style={oneDark as any}
+          language={language}
+          PreTag="div"
+          showLineNumbers={false}
+          wrapLines={false}
+          customStyle={{
+            margin: 0,
+            padding: '1rem',
+            background: 'transparent',
+            fontSize: '0.9rem',
+            lineHeight: '1.5',
+          }}
+          codeTagProps={{
+            style: {
+              background: 'transparent',
+            }
+          }}
+        >
+          {children.trimEnd()}
+        </SyntaxHighlighter>
+      </div>
     </div>
   );
 }
@@ -220,14 +237,14 @@ export function MessageBubble({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: "easeOut" }}
       className={cn(
-        "flex",
+        "flex items-start", // Added items-start to align to top
         isMobile ? "gap-2" : "gap-3", // Tighter spacing on mobile
         isUser ? "justify-end" : "justify-start"
       )}
       data-testid={`message-${message.role}`}
     >
       {!isUser && (
-        <div className="flex-shrink-0">
+        <div className="flex-shrink-0 pt-1"> {/* Added pt-1 for slight top padding */}
           <div className={cn(
             "flex items-center justify-center rounded-full bg-primary text-primary-foreground",
             isMobile ? "h-7 w-7" : "h-8 w-8" // Smaller avatar on mobile
@@ -239,7 +256,7 @@ export function MessageBubble({
 
       <div
         className={cn(
-          "flex flex-col gap-1",
+          "flex flex-col gap-1 min-w-0", // Added min-w-0 to prevent overflow
           isUser ? [
             "items-end", 
             isMobile ? "max-w-[85%]" : "max-w-2xl" // Wider on mobile for better use of space
@@ -277,7 +294,7 @@ export function MessageBubble({
 
         <div
           className={cn(
-            "rounded-2xl",
+            "rounded-2xl max-w-full overflow-hidden", // Added max-w-full and overflow-hidden
             isMobile ? "px-3 py-2.5 text-sm" : "px-4 py-3 text-base", // Smaller padding and text on mobile
             isUser
               ? "bg-primary text-primary-foreground shadow-sm"
@@ -291,13 +308,13 @@ export function MessageBubble({
         >
           {isUser ? (
             <p className={cn(
-              "leading-relaxed whitespace-pre-wrap",
+              "leading-relaxed whitespace-pre-wrap break-words", // Added break-words
               isMobile ? "text-sm" : "text-base"
             )}>{message.content}</p>
           ) : (
             <div className={cn(
-              "prose dark:prose-invert max-w-none",
-              isMobile ? "prose-sm" : "prose-sm"
+              "prose dark:prose-invert max-w-none break-words prose-pre:overflow-x-auto prose-pre:bg-transparent prose-code:text-sm",
+              isMobile ? "prose-sm" : "prose-base"
             )}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -587,7 +604,7 @@ export function MessageBubble({
       </div>
 
       {isUser && (
-        <div className="flex-shrink-0">
+        <div className="flex-shrink-0 pt-1"> {/* Added pt-1 for slight top padding */}
           <Avatar className={cn(
             isMobile ? "h-7 w-7" : "h-8 w-8"
           )}>
