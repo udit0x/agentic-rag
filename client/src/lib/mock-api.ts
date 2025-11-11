@@ -35,7 +35,7 @@ const mockMessages: Message[] = [];
 export const mockApi = {
   uploadDocument: async (file: File): Promise<void> => {
     await delay(2000); // Simulate upload time
-    console.log(`Mock: Uploaded ${file.name}`);
+    // console.log(`Mock: Uploaded ${file.name}`);
   },
 
   query: async (query: string, sessionId?: string): Promise<QueryResponse> => {

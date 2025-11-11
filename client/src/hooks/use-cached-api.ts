@@ -37,16 +37,15 @@ export const useCachedDocuments = () => {
     if (!forceRefresh) {
       const cached = getDocumentLibrary();
       if (cached) {
-        console.log('Using cached document library');
+        // console.log('Using cached document library');
         return cached;
       }
     }
 
     try {
       //console.log('Fetching fresh document library from API');
-      const documents = await apiRequest<Document[]>(
-        API_ENDPOINTS.DOCUMENTS
-      );
+      // userId validation now happens server-side via JWT token
+      const documents = await apiRequest<Document[]>(API_ENDPOINTS.DOCUMENTS);
       
       // Cache the result
       setDocumentLibrary(documents);
@@ -58,18 +57,18 @@ export const useCachedDocuments = () => {
       // Fallback to cache if API fails
       const cached = getDocumentLibrary();
       if (cached) {
-        console.log('API failed, using stale cache');
+        // console.log('API failed, using stale cache');
         return cached;
       }
       
       // If no cache available, return empty array but don't throw
-      console.log('No cache available, returning empty array');
+      // console.log('No cache available, returning empty array');
       return [];
     }
   };
 
   const refreshDocuments = () => {
-    console.log('Invalidating document library cache');
+    // console.log('Invalidating document library cache');
     invalidateDocumentLibrary();
   };
 
@@ -105,12 +104,12 @@ export const useCachedDocumentContent = () => {
     // Check cache first
     const cached = getDocumentContent(documentId);
     if (cached) {
-      console.log(`📄 Using cached content for document: ${documentId}`);
+      // console.log(` Using cached content for document: ${documentId}`);
       return cached;
     }
 
     try {
-      console.log(`Fetching fresh content for document: ${documentId}`);
+      // console.log(`Fetching fresh content for document: ${documentId}`);
       const response = await apiRequest<{ content: string }>(
         API_ENDPOINTS.DOCUMENT_CONTENT(documentId)
       );
@@ -147,7 +146,7 @@ export const useCachedQueries = () => {
     const similar = findSimilarQuery(query, 0.85); // 85% similarity threshold
     
     if (similar && JSON.stringify(similar.documentIds.sort()) === JSON.stringify(documentIds.sort())) {
-      console.log('Using cached query result for similar query');
+      // console.log('Using cached query result for similar query');
       return {
         result: similar.result,
         fromCache: true,
@@ -155,7 +154,7 @@ export const useCachedQueries = () => {
     }
 
     try {
-      console.log('Executing fresh query');
+      // console.log('Executing fresh query');
       
       const requestBody = {
         message: query,
@@ -220,7 +219,10 @@ export const useCachedChatHistory = () => {
   };
 
   // New methods for session-specific caching
-  const fetchChatSessionHistory = async (sessionId: string, forceRefresh = false): Promise<Message[]> => {
+  const fetchChatSessionHistory = async (
+    sessionId: string, 
+    forceRefresh = false
+  ): Promise<Message[]> => {
     // Check cache first (unless forced refresh)
     if (!forceRefresh) {
       const cached = getChatSessionHistory(sessionId);
@@ -230,6 +232,7 @@ export const useCachedChatHistory = () => {
     }
 
     try {
+      // userId validation now happens server-side via JWT token
       const response = await apiRequest<{ messages: Message[]; updatedAt: string }>(
         API_ENDPOINTS.CHAT_HISTORY(sessionId)
       );
@@ -247,12 +250,12 @@ export const useCachedChatHistory = () => {
       // Fallback to cache if API fails
       const cached = getChatSessionHistory(sessionId);
       if (cached) {
-        console.log('API failed, using stale cache');
+        // console.log('API failed, using stale cache');
         return cached;
       }
       
       // If no cache available, return empty array
-      console.log('No cache available, returning empty array');
+      // console.log('No cache available, returning empty array');
       return [];
     }
   };
@@ -267,7 +270,7 @@ export const useCachedChatHistory = () => {
         preloadChatSession(session.id, session.messages);
       }
     });
-    console.log(`Preloaded ${sessions.length} chat sessions`);
+    // console.log(`Preloaded ${sessions.length} chat sessions`);
   };
 
   const invalidateSession = (sessionId: string) => {

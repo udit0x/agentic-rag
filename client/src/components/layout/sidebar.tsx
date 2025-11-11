@@ -201,7 +201,7 @@ const formatDate = (dateString: string): string => {
   const handleDeleteChat = (chatId: string) => {
     // Prevent multiple deletions of the same chat
     if (deletingChats.has(chatId)) {
-      console.log(`[SIDEBAR] Chat ${chatId} already being deleted, ignoring`);
+      // console.log(`[SIDEBAR] Chat ${chatId} already being deleted, ignoring`);
       return;
     }
     

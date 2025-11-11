@@ -916,6 +916,91 @@ class DatabaseStorage:
             "newUsersToday": new_users_today,
             "averageSessionsPerUser": (total_sessions / total_users) if total_users > 0 else 0.0
         }
+    
+    # Message feedback operations
+    async def create_message_feedback(
+        self,
+        message_id: str,
+        session_id: str,
+        user_id: str,
+        feedback_type: str,
+        category: Optional[str] = None,
+        detail_text: Optional[str] = None,
+        query_context: Optional[dict] = None,
+        metadata: Optional[dict] = None
+    ) -> str:
+        """Create a new message feedback entry."""
+        feedback_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+        
+        await self.db.execute("""
+            INSERT INTO message_feedback (
+                id, message_id, session_id, user_id, feedback_type,
+                category, detail_text, query_context, metadata, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            feedback_id, message_id, session_id, user_id, feedback_type,
+            category, detail_text,
+            json.dumps(query_context) if query_context else None,
+            json.dumps(metadata) if metadata else None,
+            now, now
+        ])
+        
+        return feedback_id
+    
+    async def get_message_feedback(self, message_id: str, user_id: str) -> Optional[dict]:
+        """Get feedback for a specific message by a specific user."""
+        row = await self.db.fetchone("""
+            SELECT * FROM message_feedback 
+            WHERE message_id = ? AND user_id = ?
+        """, [message_id, user_id])
+        
+        return dict(row) if row else None
+    
+    async def update_message_feedback(
+        self,
+        feedback_id: str,
+        feedback_type: str,
+        category: Optional[str] = None,
+        detail_text: Optional[str] = None,
+        query_context: Optional[dict] = None,
+        metadata: Optional[dict] = None
+    ) -> str:
+        """Update an existing message feedback entry."""
+        now = datetime.utcnow().isoformat()
+        
+        await self.db.execute("""
+            UPDATE message_feedback
+            SET feedback_type = ?, category = ?, detail_text = ?,
+                query_context = ?, metadata = ?, updated_at = ?
+            WHERE id = ?
+        """, [
+            feedback_type, category, detail_text,
+            json.dumps(query_context) if query_context else None,
+            json.dumps(metadata) if metadata else None,
+            now, feedback_id
+        ])
+        
+        return feedback_id
+    
+    async def delete_message_feedback(self, feedback_id: str) -> None:
+        """Delete a message feedback entry."""
+        await self.db.execute("DELETE FROM message_feedback WHERE id = ?", [feedback_id])
+    
+    async def get_session_feedback(self, session_id: str) -> List[dict]:
+        """Get all feedback for a session."""
+        rows = await self.db.fetchall("""
+            SELECT * FROM message_feedback 
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+        """, [session_id])
+        
+        return [dict(row) for row in rows]
+    
+    async def get_message(self, message_id: str) -> Optional[dict]:
+        """Get a message by ID."""
+        row = await self.db.fetchone("SELECT * FROM messages WHERE id = ?", [message_id])
+        return dict(row) if row else None
 
 
 # Global storage instance

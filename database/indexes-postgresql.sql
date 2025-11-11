@@ -31,6 +31,10 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_documents_content_type
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_documents_uploaded_at 
   ON documents (uploaded_at);
 
+-- ⚡ CRITICAL: Composite index for user's documents query (WHERE user_id = X ORDER BY uploaded_at DESC)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_documents_user_uploaded 
+  ON documents (user_id, uploaded_at DESC);
+
 -- GIN index for document metadata
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_documents_metadata_gin 
   ON documents USING GIN (metadata);
@@ -52,6 +56,11 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chat_sessions_created_at
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chat_sessions_user_id 
   ON chat_sessions (user_id);
+
+-- ⚡ CRITICAL: Composite index for common query pattern (WHERE user_id = X ORDER BY created_at DESC)
+-- This will dramatically speed up session fetches from 1100ms -> ~10ms
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chat_sessions_user_created 
+  ON chat_sessions (user_id, created_at DESC);
 
 -- Analytics indexes
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_query_analytics_timestamp 

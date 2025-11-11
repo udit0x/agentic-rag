@@ -39,15 +39,37 @@ function dedupeByKey<T>(arr: T[], keyFn: (t: T) => string): T[] {
 
 /**
  * Merge server-fetched messages into local cache.
+ * Preserves optimistic messages that haven't been confirmed by server yet.
  */
 export function mergeServerHistoryIntoCache(
   local: any[], 
   server: any[]
 ): any[] {
-  return server;
-}
-
-/**
+  // If no local messages, just use server
+  if (!local || local.length === 0) {
+    return server;
+  }
+  
+  // Create a map of server messages by their ID
+  const serverMap = new Map(server.map(m => [m.id, m]));
+  
+  // Find optimistic/streaming messages that aren't in server response yet
+    const optimisticMessages = local.filter(m => {
+    // Keep messages that:
+    // 1. Have optimistic IDs (not confirmed by server)
+    // 2. Are streaming (serverId exists but not in server response yet)
+    const isOptimistic = m.id.startsWith('optimistic-');
+    const isStreaming = m.serverId && !serverMap.has(m.serverId) && !serverMap.has(m.id);
+    return isOptimistic || isStreaming;
+  });
+  
+  // Combine server messages with optimistic ones
+  // Use dedupeByKey to avoid duplicates (server messages take precedence)
+  return dedupeByKey(
+    [...server, ...optimisticMessages],
+    (m: any) => m.serverId ?? m.id
+  );
+}/**
  * 🛡️ STABLE CACHE GETTER - Never returns undefined, always preserves structure
  */
 function getStableCacheData(
@@ -118,7 +140,7 @@ export function applyEventToCache(
               serverId: ev.userMessageId
             };
             
-            console.log('🔗 [STARTED] Injected serverId to follow-up message:', {
+            console.log('[STARTED] Injected serverId to follow-up message:', {
               messageId: messages[lastUserIndex].id,
               serverId: ev.userMessageId
             });
@@ -159,12 +181,12 @@ export function applyEventToCache(
           return current;
         }
         
-        // console.log('[CACHE] Setting refined queries:', {
-        //   refinedForId,
-        //   messageServerId,
-        //   count: ev.refined.length,
-        //   queries: ev.refined
-        // });
+        console.log('[CACHE] Setting refined queries:', {
+          refinedForId,
+          messageServerId,
+          count: ev.refined.length,
+          queries: ev.refined
+        });
         
         return {
           messages: current.messages,
@@ -243,8 +265,10 @@ export function applyEventToCache(
           });
         }
 
+        const dedupedMessages = dedupeByKey(msgs, (m: any) => m.serverId ?? m.id);
+
         return {
-          messages: dedupeByKey(msgs, (m: any) => m.serverId ?? m.id),
+          messages: dedupedMessages,
           refinedQueriesFor: current.refinedQueriesFor,
           refinedQueries: current.refinedQueries,
         };
@@ -293,16 +317,6 @@ export function shouldShowRefinedQueries(
   
   // Match by serverId first (from backend), then by optimistic ID
   const matches = refinedQueriesFor === message.serverId || refinedQueriesFor === message.id;
-  
-  // Debug logging to track matching
-  if (refinedQueriesFor) {
-    // console.log('[MATCH] Checking refined queries match:', {
-    //   refinedQueriesFor,
-    //   messageId: message.id,
-    //   messageServerId: message.serverId,
-    //   matches
-    // });
-  }
   
   return matches;
 }

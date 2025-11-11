@@ -43,7 +43,7 @@ export const queryClient = new QueryClient({
     queries: {
       queryFn: getQueryFn({ on401: "throw" }),
       refetchInterval: false,
-      // ✅ Removed global staleTime and refetchOnWindowFocus to allow per-query configuration
+      // Removed global staleTime and refetchOnWindowFocus to allow per-query configuration
       // Each query can now set its own staleTime and refetch behavior
       retry: (failureCount, error) => {
         // Don't retry on 401/403 (auth errors)
@@ -64,12 +64,12 @@ export const queryClient = new QueryClient({
           console.warn(`[RETRY] Max retries (${failureCount}) reached`);
           return false;
         }
-        console.log(`[RETRY] Attempt ${failureCount + 1} of 3`);
+        // console.log(`[RETRY] Attempt ${failureCount + 1} of 3`);
         return true;
       },
       retryDelay: (attemptIndex) => {
         const delay = Math.min(1000 * 2 ** attemptIndex, 30000);
-        console.log(`[RETRY] Waiting ${delay}ms before retry ${attemptIndex + 1}`);
+        // console.log(`[RETRY] Waiting ${delay}ms before retry ${attemptIndex + 1}`);
         return delay; // Exponential backoff: 1s, 2s, 4s...
       },
     },

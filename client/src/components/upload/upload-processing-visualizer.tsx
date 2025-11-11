@@ -79,7 +79,7 @@ function SingleUploadVisualizer({
     if (hasLargeFileWarning() && (upload.status === "uploading" || upload.status === "processing")) {
       const timer = setTimeout(() => {
         setShowLargeFileMessage(true);
-      }, 2000); // 2 second delay
+      }, 3000); // 3 second delay for better sync
       
       return () => clearTimeout(timer);
     } else {
@@ -92,7 +92,7 @@ function SingleUploadVisualizer({
     if (upload.status === "completed" && upload.completedAt) {
       const startCountdown = () => {
         const elapsed = Date.now() - upload.completedAt!;
-        const remaining = Math.max(0, 3000 - elapsed);
+        const remaining = Math.max(0, 5000 - elapsed); // Increased to 5 seconds
         
         if (remaining > 0) {
           setCountdown(Math.ceil(remaining / 1000));

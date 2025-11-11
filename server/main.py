@@ -23,6 +23,7 @@ from server.api.chat import router as chat_router
 from server.api.config import router as config_router
 from server.api.chat_history import router as chat_history_router
 from server.api.users import router as users_router
+from api.feedback import router as feedback_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -67,10 +68,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# CORS configuration - environment-based
+ENV = os.getenv("ENV", "development")
+
+if ENV == "development":
+    # Development CORS - allow localhost origins
+    cors_origins = [
         "http://localhost:5000",  # Express dev server
         "http://localhost:5173",  # Vite dev server
         "http://localhost:3000",  # Alternative React dev server
@@ -78,7 +81,25 @@ app.add_middleware(
         "http://127.0.0.1:5000",  # Alternative Express
         "http://127.0.0.1:5173",  # Alternative Vite
         "http://127.0.0.1:8000",  # Alternative FastAPI
-    ],
+    ]
+else:
+    # Production CORS - use environment variable or specific origins
+    cors_origins_env = os.getenv("CORS_ORIGINS", "")
+    if cors_origins_env:
+        cors_origins = [origin.strip() for origin in cors_origins_env.split(",")]
+    else:
+        # Fallback to specific Azure URLs (update these with your actual URLs)
+        cors_origins = [
+            os.getenv("FRONTEND_URL", "https://yourfrontend.azurestaticapps.net"),
+            os.getenv("EXPRESS_BACKEND_URL", "https://yourapi.azurewebsites.net"),
+        ]
+
+print(f"[CORS] Environment: {ENV}")
+print(f"[CORS] Allowed origins: {cors_origins}")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -90,6 +111,7 @@ app.include_router(chat_router)
 app.include_router(config_router)
 app.include_router(chat_history_router)
 app.include_router(users_router)
+app.include_router(feedback_router)
 
 @app.get("/api/health")
 async def health_check():

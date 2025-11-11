@@ -27,7 +27,7 @@ export function CacheDebugger({
   className = ''
 }: CacheDebuggerProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [isVisible, setIsVisible] = useState(process.env.NODE_ENV === 'development');
+  const [isVisible, setIsVisible] = useState(import.meta.env.DEV);
   
   const { clearAllCache, clearExpiredCache, getCacheStats } = useCacheManagement();
   
@@ -287,10 +287,10 @@ export function useCacheDebuggerToggle() {
   return {
     show: () => {
       // You could use a global state here if needed
-      console.log('Cache debugger show requested');
+      // console.log('Cache debugger show requested');
     },
     hide: () => {
-      console.log('Cache debugger hide requested');
+      // console.log('Cache debugger hide requested');
     }
   };
 }

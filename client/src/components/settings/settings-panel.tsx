@@ -257,6 +257,14 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
 
                     {activeTab === "configuration" && (
                       <>
+                        {/* Security Notice */}
+                        <div className="flex items-start gap-2 p-3 rounded-lg bg-muted/50 border border-border">
+                          <Info className="h-4 w-4 mt-0.5 text-primary flex-shrink-0" />
+                          <p className="text-xs text-muted-foreground">
+                            All API keys are encrypted and stored securely. This is an open-source project committed to your data privacy.
+                          </p>
+                        </div>
+
                         {/* LLM Configuration Card */}
                         <Card>
                           <CardHeader>

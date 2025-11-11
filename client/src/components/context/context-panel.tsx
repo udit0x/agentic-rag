@@ -132,7 +132,7 @@ export function ContextPanel({
           {executionTimeMs && (
             <Badge variant="outline" className="text-xs">
               <Clock className="h-3 w-3 mr-1" />
-              {executionTimeMs}ms
+              {(executionTimeMs / 1000).toFixed(2)}s
             </Badge>
           )}
         </div>

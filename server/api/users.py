@@ -5,11 +5,20 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 import uuid
 
-from server.database_sqlite import db_storage
+from server.database_interface import db_storage
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 # Request/Response Models
+class SyncUserRequest(BaseModel):
+    """Request model for syncing user from Clerk."""
+    id: str  # Clerk user ID
+    email: EmailStr
+    name: str
+    picture: Optional[str] = None
+    locale: Optional[str] = "en"
+    preferences: Optional[Dict[str, Any]] = None
+
 class CreateUserRequest(BaseModel):
     email: EmailStr
     name: str
@@ -57,6 +66,71 @@ class UserStatsResponse(BaseModel):
     activeUsers: int
     newUsersToday: int
     averageSessionsPerUser: float
+
+# User Sync Endpoint (for Clerk integration)
+@router.post("/sync", response_model=UserResponse)
+async def sync_user(request: SyncUserRequest):
+    """
+    Sync user from Clerk authentication.
+    Creates new user if doesn't exist, updates if exists.
+    """
+    try:
+        # Check if user already exists
+        existing_user = await db_storage.getUser(request.id)
+        
+        if existing_user:
+            # Update existing user
+            update_data = {
+                "name": request.name,
+                "picture": request.picture,
+                "locale": request.locale or "en",
+                "preferences": request.preferences or {},
+                "lastLoginAt": datetime.now()
+            }
+            
+            user = await db_storage.updateUser(request.id, update_data)
+            
+            return UserResponse(
+                id=user["id"],
+                email=user["email"],
+                name=user["name"],
+                picture=user.get("picture"),
+                locale=user.get("locale"),
+                preferences=user.get("preferences", {}),
+                lastLoginAt=user.get("lastLoginAt"),
+                createdAt=user["createdAt"],
+                updatedAt=user["updatedAt"],
+                isActive=user.get("isActive", True)
+            )
+        else:
+            # Create new user with Clerk ID
+            user_data = {
+                "id": request.id,  # Use Clerk user ID
+                "email": request.email,
+                "name": request.name,
+                "picture": request.picture,
+                "locale": request.locale or "en",
+                "preferences": request.preferences or {},
+                "lastLoginAt": datetime.now()
+            }
+            
+            user = await db_storage.createUser(user_data)
+            
+            return UserResponse(
+                id=user["id"],
+                email=user["email"],
+                name=user["name"],
+                picture=user.get("picture"),
+                locale=user.get("locale"),
+                preferences=user.get("preferences", {}),
+                lastLoginAt=user.get("lastLoginAt"),
+                createdAt=user["createdAt"],
+                updatedAt=user["updatedAt"],
+                isActive=user.get("isActive", True)
+            )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to sync user: {str(e)}")
 
 # User CRUD Endpoints
 @router.post("/", response_model=UserResponse)

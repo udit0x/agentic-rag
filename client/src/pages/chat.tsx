@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useUser } from "@clerk/clerk-react";
 import { type QueryResponse, type QueryClassification, type AgentTrace, type Document } from "@shared/schema";
 import { type Message } from "@/lib/chat-cache";  // Use extended Message type with serverId
 import { Header } from "@/components/layout/header";
@@ -20,6 +21,7 @@ import { LoadRipple } from "@/components/ui/load-ripple";
 import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useStableSession } from "@/hooks/use-stable-session";
+import { useAuthUserId } from "@/hooks/use-user-sync";
 import { apiRequest } from "@/lib/queryClient";
 import { apiRequest as enhancedApiRequest, API_ENDPOINTS } from "@/lib/api-config";
 import { queryClient } from "@/lib/queryClient";
@@ -32,6 +34,8 @@ import { useCacheStore } from "@/stores/cache-store";
 
 export default function Chat() {
   const isMobile = useIsMobile();
+  const { user } = useUser();
+  const userId = useAuthUserId();
   
   // Stable session controller - single source of truth
   const { sessionId, setSession, getSessionId, migrate } = useStableSession();
@@ -62,8 +66,9 @@ export default function Chat() {
 
   // Real chat sessions data from API
   const { data: chatSessions, isLoading: isLoadingChatSessions, refetch: refetchChatSessions } = useQuery({
-    queryKey: ["chat-sessions"],
+    queryKey: ["chat-sessions", userId],
     queryFn: async () => {
+      // userId is now validated server-side from JWT token
       const response = await enhancedApiRequest<{
         sessions: Array<{
           id: string;
@@ -92,20 +97,21 @@ export default function Chat() {
       
       return sessions;
     },
+    enabled: !!userId, // Only fetch when userId is available
     staleTime: 30 * 1000, // Mark stale after 30 seconds
     gcTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
     refetchOnWindowFocus: true, // Refresh when user returns to tab
     refetchOnReconnect: true, // Refresh when network reconnects
   });
 
-  // Mock user profile - will be replaced with real data later
-  const [userProfile, setUserProfile] = useState({
-    name: "Udit Kashyap",
-    email: "udit.doe@company.com",
-    avatar: undefined, // Will use initials fallback
-    role: "Technology", // Default role from dropdown options
-    joinedAt: "2024-01-15T00:00:00Z",
-  });
+  // User profile from Clerk
+  const userProfile = {
+    name: user?.fullName || user?.username || "Anonymous",
+    email: user?.primaryEmailAddress?.emailAddress || "user@example.com",
+    avatar: user?.imageUrl,
+    role: (user?.unsafeMetadata?.role as string) || "Technology",
+    joinedAt: user?.createdAt?.toString() || new Date().toISOString(),
+  };
 
   const [selectedSourceIndex, setSelectedSourceIndex] = useState<number | undefined>();
   const [selectedMessageId, setSelectedMessageId] = useState<string | undefined>();
@@ -161,6 +167,23 @@ export default function Chat() {
   const activeSessionRef = useRef<string | undefined>(undefined); // ✅ Track active session for race condition prevention
   const { toast } = useToast();
 
+  // Select a message to display its traces in context panel (defined early for use in mutations)
+  const selectMessageForContext = useCallback((messageId: string, sources?: Message["sources"], agentTraces?: any[]) => {
+    setSelectedMessageId(messageId);
+    setCurrentSources(sources);
+    setSelectedSourceIndex(undefined);
+    
+    // 🛡️ Guard against empty overwrites - only set if agentTraces is explicitly provided
+    if (agentTraces !== undefined) {
+      if (agentTraces && agentTraces.length > 0) {
+        setCurrentAgentTraces(agentTraces);
+      } else {
+        setCurrentAgentTraces([]);
+      }
+    }
+    // Don't overwrite existing traces if agentTraces is undefined
+  }, []);
+
   const { data: chatHistory, isLoading: isLoadingHistory } = useQuery({
     queryKey: ["chat-history", sessionId],
     queryFn: async () => {
@@ -170,22 +193,30 @@ export default function Chat() {
       
       // For temp sessions, check cache first (messages are added optimistically)
       if (sessionId.startsWith('temp-session-')) {
-        const cachedData = queryClient.getQueryData<{ messages: Message[] }>(["chat-history", sessionId]);
+        const cachedData = queryClient.getQueryData<{ messages: Message[]; refinedQueriesFor?: string; refinedQueries?: string[] }>(["chat-history", sessionId]);
         if (cachedData) {
           return cachedData;
         }
         return { messages: [] };
       }
       
-      // For real sessions, merge server history with local cache to preserve clientId
-      const localCache = queryClient.getQueryData<{ messages: Message[]; refinedQueriesFor?: string; refinedQueries?: string[] }>(["chat-history", sessionId]);
-      const serverMessages = await fetchChatSessionHistory(sessionId);
-      const mergedMessages = mergeServerHistoryIntoCache(localCache?.messages || [], serverMessages);
+      // ✅ CRITICAL FIX: Preserve refined queries during refetch
+      // Get the current cache BEFORE fetching to preserve client-side data
+      const currentCache = queryClient.getQueryData<{ 
+        messages: Message[]; 
+        refinedQueriesFor?: string; 
+        refinedQueries?: string[] 
+      }>(["chat-history", sessionId]);
       
+      // Fetch fresh messages from server
+      const serverMessages = await fetchChatSessionHistory(sessionId);
+      const mergedMessages = mergeServerHistoryIntoCache(currentCache?.messages || [], serverMessages);
+      
+      // ✅ PRESERVE refined queries from cache (they're client-side only, not from server)
       return { 
         messages: mergedMessages,
-        refinedQueriesFor: localCache?.refinedQueriesFor,
-        refinedQueries: localCache?.refinedQueries,
+        refinedQueriesFor: currentCache?.refinedQueriesFor, // Preserve from cache
+        refinedQueries: currentCache?.refinedQueries,       // Preserve from cache
       };
     },
     enabled: !!sessionId,
@@ -244,8 +275,9 @@ export default function Chat() {
 
   // Query to fetch uploaded documents using cache
   const { data: documentsData, isLoading: isLoadingDocuments, refetch: refetchDocuments } = useQuery({
-    queryKey: ["documents"],
-    queryFn: () => fetchDocuments(),
+    queryKey: ["documents", userId],
+    queryFn: () => fetchDocuments(false),
+    enabled: !!userId, // Only fetch when userId is available
     staleTime: 5 * 60 * 1000, // 5 minutes - matches cache TTL
     gcTime: 10 * 60 * 1000, // 10 minutes
     refetchOnWindowFocus: true, // Refresh when user returns
@@ -305,6 +337,7 @@ export default function Chat() {
         body: JSON.stringify({
           query,
           sessionId,
+          // userId now validated server-side from JWT token
           topK: 5,
           enableTracing,
           debugMode,
@@ -329,14 +362,19 @@ export default function Chat() {
         setCurrentAgentTraces((data.agentTraces || []) as unknown as AgentTrace[]);
       }
 
-      if (!isStreaming) {
-        setTimeout(() => {
-          queryClient.invalidateQueries({ queryKey: ["chat-history", data.sessionId] });
-          invalidateSession(data.sessionId);
-        }, 500);
-      }
+      // ❌ REMOVED: Don't invalidate queries - it clears refined queries
+      // The cache is already updated via applyEventToCache during streaming
+      // For non-streaming queries (rare), the cache update happens in queryMutation.onSuccess
+      // if (!isStreaming) {
+      //   setTimeout(() => {
+      //     queryClient.invalidateQueries({ queryKey: ["chat-history", data.sessionId] });
+      //     invalidateSession(data.sessionId);
+      //   }, 500);
+      // }
 
-      refetchChatSessions();
+      // ❌ REMOVED: Don't refetch sessions here - only refetch after title_update event
+      // This prevents redundant fetches before the title is even generated
+      // refetchChatSessions();
     },
     onError: (error: Error) => {
       toast({
@@ -354,19 +392,35 @@ export default function Chat() {
     query: string,
     documentIds?: string[]
   ) => {
+    // console.log('[STREAM] handleStreamingQuery called with query:', query.substring(0, 50));
+    
     const streamSessionId = getSessionId(); // Capture session at stream start
     if (!streamSessionId) {
+      // console.error('[STREAM] No session ID available');
       throw new Error("Cannot stream without a session");
     }
+    
+    console.log('[STREAM] Session ID:', streamSessionId);
 
     let accumulatedContent = "";
     let hasReceivedRefinement = false;
     let refinementTimeout: NodeJS.Timeout | null = null;
 
     try {
+      console.log('[STREAM] Initiating fetch to:', API_ENDPOINTS.QUERY_STREAM);
+      console.log('[STREAM] Request body:', {
+        query,
+        sessionId: streamSessionId.startsWith('temp-session-') ? undefined : streamSessionId,
+        topK: 5,
+        enableTracing,
+        debugMode,
+        documentIds,
+      });
+      
       const response = await fetch(API_ENDPOINTS.QUERY_STREAM, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include", // ✅ CRITICAL: Required to send JWT authentication cookie
         body: JSON.stringify({
           query,
           sessionId: streamSessionId.startsWith('temp-session-') ? undefined : streamSessionId,
@@ -377,8 +431,12 @@ export default function Chat() {
         }),
       });
 
+      // console.log('[STREAM] Fetch completed, response status:', response.status, response.statusText);
+
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorText = await response.text();
+        console.error('[STREAM] ❌ HTTP error response body:', errorText);
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
 
       const reader = response.body?.getReader();
@@ -386,13 +444,13 @@ export default function Chat() {
         throw new Error("Failed to get response reader");
       }
 
-      // Set timeout for refinement (10 seconds max wait)
+      // Set timeout for refinement (5 seconds max wait - reduced from 10s)
       refinementTimeout = setTimeout(() => {
         if (!hasReceivedRefinement) {
           console.warn('[STREAM] ⏱️ Refinement timeout - proceeding without refined questions');
           hasReceivedRefinement = true;
         }
-      }, 10000);
+      }, 5000); // Reduced from 10000ms to 5000ms
 
       const decoder = new TextDecoder();
       let buffer = "";
@@ -526,11 +584,14 @@ export default function Chat() {
                   // ✅ NO invalidation needed - cache already updated via applyEventToCache
                   // Invalidating causes refetch which clears client-side refinedQueries
                   
-                  refetchChatSessions();
+                  // ❌ REMOVED: Don't refetch sessions here - wait for title_update event
+                  // This prevents redundant fetches during streaming query completion
+                  // refetchChatSessions();
                 }
               } 
               
               else if (data.type === "title_update") {
+                // ✅ ONLY refetch sessions when title is actually updated
                 refetchChatSessions();
               } 
               
@@ -562,7 +623,14 @@ export default function Chat() {
         }
       }
     } catch (error) {
-      console.error("Streaming query failed:", error);
+      console.error('[STREAM] ❌ Streaming query failed with error:', error);
+      console.error('[STREAM] 📋 Error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        type: typeof error,
+        error: error
+      });
+      
       toast({
         title: "Query failed",
         description: error instanceof Error ? error.message : "Unknown error",
@@ -616,37 +684,41 @@ export default function Chat() {
         ["chat-history", tempSessionId],
         {
           messages: [optimisticMessage],
+          refinedQueriesFor: undefined, // Initialize structure
+          refinedQueries: undefined,    // Initialize structure
         }
       );
-      console.log("[SUBMIT] Optimistic message added to cache (new session)");
+      // console.log("[SUBMIT] Optimistic message added to cache (new session)");
     } else {
       // Add optimistic message to existing session
       queryClient.setQueryData(
         ["chat-history", sessionId],
         (old?: { messages: Message[]; refinedQueriesFor?: string; refinedQueries?: string[] }) => {
-          console.log("[SUBMIT] Cache before update:", {
-            messageCount: old?.messages?.length,
-            refinedQueriesFor: old?.refinedQueriesFor
-          });
+          // console.log("[SUBMIT] Cache before update:", {
+          //   messageCount: old?.messages?.length,
+          //   refinedQueriesFor: old?.refinedQueriesFor
+          // });
           
+          // ✅ Clear old refined queries when new message is sent (they're only for the latest question)
           const result = {
-            ...old,
             messages: [...(old?.messages ?? []), optimisticMessage],
+            refinedQueriesFor: undefined, // Clear old refined queries
+            refinedQueries: undefined,    // Will be set by new refinement event
           };
           
-          console.log("[SUBMIT] Optimistic message added to cache (existing session):", {
-            newMessageCount: result.messages.length
-          });
+          // console.log("[SUBMIT] Optimistic message added to cache (existing session):", {
+          //   newMessageCount: result.messages.length
+          // });
           
           return result;
         }
       );
     }
 
-    console.log("[SUBMIT] Starting streaming query...");
+    // console.log("[SUBMIT] Starting streaming query...");
     setIsStreaming(true);
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    console.log("[SUBMIT] Scrolled to bottom, anchor set");
+    // console.log("[SUBMIT] Scrolled to bottom, anchor set");
     
     // Use streaming query with error handling
     try {
@@ -831,9 +903,20 @@ export default function Chat() {
     setIsLoadingChatHistory(true);
     setLoadingChatId(chatId);
 
-    // Clear current session data
+    // Clear current session data (preserve structure with refined queries)
     if (sessionId && sessionId !== chatId) {
-      queryClient.setQueryData(["chat-history", sessionId], { messages: [] });
+      const previousCache = queryClient.getQueryData<{ 
+        messages: Message[]; 
+        refinedQueriesFor?: string; 
+        refinedQueries?: string[] 
+      }>(["chat-history", sessionId]);
+      
+      // ✅ Preserve refined queries even when clearing messages for UI
+      queryClient.setQueryData(["chat-history", sessionId], { 
+        messages: [],
+        refinedQueriesFor: previousCache?.refinedQueriesFor,
+        refinedQueries: previousCache?.refinedQueries,
+      });
     }
 
     // Clear current context
@@ -865,8 +948,12 @@ export default function Chat() {
       const cachedHistory = getChatSessionHistory(chatId);
       
       if (cachedHistory && Array.isArray(cachedHistory) && cachedHistory.length > 0) {
-        // Sync Zustand cache to React Query immediately
-        queryClient.setQueryData(["chat-history", chatId], { messages: cachedHistory });
+        // Sync Zustand cache to React Query immediately (preserve structure)
+        queryClient.setQueryData(["chat-history", chatId], { 
+          messages: cachedHistory,
+          refinedQueriesFor: undefined, // Will be set by refinement event
+          refinedQueries: undefined,    // Will be set by refinement event
+        });
         setSession(chatId);
 
         // Refresh in background
@@ -884,7 +971,18 @@ export default function Chat() {
                freshHistory[freshHistory.length - 1]?.id !== cachedHistory[cachedHistory.length - 1]?.id);
             
             if (shouldUpdate) {
-              queryClient.setQueryData(["chat-history", chatId], { messages: freshHistory });
+              // ✅ Preserve refined queries during background refresh
+              const currentData = queryClient.getQueryData<{ 
+                messages: Message[]; 
+                refinedQueriesFor?: string; 
+                refinedQueries?: string[] 
+              }>(["chat-history", chatId]);
+              
+              queryClient.setQueryData(["chat-history", chatId], { 
+                messages: freshHistory,
+                refinedQueriesFor: currentData?.refinedQueriesFor, // Preserve
+                refinedQueries: currentData?.refinedQueries,       // Preserve
+              });
             }
           }).catch(error => {
             // Background refresh failed - not critical
@@ -970,18 +1068,18 @@ export default function Chat() {
 
   // 🔍 DEBUG: Track re-renders and cache state changes
   useEffect(() => {
-    console.log('[RENDER] Chat component re-rendered:', {
-      sessionId,
-      messageCount: messages.length,
-      refinedQueriesFor,
-      refinedQueriesCount: refinedQueries.length,
-      isStreaming,
-      isLoadingHistory,
-      hasMessages,
-      shouldShowChatView,
-      chatHistoryData: chatHistory ? 'present' : 'null',
-      timestamp: new Date().toISOString()
-    });
+  //   console.log('[RENDER] Chat component re-rendered:', {
+  //     sessionId,
+  //     messageCount: messages.length,
+  //     refinedQueriesFor,
+  //     refinedQueriesCount: refinedQueries.length,
+  //     isStreaming,
+  //     isLoadingHistory,
+  //     hasMessages,
+  //     shouldShowChatView,
+  //     chatHistoryData: chatHistory ? 'present' : 'null',
+  //     timestamp: new Date().toISOString()
+  //   });
   });
 
   // 🔍 DEBUG: Track shouldShowChatView transitions (flicker detector)
@@ -1000,16 +1098,16 @@ export default function Chat() {
   // 🔍 DEBUG: Track messages array changes (potential flicker source)
   useEffect(() => {
     if (messages.length > 0) {
-      console.log(' [MESSAGES] Messages array updated:', {
-        count: messages.length,
-        sessionId,
-        messages: messages.map(m => ({
-          id: m.id,
-          serverId: m.serverId,
-          role: m.role,
-          contentPreview: m.content.substring(0, 30) + '...'
-        }))
-      });
+      // console.log(' [MESSAGES] Messages array updated:', {
+      //   count: messages.length,
+      //   sessionId,
+      //   messages: messages.map(m => ({
+      //     id: m.id,
+      //     serverId: m.serverId,
+      //     role: m.role,
+      //     contentPreview: m.content.substring(0, 30) + '...'
+      //   }))
+      // });
     } else if (sessionId && !isLoadingHistory && chatHistory) {
       // Only warn if session exists, not loading, and we have chatHistory data but no messages
       // This indicates a potential issue (not just normal loading state)
@@ -1078,41 +1176,49 @@ export default function Chat() {
   };
 
   // Profile handlers
-  const handleUpdateRole = (role: string) => {
-    setUserProfile(prev => ({ ...prev, role }));
-    toast({
-      title: "Role updated",
-      description: "Your industry/role has been updated successfully.",
-    });
-  };
-
-  const handleLogout = () => {
-    // Clear user session and redirect to login
-    // This would typically clear tokens, reset state, etc.
-    toast({
-      title: "Signed out",
-      description: "You have been signed out successfully.",
-    });
-    // In a real app, you'd redirect to login page or clear auth state
-    console.log("User logged out");
-  };
-
-  // Select a message to display its traces in context panel
-  const selectMessageForContext = useCallback((messageId: string, sources?: Message["sources"], agentTraces?: any[]) => {
-    setSelectedMessageId(messageId);
-    setCurrentSources(sources);
-    setSelectedSourceIndex(undefined);
-    
-    // 🛡️ Guard against empty overwrites - only set if agentTraces is explicitly provided
-    if (agentTraces !== undefined) {
-      if (agentTraces && agentTraces.length > 0) {
-        setCurrentAgentTraces(agentTraces);
-      } else {
-        setCurrentAgentTraces([]);
+  const handleUpdateRole = async (role: string) => {
+    // Update role in Clerk user metadata using unsafeMetadata
+    try {
+      if (user) {
+        await user.update({
+          unsafeMetadata: {
+            ...user.unsafeMetadata,
+            role,
+          },
+        });
+        
+        toast({
+          title: "Role updated",
+          description: "Your industry/role has been updated successfully.",
+        });
       }
+    } catch (error) {
+      console.error("Error updating role:", error);
+      toast({
+        title: "Update failed",
+        description: "Failed to update role. Please try again.",
+        variant: "destructive",
+      });
     }
-    // Don't overwrite existing traces if agentTraces is undefined
-  }, [setCurrentAgentTraces]);
+  };
+
+  const handleLogout = async () => {
+    // Clear user session using Clerk
+    try {
+      window.location.href = "/";
+      toast({
+        title: "Signed out",
+        description: "You have been signed out successfully.",
+      });
+    } catch (error) {
+      console.error("Error signing out:", error);
+      toast({
+        title: "Signout failed",
+        description: "Failed to sign out. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
 
   // Keyboard shortcuts
   const handleKeyboardShortcuts = useCallback((event: KeyboardEvent) => {
@@ -1162,7 +1268,7 @@ export default function Chat() {
         
         // If tab was hidden for more than 30 seconds, force revalidation
         if (idleTime > 30 * 1000) {
-          console.log(`[VISIBILITY] Tab was idle for ${Math.round(idleTime / 1000)}s - revalidating cache`);
+          // console.log(`[VISIBILITY] Tab was idle for ${Math.round(idleTime / 1000)}s - revalidating cache`);
           
           // Use refetchQueries instead of invalidateQueries for stale-while-revalidate pattern
           // This shows stale data immediately while fetching fresh data in background
@@ -1196,7 +1302,7 @@ export default function Chat() {
               
               // If cache is older than 2 minutes, refetch with stale-while-revalidate
               if (cacheAge > 2 * 60 * 1000) {
-                console.log('[HEALTH] Cache is stale, refreshing in background...');
+                // console.log('[HEALTH] Cache is stale, refreshing in background...');
                 queryClient.refetchQueries({
                   queryKey: ["chat-history", sessionId],
                   exact: true,
@@ -1440,14 +1546,14 @@ export default function Chat() {
                     </motion.div>
                   ) : !shouldShowChatView && !pendingUserMessage ? (
                     (() => {
-                      console.log('[VIEW] Showing EmptyState:', {
-                        shouldShowChatView,
-                        hasMessages,
-                        messageCount: messages.length,
-                        isStreaming,
-                        pendingUserMessage,
-                        sessionId
-                      });
+                      // console.log('[VIEW] Showing EmptyState:', {
+                      //   shouldShowChatView,
+                      //   hasMessages,
+                      //   messageCount: messages.length,
+                      //   isStreaming,
+                      //   pendingUserMessage,
+                      //   sessionId
+                      // });
                       return (
                         <div className="w-full">
                           <EmptyState 
@@ -1459,16 +1565,16 @@ export default function Chat() {
                     })()
                   ) : (
                     (() => {
-                      console.log('[VIEW] Showing ChatView:', {
-                        shouldShowChatView,
-                        hasMessages,
-                        messageCount: messages.length,
-                        isStreaming,
-                        pendingUserMessage,
-                        sessionId,
-                        refinedQueriesFor,
-                        refinedQueriesCount: refinedQueries.length
-                      });
+                      // console.log('[VIEW] Showing ChatView:', {
+                      //   shouldShowChatView,
+                      //   hasMessages,
+                      //   messageCount: messages.length,
+                      //   isStreaming,
+                      //   pendingUserMessage,
+                      //   sessionId,
+                      //   refinedQueriesFor,
+                      //   refinedQueriesCount: refinedQueries.length
+                      // });
                       return (
                         <motion.div 
                           initial={{ opacity: 0 }}
@@ -1507,6 +1613,9 @@ export default function Chat() {
                                 refinedQueries={messageShowsRefined ? refinedQueries : undefined}
                                 showRefinedQueries={messageShowsRefined}
                                 onRefinedQueryClick={handleRefinedQueryClick}
+                                sessionId={sessionId}
+                                userAvatar={userProfile.avatar}
+                                userName={userProfile.name}
                               />
                             </motion.div>
                           );

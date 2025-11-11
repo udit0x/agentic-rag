@@ -172,6 +172,46 @@ export const documentProcessingJobs = pgTable("document_processing_jobs", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// User feedback for response quality and ML training
+export const messageFeedback = pgTable("message_feedback", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  messageId: varchar("message_id").notNull().references(() => messages.id, { onDelete: "cascade" }),
+  sessionId: varchar("session_id").notNull().references(() => chatSessions.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  feedbackType: text("feedback_type").notNull().$type<"positive" | "negative">(),
+  category: text("category").$type<
+    | "ignored_instructions"
+    | "fetched_multiple_documents"
+    | "harmful_offensive"
+    | "forgot_context"
+    | "missing_information"
+    | "other"
+  >(), // Only for negative feedback
+  detailText: text("detail_text"), // User's additional comments
+  // Store context for future ML training
+  queryContext: jsonb("query_context").$type<{
+    originalQuery: string;
+    responseType?: string;
+    sourcesUsed?: string[];
+    agentChain?: string[];
+  }>(),
+  // ML training fields (for future use)
+  isReviewed: boolean("is_reviewed").default(false),
+  reviewedBy: varchar("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at"),
+  trainingWeight: numeric("training_weight").default("1.0"), // For weighted training
+  modelVersion: varchar("model_version"), // Track which model version received feedback
+  // Metadata for analysis
+  metadata: jsonb("metadata").$type<{
+    userAgent?: string;
+    responseTime?: number;
+    tokenCount?: number;
+    sourceCount?: number;
+  }>(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // Insert schemas
 export const insertDocumentSchema = createInsertSchema(documents);
 export const insertDocumentChunkSchema = createInsertSchema(documentChunks);
@@ -184,6 +224,7 @@ export const insertConfigVersionSchema = createInsertSchema(configVersions);
 export const insertQueryAnalyticsSchema = createInsertSchema(queryAnalytics);
 export const insertAgentTraceSchema = createInsertSchema(agentTraces);
 export const insertDocumentProcessingJobSchema = createInsertSchema(documentProcessingJobs);
+export const insertMessageFeedbackSchema = createInsertSchema(messageFeedback);
 
 // Types
 export type Document = typeof documents.$inferSelect;
@@ -218,3 +259,6 @@ export type InsertAgentTrace = typeof agentTraces.$inferInsert;
 
 export type DocumentProcessingJob = typeof documentProcessingJobs.$inferSelect;
 export type InsertDocumentProcessingJob = typeof documentProcessingJobs.$inferInsert;
+
+export type MessageFeedback = typeof messageFeedback.$inferSelect;
+export type InsertMessageFeedback = typeof messageFeedback.$inferInsert;

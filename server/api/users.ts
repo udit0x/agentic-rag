@@ -1,0 +1,113 @@
+import { Router } from "express";
+import type { Request, Response } from "express";
+import { clerkClient, requireAuth } from "@clerk/express";
+
+const router = Router();
+
+// Extend Express Request type for Clerk auth
+interface AuthRequest extends Request {
+  auth: {
+    userId: string;
+    sessionId: string;
+  };
+}
+
+interface SyncUserRequest {
+  id: string;
+  email: string;
+  name: string;
+  picture?: string;
+  locale?: string;
+  preferences?: Record<string, any>;
+}
+
+/**
+ * Sync user from Clerk to database
+ * Creates or updates user record
+ */
+router.post("/sync", async (req: Request, res: Response) => {
+  try {
+    const userData: SyncUserRequest = req.body;
+
+    if (!userData.id || !userData.email || !userData.name) {
+      return res.status(400).json({
+        error: "Missing required fields: id, email, name",
+      });
+    }
+
+    // Call Python backend to sync user
+    const pythonBackendUrl = process.env.PYTHON_BACKEND_URL || "http://localhost:8000";
+    
+    const response = await fetch(`${pythonBackendUrl}/api/users/sync`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        id: userData.id,
+        email: userData.email,
+        name: userData.name,
+        picture: userData.picture,
+        locale: userData.locale || "en",
+        preferences: userData.preferences || {},
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("[USER_SYNC] Error from Python backend:", errorText);
+      return res.status(response.status).json({
+        error: "Failed to sync user",
+        details: errorText,
+      });
+    }
+
+    const result = await response.json();
+    
+    return res.status(200).json({
+      success: true,
+      user: result,
+    });
+  } catch (error) {
+    console.error("[USER_SYNC] Error syncing user:", error);
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+/**
+ * Get current authenticated user
+ */
+router.get("/me", requireAuth(), async (req: Request, res: Response) => {
+  try {
+    // ✅ FIX: Use req.auth() as a function instead of property
+    const auth = (req as any).auth();
+    const { userId } = auth;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // Fetch user from Clerk
+    const clerkUser = await clerkClient.users.getUser(userId);
+
+    return res.status(200).json({
+      id: clerkUser.id,
+      email: clerkUser.emailAddresses[0]?.emailAddress,
+      name: clerkUser.fullName || clerkUser.username || "Anonymous",
+      picture: clerkUser.imageUrl,
+      locale: clerkUser.publicMetadata?.locale,
+      preferences: clerkUser.publicMetadata?.preferences,
+    });
+  } catch (error) {
+    console.error("[USER_ME] Error fetching user:", error);
+    return res.status(500).json({
+      error: "Failed to fetch user",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+export { router as usersRouter };

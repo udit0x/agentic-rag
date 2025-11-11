@@ -5,38 +5,56 @@
 // Determine base URLs based on environment
 const isDevelopment = import.meta.env.DEV;
 
-export const API_CONFIG = {
-  // TypeScript Express API (documents, storage)
-  EXPRESS_BASE_URL: isDevelopment ? 'http://localhost:5000' : '',
+// Get API base URL with production validation
+const getApiBaseUrl = (): string => {
+  const envUrl = import.meta.env.VITE_API_BASE_URL;
   
-  // Python FastAPI (chat, config, queries)  
-  PYTHON_BASE_URL: isDevelopment ? 'http://localhost:8000' : '',
+  if (envUrl) {
+    return envUrl;
+  }
+  
+  if (isDevelopment) {
+    return 'http://localhost:3000';
+  }
+  
+  // In production, API_BASE_URL must be explicitly set
+  throw new Error(
+    'VITE_API_BASE_URL environment variable is required in production. ' +
+    'Please set it to your API server URL.'
+  );
+};
+
+export const API_CONFIG = {
+  // All API requests go through Express (port 3000) which proxies to Python FastAPI
+  // This ensures authentication middleware is always applied
+  // Use environment variable for flexibility in deployment
+  API_BASE_URL: getApiBaseUrl(),
 } as const;
 
 export const API_ENDPOINTS = {
-  // Python FastAPI endpoints
-  QUERY: `${API_CONFIG.PYTHON_BASE_URL}/api/query`,
-  QUERY_STREAM: `${API_CONFIG.PYTHON_BASE_URL}/api/query/stream`,
-  GENERATE_TITLE: `${API_CONFIG.PYTHON_BASE_URL}/api/generate-title`,
-  CONFIG_SAVE: `${API_CONFIG.PYTHON_BASE_URL}/api/config/save`,
-  CONFIG_CURRENT: `${API_CONFIG.PYTHON_BASE_URL}/api/config/current`,
-  CHAT_HISTORY: (sessionId: string) => `${API_CONFIG.PYTHON_BASE_URL}/api/chat/${sessionId}`,
+  // Python FastAPI endpoints (proxied through Express for authentication)
+  QUERY: `${API_CONFIG.API_BASE_URL}/api/query`,
+  QUERY_STREAM: `${API_CONFIG.API_BASE_URL}/api/query/stream`,
+  GENERATE_TITLE: `${API_CONFIG.API_BASE_URL}/api/generate-title`,
+  CONFIG_SAVE: `${API_CONFIG.API_BASE_URL}/api/config/save`,
+  CONFIG_CURRENT: `${API_CONFIG.API_BASE_URL}/api/config/current`,
+  CHAT_HISTORY: (sessionId: string) => `${API_CONFIG.API_BASE_URL}/api/chat/${sessionId}`,
   
   // Chat session management endpoints
-  CHAT_SESSIONS: `${API_CONFIG.PYTHON_BASE_URL}/api/chat-sessions/sessions`,
-  CREATE_CHAT_SESSION: `${API_CONFIG.PYTHON_BASE_URL}/api/chat-sessions/sessions`,
-  DELETE_CHAT_SESSION: (sessionId: string) => `${API_CONFIG.PYTHON_BASE_URL}/api/chat-sessions/sessions/${sessionId}`,
-  CHAT_SESSION_MESSAGES: (sessionId: string) => `${API_CONFIG.PYTHON_BASE_URL}/api/chat-sessions/sessions/${sessionId}/messages`,
+  CHAT_SESSIONS: `${API_CONFIG.API_BASE_URL}/api/chat-sessions/sessions`,
+  CREATE_CHAT_SESSION: `${API_CONFIG.API_BASE_URL}/api/chat-sessions/sessions`,
+  DELETE_CHAT_SESSION: (sessionId: string) => `${API_CONFIG.API_BASE_URL}/api/chat-sessions/sessions/${sessionId}`,
+  CHAT_SESSION_MESSAGES: (sessionId: string) => `${API_CONFIG.API_BASE_URL}/api/chat-sessions/sessions/${sessionId}/messages`,
   
-  // Document endpoints - now using Python for complete pipeline
-  DOCUMENTS: `${API_CONFIG.PYTHON_BASE_URL}/api/documents`,
-  DOCUMENT_UPLOAD: `${API_CONFIG.PYTHON_BASE_URL}/api/documents/upload`,
-  DOCUMENT_DELETE: (id: string) => `${API_CONFIG.PYTHON_BASE_URL}/api/documents/${id}`,
-  DOCUMENT_CONTENT: (id: string) => `${API_CONFIG.PYTHON_BASE_URL}/api/documents/${id}/content`,
+  // Document endpoints
+  DOCUMENTS: `${API_CONFIG.API_BASE_URL}/api/documents`,
+  DOCUMENT_UPLOAD: `${API_CONFIG.API_BASE_URL}/api/documents/upload`,
+  DOCUMENT_DELETE: (id: string) => `${API_CONFIG.API_BASE_URL}/api/documents/${id}`,
+  DOCUMENT_CONTENT: (id: string) => `${API_CONFIG.API_BASE_URL}/api/documents/${id}/content`,
   
-  // Express TypeScript endpoints (non-document operations)
-  HEALTH: `${API_CONFIG.EXPRESS_BASE_URL}/api/ts-health`,
-  ANALYTICS: `${API_CONFIG.EXPRESS_BASE_URL}/api/ts/analytics`,
+  // Express TypeScript endpoints
+  HEALTH: `${API_CONFIG.API_BASE_URL}/api/ts-health`,
+  ANALYTICS: `${API_CONFIG.API_BASE_URL}/api/ts/analytics`,
 } as const;
 
 /**

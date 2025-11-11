@@ -542,7 +542,8 @@ class MultiProviderRAGClient:
         query: str, 
         top_k: int = 5,
         min_score_threshold: float = None,
-        document_ids: Optional[List[str]] = None
+        document_ids: Optional[List[str]] = None,
+        user_id: Optional[str] = None  # ✅ SECURITY: Add user_id for isolation
     ) -> List[Dict[str, Any]]:
         """
         Perform semantic search using vector similarity with precision filtering and caching.
@@ -552,10 +553,18 @@ class MultiProviderRAGClient:
         - Added minimum similarity score threshold to discard noisy context
         - Enhanced metadata grounding with document source information
         - Added smart caching to avoid redundant searches
+        
+        Security:
+        - Filters results by user_id to ensure data isolation
+        - Only returns chunks from documents belonging to the authenticated user
         """
         # Check cache first
         cached_results = _search_cache.get(query, top_k)
         if cached_results is not None:
+            # ✅ SECURITY: Filter cached results by user_id
+            if user_id:
+                cached_results = await self._filter_results_by_user(cached_results, user_id)
+            
             # Apply threshold filtering to cached results
             filtered_results = []
             if min_score_threshold is None:
@@ -600,7 +609,7 @@ class MultiProviderRAGClient:
         
         if not self.search_client or not embeddings:
             print("[DEBUG] Azure Search disabled or not configured, using fallback search")
-            results = await self._fallback_search(query, top_k, min_score_threshold)
+            results = await self._fallback_search(query, top_k, min_score_threshold, user_id=user_id)
             # Cache fallback results too
             _search_cache.set(query, top_k, results)
             return results
@@ -661,11 +670,34 @@ class MultiProviderRAGClient:
             
             # Build OData filter for document IDs if provided
             search_filter = None
+            filter_parts = []
+            
+            # ✅ SECURITY: Always filter by user's documents if user_id is provided
+            if user_id:
+                # Get all document IDs for this user
+                from server.storage import storage
+                user_documents = await storage.getAllDocuments(userId=user_id)
+                user_doc_ids = [doc["id"] for doc in user_documents]
+                
+                if not user_doc_ids:
+                    print(f"[SECURITY] User {user_id} has no documents, returning empty results")
+                    return []
+                
+                # Create filter for user's documents
+                user_filter_parts = [f"documentId eq '{doc_id}'" for doc_id in user_doc_ids]
+                filter_parts.append(f"({' or '.join(user_filter_parts)})")
+                print(f"[SECURITY] Filtering by user {user_id}'s {len(user_doc_ids)} documents")
+            
             if document_ids and len(document_ids) > 0:
                 # Create an OData filter to include only specified documents
                 document_filter_parts = [f"documentId eq '{doc_id}'" for doc_id in document_ids]
-                search_filter = " or ".join(document_filter_parts)
-                print(f"[DEBUG] Applied document filter: {search_filter}")
+                filter_parts.append(f"({' or '.join(document_filter_parts)})")
+                print(f"[DEBUG] Applied document filter: {len(document_ids)} documents")
+            
+            # Combine filters with AND
+            if filter_parts:
+                search_filter = " and ".join(filter_parts)
+                print(f"[DEBUG] Combined filter: {search_filter[:100]}...")  # Log first 100 chars
             
             results = self.search_client.search(
                 search_text=None,  # Use pure vector search instead of hybrid
@@ -746,7 +778,32 @@ class MultiProviderRAGClient:
         
         return formatted_results
     
-    async def _fallback_search(self, query: str, top_k: int, min_score_threshold: float = 0.65) -> List[Dict[str, Any]]:
+    async def _filter_results_by_user(self, results: List[Dict[str, Any]], user_id: str) -> List[Dict[str, Any]]:
+        """
+        Filter search results to only include chunks from documents belonging to the user.
+        
+        Security:
+        - Validates document ownership before returning results
+        - Prevents cross-user data leakage
+        """
+        from server.storage import storage
+        
+        # Get all document IDs for this user
+        user_documents = await storage.getAllDocuments(userId=user_id)
+        user_doc_ids = {doc["id"] for doc in user_documents}
+        
+        # Filter results to only include user's documents
+        filtered_results = [
+            result for result in results 
+            if result.get("documentId") in user_doc_ids
+        ]
+        
+        if len(filtered_results) < len(results):
+            print(f"[SECURITY] Filtered {len(results) - len(filtered_results)} unauthorized chunks for user {user_id}")
+        
+        return filtered_results
+    
+    async def _fallback_search(self, query: str, top_k: int, min_score_threshold: float = 0.65, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Fallback search using simple text matching."""
         print(f"[DEBUG] FALLBACK SEARCH CALLED for query: '{query}', top_k: {top_k}")
         print(f"[DEBUG] This should NOT be called if Azure Search is working!")
@@ -762,8 +819,26 @@ class MultiProviderRAGClient:
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from server.storage import storage
         
-        # Get all chunks from storage
-        all_chunks = await storage.getAllChunks()
+        # ✅ SECURITY: Get only chunks from user's documents
+        if user_id:
+            # Get all document IDs for this user
+            user_documents = await storage.getAllDocuments(userId=user_id)
+            user_doc_ids = {doc["id"] for doc in user_documents}
+            
+            if not user_doc_ids:
+                print(f"[SECURITY] User {user_id} has no documents, returning empty results")
+                return []
+            
+            # Get all chunks
+            all_chunks = await storage.getAllChunks()
+            # Filter to only user's documents
+            all_chunks = [chunk for chunk in all_chunks if chunk.get("documentId") in user_doc_ids]
+            print(f"[SECURITY] Fallback search filtered to {len(all_chunks)} chunks from user {user_id}'s documents")
+        else:
+            # Get all chunks from storage (no user filter - only for backward compatibility)
+            all_chunks = await storage.getAllChunks()
+            print(f"[DEBUG] Retrieved {len(all_chunks)} chunks from storage (NO USER FILTER)")
+        
         print(f"[DEBUG] Retrieved {len(all_chunks)} chunks from storage")
         
         if not all_chunks:

@@ -514,7 +514,7 @@ export const useCacheStore = create<CacheState>()(
     {
       name: 'cache-store',
       // Only enable devtools in development
-      enabled: process.env.NODE_ENV === 'development',
+      enabled: import.meta.env.DEV,
     }
   )
 );

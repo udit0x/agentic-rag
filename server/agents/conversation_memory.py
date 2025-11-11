@@ -26,7 +26,12 @@ except ImportError:
             "Conversation memory classes not found. Run: pip install langchain-classic"
         )
 
-from server.providers import get_llm
+from server.agents.state import AgentState
+from server.azure_client import get_llm
+from server.agents.cost_tracker import cost_tracker
+from server.agents.error_handler import get_user_friendly_error_message, log_content_filter_violation
+
+# Try importing from LangChain main package first
 from server.storage import storage
 
 
@@ -242,7 +247,8 @@ You are a helpful AI assistant with access to both conversation history and retr
             
         except Exception as e:
             print(f"[MEMORY_AGENT] Error generating hybrid response: {e}")
-            return "I apologize, but I encountered an error while processing your request."
+            log_content_filter_violation(e, "conversation_memory_agent")
+            return get_user_friendly_error_message(e)
     
     def _format_retrieved_context(self, chunks: List[Dict[str, Any]]) -> str:
         """Format retrieved chunks for prompt context."""

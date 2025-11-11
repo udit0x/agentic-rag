@@ -1,7 +1,7 @@
 """Document upload and management endpoints."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -11,6 +11,7 @@ from server.azure_client import azure_client
 from server.document_processor import process_document
 from server.performance_tracker import perf_tracker
 from server.config_manager import config_manager
+from server.auth_middleware import get_authenticated_user_id, require_authenticated_user
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -27,7 +28,10 @@ class UploadDocumentResponse(BaseModel):
     processingMetrics: dict
 
 @router.post("/upload", response_model=UploadDocumentResponse)
-async def upload_document(request: UploadDocumentRequest):
+async def upload_document(
+    request: UploadDocumentRequest,
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
     """
     Upload and process a document.
     
@@ -36,6 +40,10 @@ async def upload_document(request: UploadDocumentRequest):
     3. Generate embeddings
     4. Store in Azure Cognitive Search
     5. Save to storage
+    
+    Security:
+    - Automatically associates document with authenticated user
+    - User ID from JWT token (cannot be spoofed)
     """
     print(f"[DEBUG] Upload request received for file: {request.filename}")
     print(f"[DEBUG] Content type: {request.contentType}")
@@ -81,8 +89,9 @@ async def upload_document(request: UploadDocumentRequest):
                 "contentType": request.contentType,
                 "size": size,
                 "content": text_content,
+                "userId": authenticated_user_id,  # ✅ SECURITY: Use authenticated user ID from JWT
             })
-        print(f"[DEBUG] Document created with ID: {document['id']}")
+        print(f"[DEBUG] Document created with ID: {document['id']} for authenticated user: {authenticated_user_id}")
         
         # Split into chunks
         print("[DEBUG] Splitting text into chunks...")
@@ -185,9 +194,15 @@ async def upload_document(request: UploadDocumentRequest):
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
 @router.get("", response_model=List[dict])
-async def get_documents():
-    """Get all uploaded documents."""
-    documents = await storage.getAllDocuments()
+async def get_documents(authenticated_user_id: str = Depends(require_authenticated_user)):
+    """
+    Get all uploaded documents for the authenticated user.
+    
+    Security:
+    - Only returns documents belonging to the authenticated user
+    - User ID from JWT token (cannot be spoofed)
+    """
+    documents = await storage.getAllDocuments(userId=authenticated_user_id)
     return [
         {
             "id": doc["id"],
@@ -199,11 +214,27 @@ async def get_documents():
     ]
 
 @router.delete("/{document_id}")
-async def delete_document(document_id: str):
-    """Delete a document and its chunks."""
+async def delete_document(
+    document_id: str,
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
+    """
+    Delete a document and its chunks.
+    
+    Security:
+    - Validates document ownership before deletion
+    - Returns 403 if attempting to delete another user's document
+    """
     document = await storage.getDocument(document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+    
+    # ✅ SECURITY: Validate document ownership using authenticated user ID from JWT
+    if document.get("userId") and document.get("userId") != authenticated_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied: Document {document_id} belongs to a different user"
+        )
     
     # Delete from Azure Search first (by filename)
     try:
@@ -220,14 +251,30 @@ async def delete_document(document_id: str):
     return {"success": True}
 
 @router.get("/{document_id}/content")
-async def get_document_content(document_id: str):
-    """Get document content for preview."""
+async def get_document_content(
+    document_id: str,
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
+    """
+    Get document content for preview.
+    
+    Security:
+    - Validates document ownership before returning content
+    - Returns 403 if attempting to access another user's document
+    """
     print(f"[DEBUG] Request for document content: {document_id}")
     
     document = await storage.getDocument(document_id)
     if not document:
         print(f"[DEBUG] Document not found: {document_id}")
         raise HTTPException(status_code=404, detail="Document not found")
+    
+    # ✅ SECURITY: Validate document ownership using authenticated user ID from JWT
+    if document.get("userId") and document.get("userId") != authenticated_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied: Document {document_id} belongs to a different user"
+        )
     
     print(f"[DEBUG] Document found: {document['filename']}, content length: {len(document['content'])}")
     

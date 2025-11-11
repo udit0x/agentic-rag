@@ -1064,7 +1064,8 @@ Rank from 1 (most relevant) to N (least relevant).
         session_id: Optional[str] = None,
         force_retrieval: bool = False,
         force_lower_threshold: bool = False,
-        document_ids: Optional[List[str]] = None
+        document_ids: Optional[List[str]] = None,
+        user_id: Optional[str] = None  # ✅ SECURITY: Add user_id for isolation
     ) -> tuple[List[DocumentChunk], Dict[str, Any]]:
         """
         Retrieve relevant document chunks with classification-aware enhancements and caching.
@@ -1078,9 +1079,14 @@ Rank from 1 (most relevant) to N (least relevant).
             session_id: Session ID for caching (if None, no caching)
             force_retrieval: Force new retrieval even if cached result exists
             document_ids: Optional list of document IDs to filter search scope
+            user_id: User ID for data isolation (filters to user's documents only)
             
         Returns:
             Tuple of (retrieved chunks, retrieval metadata)
+        
+        Security:
+            - Filters all retrievals by user_id to ensure data isolation
+            - Only returns chunks from documents belonging to the authenticated user
         """
         start_time = datetime.now() if enable_tracing else None
         use_general_knowledge = self._get_use_general_knowledge()
@@ -1156,7 +1162,8 @@ Rank from 1 (most relevant) to N (least relevant).
                     query=search_query,
                     top_k=batch_k,
                     min_score_threshold=search_threshold,
-                    document_ids=document_ids
+                    document_ids=document_ids,
+                    user_id=user_id  # ✅ SECURITY: Pass user_id for isolation
                 )
                 
                 # Tag results with source query for debugging

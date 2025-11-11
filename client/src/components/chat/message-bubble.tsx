@@ -1,13 +1,18 @@
 import { type Message } from "@/lib/chat-cache";  // Use extended Message type with serverId
 import { cn } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { User, Bot, Copy, Check, ChevronDown, ChevronUp } from "lucide-react";
+import { User, Bot, Copy, Check, ChevronDown, ChevronUp, ThumbsUp, ThumbsDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect } from "react";
+import { FeedbackDialog, type FeedbackCategory } from "./feedback-dialog";
+import { submitMessageFeedback, type FeedbackType } from "@/lib/feedback-api";
+import { useToast } from "@/hooks/use-toast";
+import { Button } from "@/components/ui/button";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 
 interface MessageBubbleProps {
   message: Message;
@@ -18,6 +23,9 @@ interface MessageBubbleProps {
   refinedQueries?: string[];
   showRefinedQueries?: boolean;
   onRefinedQueryClick?: (query: string) => void;
+  sessionId?: string; // Session ID for feedback submission
+  userAvatar?: string; // User avatar URL
+  userName?: string; // User name for fallback
 }
 
 interface CodeBlockProps {
@@ -76,21 +84,27 @@ export function MessageBubble({
   onMessageClick,
   refinedQueries, 
   showRefinedQueries = false,
-  onRefinedQueryClick 
+  onRefinedQueryClick,
+  sessionId,
+  userAvatar,
+  userName = "User"
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const isMobile = useIsMobile();
   const [isQuestionsExpanded, setIsQuestionsExpanded] = useState(false);
+  const [feedbackType, setFeedbackType] = useState<FeedbackType | null>(null);
+  const [showFeedbackDialog, setShowFeedbackDialog] = useState(false);
+  const { toast } = useToast();
 
   // Auto-show questions when they become available, then auto-collapse after delay
   useEffect(() => {
     if (refinedQueries && refinedQueries.length > 0 && showRefinedQueries) {
-      // console.log('[MessageBubble] Showing refined queries:', {
-      //   count: refinedQueries.length,
-      //   showRefinedQueries,
-      //   messageId: message.id,
-      //   messageServerId: message.serverId
-      // });
+      console.log('[MessageBubble] Showing refined queries:', {
+        count: refinedQueries.length,
+        showRefinedQueries,
+        messageId: message.id,
+        messageServerId: message.serverId
+      });
       setIsQuestionsExpanded(true); // Auto-expand initially
       
       // Auto-collapse after 6 seconds (keep header visible, just collapse the list)
@@ -104,7 +118,103 @@ export function MessageBubble({
 
   const hasRefinedQueries = refinedQueries && refinedQueries.length > 0;
 
+  // Handle positive feedback (thumbs up)
+  const handlePositiveFeedback = async () => {
+    if (feedbackType === "positive") {
+      // Already liked, remove feedback
+      setFeedbackType(null);
+      // Could add API call to delete feedback here
+      return;
+    }
+
+    setFeedbackType("positive");
+    
+    try {
+      await submitMessageFeedback({
+        messageId: message.id,
+        sessionId: sessionId || message.sessionId || "",
+        feedbackType: "positive",
+        queryContext: {
+          originalQuery: isUser ? message.content : undefined,
+          responseType: responseType,
+          sourcesUsed: Array.isArray(message.sources) 
+            ? message.sources.map((s) => s.filename) 
+            : undefined,
+        },
+      });
+      
+      toast({
+        title: "Thanks for your feedback!",
+        description: "Your positive feedback helps us improve.",
+      });
+    } catch (error) {
+      console.error("Error submitting positive feedback:", error);
+      setFeedbackType(null);
+      toast({
+        title: "Failed to submit feedback",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Handle negative feedback (thumbs down) - opens dialog
+  const handleNegativeFeedback = () => {
+    if (feedbackType === "negative") {
+      // Already disliked, remove feedback
+      setFeedbackType(null);
+      // Could add API call to delete feedback here
+      return;
+    }
+
+    setShowFeedbackDialog(true);
+  };
+
+  // Handle feedback dialog submission
+  const handleFeedbackSubmit = async (category: FeedbackCategory, detailText: string) => {
+    try {
+      await submitMessageFeedback({
+        messageId: message.id,
+        sessionId: sessionId || message.sessionId || "",
+        feedbackType: "negative",
+        category,
+        detailText: detailText || undefined,
+        queryContext: {
+          originalQuery: isUser ? undefined : message.content,
+          responseType: responseType,
+          sourcesUsed: Array.isArray(message.sources)
+            ? message.sources.map((s) => s.filename)
+            : undefined,
+          agentChain: Array.isArray(message.agentTraces)
+            ? message.agentTraces.map((t: any) => t.agentName)
+            : undefined,
+        },
+      });
+
+      setFeedbackType("negative");
+      
+      toast({
+        title: "Feedback submitted",
+        description: "Thank you for helping us improve the assistant.",
+      });
+    } catch (error) {
+      console.error("Error submitting negative feedback:", error);
+      toast({
+        title: "Failed to submit feedback",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+      throw error; // Re-throw so dialog can handle it
+    }
+  };
+
   return (
+    <>
+      <FeedbackDialog
+        open={showFeedbackDialog}
+        onOpenChange={setShowFeedbackDialog}
+        onSubmit={handleFeedbackSubmit}
+      />
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -298,6 +408,10 @@ export function MessageBubble({
                     className="border-t border-gray-200 dark:border-gray-700"
                   >
                     <div className="p-3 space-y-2">
+                      {/* Explanation text - only shown when expanded */}
+                      <div className="text-xs text-gray-500 dark:text-gray-400 italic mb-3">
+                        Related questions generated for better search accuracy and context understanding
+                      </div>
                       {refinedQueries.map((query, index) => (
                         <motion.div
                           key={index}
@@ -428,18 +542,68 @@ export function MessageBubble({
             </div>
           )
         )}
+
+        {/* Feedback Buttons - Only for assistant messages */}
+        {!isUser && (
+          <div className={cn("flex items-center gap-1 mt-2", isMobile && "mt-1.5")}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(
+                "h-7 px-2 gap-1.5 hover:bg-muted",
+                feedbackType === "positive" && "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400",
+                isMobile && "h-6 px-1.5"
+              )}
+              onClick={handlePositiveFeedback}
+              title="This response was helpful"
+            >
+              <ThumbsUp className={cn(
+                "transition-colors",
+                isMobile ? "h-3 w-3" : "h-3.5 w-3.5",
+                feedbackType === "positive" && "fill-current"
+              )} />
+              {!isMobile && <span className="text-xs">Helpful</span>}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(
+                "h-7 px-2 gap-1.5 hover:bg-muted",
+                feedbackType === "negative" && "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400",
+                isMobile && "h-6 px-1.5"
+              )}
+              onClick={handleNegativeFeedback}
+              title="This response could be improved"
+            >
+              <ThumbsDown className={cn(
+                "transition-colors",
+                isMobile ? "h-3 w-3" : "h-3.5 w-3.5",
+                feedbackType === "negative" && "fill-current"
+              )} />
+              {!isMobile && <span className="text-xs">Not helpful</span>}
+            </Button>
+          </div>
+        )}
       </div>
 
       {isUser && (
         <div className="flex-shrink-0">
-          <div className={cn(
-            "flex items-center justify-center rounded-full bg-muted text-muted-foreground",
+          <Avatar className={cn(
             isMobile ? "h-7 w-7" : "h-8 w-8"
           )}>
-            <User className={cn(isMobile ? "h-3.5 w-3.5" : "h-4 w-4")} />
-          </div>
+            <AvatarImage src={userAvatar} alt={userName} />
+            <AvatarFallback className="bg-muted text-muted-foreground text-sm">
+              {userName
+                .split(" ")
+                .map((n) => n[0])
+                .join("")
+                .toUpperCase()
+                .slice(0, 2)}
+            </AvatarFallback>
+          </Avatar>
         </div>
       )}
     </motion.div>
+    </>
   );
 }

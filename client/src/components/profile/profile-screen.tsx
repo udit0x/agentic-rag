@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { SignOutButton } from "@clerk/clerk-react";
 import { 
   X, 
   ArrowLeft, 
@@ -84,7 +85,7 @@ export function ProfileScreen({
   };
 
   const handleLogout = () => {
-    onLogout?.();
+    // Clerk handles the logout - just close the modal
     onClose();
   };
 
@@ -249,14 +250,15 @@ export function ProfileScreen({
                 <CardTitle className="text-base">Account Actions</CardTitle>
               </CardHeader>
               <CardContent>
-                <Button
-                  variant="destructive"
-                  onClick={handleLogout}
-                  className="w-full flex items-center gap-2"
-                >
-                  <LogOut className="h-4 w-4" />
-                  Sign Out
-                </Button>
+                <SignOutButton>
+                  <Button
+                    variant="destructive"
+                    className="w-full flex items-center gap-2"
+                  >
+                    <LogOut className="h-4 w-4" />
+                    Sign Out
+                  </Button>
+                </SignOutButton>
               </CardContent>
             </Card>
           </div>
@@ -339,15 +341,16 @@ export function ProfileScreen({
 
             {/* Centered Sign Out */}
             <div className="flex justify-center">
-              <Button
-                variant="destructive"
-                onClick={handleLogout}
-                className="flex items-center gap-2 px-8"
-                size="lg"
-              >
-                <LogOut className="h-4 w-4" />
-                Sign Out
-              </Button>
+              <SignOutButton>
+                <Button
+                  variant="destructive"
+                  className="flex items-center gap-2 px-8"
+                  size="lg"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Sign Out
+                </Button>
+              </SignOutButton>
             </div>
           </div>
         )}

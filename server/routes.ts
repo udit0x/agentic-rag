@@ -15,10 +15,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Proxy all /api requests to FastAPI backend  
+  const pythonApiUrl = process.env.PYTHON_BACKEND_URL || "http://localhost:8000";
+  
   app.use(
     "/api",
     createProxyMiddleware({
-      target: "http://localhost:8000",
+      target: pythonApiUrl,
       changeOrigin: true,
       timeout: 120000, // 2 minute timeout for uploads
       // Simple path rewrite - Express strips /api, we add it back

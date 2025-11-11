@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useCallback, ReactNode } fr
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest as enhancedApiRequest, API_ENDPOINTS } from "@/lib/api-config";
 import { queryClient } from "@/lib/queryClient";
+import { useCacheStore } from "@/stores/cache-store";
 
 interface UploadProgress {
   id: string;
@@ -33,6 +34,7 @@ export function UploadProvider({ children }: UploadProviderProps) {
   const [uploads, setUploads] = useState<UploadProgress[]>([]);
   const [isUploadScreenOpen, setIsUploadScreenOpen] = useState(false);
   const { toast } = useToast();
+  const invalidateDocumentLibrary = useCacheStore((state) => state.invalidateDocumentLibrary);
 
   const updateUpload = useCallback((id: string, updates: Partial<UploadProgress>) => {
     setUploads(prev => prev.map(upload => 
@@ -105,12 +107,13 @@ export function UploadProvider({ children }: UploadProviderProps) {
           filename: file.name,
           contentType: contentType,
           content: content,
+          // userId now validated server-side from JWT token
         }),
       });
 
-      // Show step progression while API is processing
-      setTimeout(() => updateStep(uploadId, "embed"), 1000);
-      setTimeout(() => updateStep(uploadId, "save"), 2000);
+      // Show step progression while API is processing with gradual timing
+      setTimeout(() => updateStep(uploadId, "embed"), 1800);
+      setTimeout(() => updateStep(uploadId, "save"), 3600);
 
       // Wait for the actual API call to complete
       const response = await apiPromise;
@@ -127,8 +130,13 @@ export function UploadProvider({ children }: UploadProviderProps) {
         description: `${response.filename} processed with ${response.chunksCreated} chunks. Ready for querying!`,
       });
 
-      // Refresh documents list in React Query cache
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      // ✅ Invalidate BOTH React Query AND Zustand cache to ensure UI updates
+      // Use partial key matching to invalidate all document queries regardless of userId
+      queryClient.invalidateQueries({ queryKey: ["documents"], exact: false });
+      invalidateDocumentLibrary(); // ✅ Clear Zustand cache for documents
+      
+      // ✅ Force an immediate refetch to update the UI
+      await queryClient.refetchQueries({ queryKey: ["documents"], exact: false });
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Failed to upload file";

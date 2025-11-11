@@ -474,7 +474,8 @@ class MultiAgentOrchestrator:
                 session_id=state.get("session_id"),
                 force_retrieval=False,  # Allow caching by default
                 force_lower_threshold=force_lower_threshold,
-                document_ids=state.get("document_ids")  # Pass document filtering
+                document_ids=state.get("document_ids"),  # Pass document filtering
+                user_id=state.get("user_id")  # ✅ SECURITY: Pass user_id for isolation
             )
             
             state["retrieved_chunks"] = chunks

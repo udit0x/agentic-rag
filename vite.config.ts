@@ -8,6 +8,10 @@ import postcssImport from "postcss-import";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Load environment variables for proxy configuration
+const pythonApiUrl = process.env.PYTHON_BACKEND_URL || "http://localhost:8000";
+const expressApiUrl = process.env.EXPRESS_BACKEND_URL || "http://localhost:5000";
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -30,33 +34,33 @@ export default defineConfig({
     proxy: {
       // Route specific endpoints to Python FastAPI
       "/api/query": {
-        target: "http://localhost:8000",
+        target: pythonApiUrl,
         changeOrigin: true,
         secure: false,
       },
       "/api/config": {
-        target: "http://localhost:8000",
+        target: pythonApiUrl,
         changeOrigin: true,
         secure: false,
       },
       "/api/chat": {
-        target: "http://localhost:8000",
+        target: pythonApiUrl,
         changeOrigin: true,
         secure: false,
       },
       // Route document and storage endpoints to TypeScript Express
       "/api/documents": {
-        target: "http://localhost:5000",
+        target: expressApiUrl,
         changeOrigin: true,
         secure: false,
       },
       "/api/health": {
-        target: "http://localhost:5000",
+        target: expressApiUrl,
         changeOrigin: true,
         secure: false,
       },
       "/api/analytics": {
-        target: "http://localhost:5000",
+        target: expressApiUrl,
         changeOrigin: true,
         secure: false,
       },

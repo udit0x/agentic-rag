@@ -77,9 +77,9 @@ class DatabaseStorage:
         """Get a document by ID."""
         return await self._delegate_operation('getDocument', doc_id)
 
-    async def getAllDocuments(self) -> List[dict]:
-        """Get all documents."""
-        return await self._delegate_operation('getAllDocuments')
+    async def getAllDocuments(self, userId: Optional[str] = None) -> List[dict]:
+        """Get all documents, optionally filtered by userId."""
+        return await self._delegate_operation('getAllDocuments', userId=userId)
 
     async def deleteDocument(self, doc_id: str) -> None:
         """Delete a document and its chunks."""
@@ -160,6 +160,92 @@ class DatabaseStorage:
     async def updateChatSessionTitle(self, session_id: str, title: str) -> None:
         """Update the title of a chat session (compatibility method)."""
         await self.updateChatSession(session_id, {"title": title})
+    
+    # User management operations
+    async def createUser(self, data: dict) -> dict:
+        """Create a new user."""
+        return await self._delegate_operation('createUser', data)
+    
+    async def getUser(self, user_id: str) -> Optional[dict]:
+        """Get a user by ID."""
+        return await self._delegate_operation('getUser', user_id)
+    
+    async def getUserByEmail(self, email: str) -> Optional[dict]:
+        """Get a user by email."""
+        return await self._delegate_operation('getUserByEmail', email)
+    
+    async def updateUser(self, user_id: str, data: dict) -> dict:
+        """Update a user's information."""
+        return await self._delegate_operation('updateUser', user_id, data)
+    
+    async def getAllUsers(self, search: Optional[str] = None, active_only: bool = True, page: int = 1, limit: int = 20) -> List[dict]:
+        """Get all users with optional filtering."""
+        return await self._delegate_operation('getAllUsers', search, active_only, page, limit)
+    
+    async def getUserCount(self, search: Optional[str] = None, active_only: bool = True) -> int:
+        """Get total user count."""
+        return await self._delegate_operation('getUserCount', search, active_only)
+    
+    # Message feedback operations
+    async def create_message_feedback(
+        self,
+        message_id: str,
+        session_id: str,
+        user_id: str,
+        feedback_type: str,
+        category: Optional[str] = None,
+        detail_text: Optional[str] = None,
+        query_context: Optional[dict] = None,
+        metadata: Optional[dict] = None
+    ) -> str:
+        """Create a new message feedback entry."""
+        return await self._delegate_operation(
+            'create_message_feedback',
+            message_id=message_id,
+            session_id=session_id,
+            user_id=user_id,
+            feedback_type=feedback_type,
+            category=category,
+            detail_text=detail_text,
+            query_context=query_context,
+            metadata=metadata
+        )
+    
+    async def get_message_feedback(self, message_id: str, user_id: str) -> Optional[dict]:
+        """Get feedback for a specific message by a specific user."""
+        return await self._delegate_operation('get_message_feedback', message_id, user_id)
+    
+    async def update_message_feedback(
+        self,
+        feedback_id: str,
+        feedback_type: str,
+        category: Optional[str] = None,
+        detail_text: Optional[str] = None,
+        query_context: Optional[dict] = None,
+        metadata: Optional[dict] = None
+    ) -> str:
+        """Update an existing message feedback entry."""
+        return await self._delegate_operation(
+            'update_message_feedback',
+            feedback_id=feedback_id,
+            feedback_type=feedback_type,
+            category=category,
+            detail_text=detail_text,
+            query_context=query_context,
+            metadata=metadata
+        )
+    
+    async def delete_message_feedback(self, feedback_id: str) -> None:
+        """Delete a message feedback entry."""
+        await self._delegate_operation('delete_message_feedback', feedback_id)
+    
+    async def get_session_feedback(self, session_id: str) -> List[dict]:
+        """Get all feedback for a session."""
+        return await self._delegate_operation('get_session_feedback', session_id)
+    
+    async def get_message(self, message_id: str) -> Optional[dict]:
+        """Get a message by ID."""
+        return await self._delegate_operation('get_message', message_id)
 
 
 # Global storage instance

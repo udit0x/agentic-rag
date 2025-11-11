@@ -1,5 +1,5 @@
 """Chat and query endpoints."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any, Generator
@@ -16,6 +16,7 @@ from server.rag_chain import create_rag_answer
 from server.agents.orchestrator import orchestrator
 from server.agents.query_refinement import query_refinement_agent
 from server.agents.title_generator import title_generator
+from server.auth_middleware import get_authenticated_user_id, require_authenticated_user
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -64,7 +65,10 @@ class StreamedQueryRefinement(BaseModel):
     data: Dict[str, Any]
 
 @router.post("/query/stream")
-async def stream_query_with_refinement(request: QueryRequest):
+async def stream_query_with_refinement(
+    request: QueryRequest,
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
     """
     Stream query processing: first streams refined questions, then the main response.
     
@@ -75,7 +79,15 @@ async def stream_query_with_refinement(request: QueryRequest):
     Response format:
     - First: {"type": "refinement", "data": {"refined_queries": [...], "status": "generated"}}
     - Then: {"type": "completion", "data": {"answer": "...", "sources": [...], ...}}
+    
+    Security:
+    - User ID extracted from Clerk JWT token (cannot be spoofed)
+    - All sessions and data scoped to authenticated user
     """
+    
+    print(f"[STREAM ENDPOINT] 🎯 Received streaming request from user: {authenticated_user_id}")
+    print(f"[STREAM ENDPOINT] 📝 Query: {request.query[:50]}...")
+    print(f"[STREAM ENDPOINT] 🔑 Session ID: {request.sessionId}")
     
     async def generate_stream():
         """Generate streaming response with main processing immediately, refinement in parallel."""
@@ -93,7 +105,15 @@ async def stream_query_with_refinement(request: QueryRequest):
             if request.sessionId and not request.sessionId.startswith("temp-session-"):
                 try:
                     session = await storage.getChatSession(request.sessionId)
+                    # ✅ SECURITY: Validate session ownership using authenticated user ID from JWT
+                    if session.get("userId") and session.get("userId") != authenticated_user_id:
+                        raise HTTPException(
+                            status_code=403, 
+                            detail=f"Access denied: Session {request.sessionId} belongs to a different user"
+                        )
                     print(f"[STREAM] Using existing session: {session['id']}")
+                except HTTPException:
+                    raise  # Re-raise authorization errors
                 except Exception as e:
                     print(f"[STREAM] Error retrieving session {request.sessionId}: {e}, creating new one")
 
@@ -103,9 +123,10 @@ async def stream_query_with_refinement(request: QueryRequest):
                 # The proper title will be generated later with assistant response context
                 temporary_title = request.query[:50] + "..." if len(request.query) > 50 else request.query
                 session = await storage.createChatSession({
-                    "title": temporary_title
+                    "title": temporary_title,
+                    "userId": authenticated_user_id  # ✅ SECURITY: Use authenticated user ID from JWT
                 })
-                print(f"[STREAM] Created new session: {session['id']} with temporary title: {temporary_title}")
+                print(f"[STREAM] Created new session: {session['id']} for authenticated user: {authenticated_user_id} with temporary title: {temporary_title}")
             
             # Create user message in database
             # Note: Frontend already has optimistic message displayed
@@ -153,7 +174,7 @@ async def stream_query_with_refinement(request: QueryRequest):
                 orchestrator.process_query(
                     query=request.query,
                     session_id=session["id"],
-                    user_id=None,
+                    user_id=authenticated_user_id,  # ✅ SECURITY: Use authenticated user ID
                     document_ids=request.documentIds
                 )
             )
@@ -317,30 +338,41 @@ async def stream_query_with_refinement(request: QueryRequest):
             
             yield f"data: {json.dumps(completion_data)}\n\n"
             
-            # Generate final title with assistant response context (non-blocking)
+            # ✅ Only generate title for the FIRST message in a session (not for follow-ups)
+            # Check if this is the first user message by counting messages in session
             try:
-                final_title = await title_generator.generate_title(
-                    query=request.query,
-                    assistant_response=agent_result["final_response"],
-                    enable_tracing=False
-                )
-                # Update session title if it's different and better
-                if final_title != session.get("title"):
-                    await storage.updateChatSession(session["id"], {"title": final_title})
-                    print(f"[STREAM] Updated session title to: {final_title}")
-                    
-                    # Stream title update event to notify frontend
-                    title_update_data = {
-                        "type": "title_update",
-                        "data": {
-                            "sessionId": session["id"],
-                            "title": final_title,
-                            "status": "updated"
+                session_messages = await storage.getSessionMessages(session["id"])
+                # Count user messages (we just created one, so if count > 1, this is a follow-up)
+                user_message_count = sum(1 for msg in session_messages if msg.get("role") == "user")
+                is_first_message = user_message_count == 1
+                
+                if is_first_message:
+                    print(f"[STREAM] First message detected - generating title")
+                    # Generate final title with assistant response context (non-blocking)
+                    final_title = await title_generator.generate_title(
+                        query=request.query,
+                        assistant_response=agent_result["final_response"],
+                        enable_tracing=False
+                    )
+                    # Update session title if it's different and better
+                    if final_title != session.get("title"):
+                        await storage.updateChatSession(session["id"], {"title": final_title})
+                        print(f"[STREAM] Updated session title to: {final_title}")
+                        
+                        # Stream title update event to notify frontend
+                        title_update_data = {
+                            "type": "title_update",
+                            "data": {
+                                "sessionId": session["id"],
+                                "title": final_title,
+                                "status": "updated"
+                            }
                         }
-                    }
-                    yield f"data: {json.dumps(title_update_data)}\n\n"
+                        yield f"data: {json.dumps(title_update_data)}\n\n"
+                else:
+                    print(f"[STREAM] Follow-up message ({user_message_count} total) - skipping title generation")
             except Exception as e:
-                print(f"[STREAM] Failed to generate final title: {e}")
+                print(f"[STREAM] Failed to generate/check title: {e}")
             
         except Exception as e:
             # Detect specific error types for better user feedback
@@ -386,7 +418,10 @@ async def stream_query_with_refinement(request: QueryRequest):
     )
 
 @router.post("/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest):
+async def query_documents(
+    request: QueryRequest,
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
     """
     Query documents using multi-agent orchestration.
     
@@ -395,12 +430,24 @@ async def query_documents(request: QueryRequest):
     3. Execute multi-agent workflow (Router -> Retriever -> Reasoning/Simulation/Temporal)
     4. Save assistant message
     5. Return response with citations and agent traces
+    
+    Security:
+    - Requires authenticated user (JWT token validation)
+    - Filters all document retrievals to user's documents only
+    - Validates session ownership before using existing sessions
     """
     try:
         # Create or get session
         if request.sessionId:
             session = await storage.getChatSession(request.sessionId)
-            if not session:
+            if session:
+                # ✅ SECURITY: Validate session ownership
+                if session.get("userId") and session.get("userId") != authenticated_user_id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Access denied: Session {request.sessionId} belongs to a different user"
+                    )
+            else:
                 # Generate a proper title for new session
                 initial_title = await title_generator.generate_title(
                     query=request.query,
@@ -408,7 +455,8 @@ async def query_documents(request: QueryRequest):
                     enable_tracing=False
                 )
                 session = await storage.createChatSession({
-                    "title": initial_title
+                    "title": initial_title,
+                    "userId": authenticated_user_id  # ✅ SECURITY: Associate session with authenticated user
                 })
         else:
             # Generate a proper title for new session
@@ -418,7 +466,8 @@ async def query_documents(request: QueryRequest):
                 enable_tracing=False
             )
             session = await storage.createChatSession({
-                "title": initial_title
+                "title": initial_title,
+                "userId": authenticated_user_id  # ✅ SECURITY: Associate session with authenticated user
             })
         
         # Save user message
@@ -447,7 +496,8 @@ async def query_documents(request: QueryRequest):
         agent_result = await orchestrator.process_query(
             query=request.query,
             session_id=session["id"],
-            user_id=None  # TODO: Add user authentication in future
+            user_id=authenticated_user_id,  # ✅ SECURITY: Use authenticated user ID for data isolation
+            document_ids=request.documentIds
         )
         
         # Check for workflow errors
@@ -533,15 +583,29 @@ async def query_documents(request: QueryRequest):
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 @router.post("/generate-title", response_model=GenerateTitleResponse)
-async def generate_title(request: GenerateTitleRequest):
+async def generate_title(
+    request: GenerateTitleRequest,
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
     """
     Generate a concise title for a chat session based on the user query and assistant response.
+    
+    Security:
+    - Validates session ownership before generating title
+    - Returns 403 if attempting to modify another user's session
     """
     try:
         # Verify session exists
         session = await storage.getChatSession(request.sessionId)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        
+        # ✅ SECURITY: Validate session ownership
+        if session.get("userId") and session.get("userId") != authenticated_user_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access denied: Session {request.sessionId} belongs to a different user"
+            )
         
         # Generate title using the title generator
         title = await title_generator.generate_title(
@@ -564,11 +628,27 @@ async def generate_title(request: GenerateTitleRequest):
         raise HTTPException(status_code=500, detail=f"Title generation failed: {str(e)}")
 
 @router.get("/chat/{session_id}", response_model=ChatHistoryResponse)
-async def get_chat_history(session_id: str):
-    """Get chat history for a session."""
+async def get_chat_history(
+    session_id: str,
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
+    """
+    Get chat history for a session.
+    
+    Security:
+    - Validates that the session belongs to the authenticated user
+    - Returns 403 if attempting to access another user's session
+    """
     session = await storage.getChatSession(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    
+    # ✅ SECURITY: Validate session ownership using authenticated user ID from JWT
+    if session.get("userId") and session.get("userId") != authenticated_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied: Session {session_id} belongs to a different user"
+        )
     
     messages = await storage.getSessionMessages(session_id)
     

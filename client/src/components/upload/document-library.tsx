@@ -117,7 +117,7 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
     setError(null);
     
     try {
-      console.log(`[DEBUG] Retrying preview load for document: ${document.id}`);
+      // console.log(`[DEBUG] Retrying preview load for document: ${document.id}`);
       const documentContent = await fetchDocumentContent(document.id);
       setContent(documentContent || 'No content available');
       setLoading(false);
@@ -270,13 +270,13 @@ export function DocumentLibrary({ documents: propDocuments = [], onRefresh, onDe
         // Only update if we got valid data
         if (Array.isArray(cachedDocs)) {
           setDocuments(cachedDocs);
-          console.log(`📋 Loaded ${cachedDocs.length} documents from cache/API`);
+          // console.log(`Loaded ${cachedDocs.length} documents from cache/API`);
         }
       } catch (error) {
         console.error('Error loading documents from cache:', error);
         // Keep prop documents if cache fails and we don't have cached data
         if (documents.length === 0 && propDocuments.length > 0) {
-          console.log('📋 Fallback to prop documents');
+          // console.log('Fallback to prop documents');
           setDocuments(propDocuments);
         }
       } finally {
@@ -293,7 +293,7 @@ export function DocumentLibrary({ documents: propDocuments = [], onRefresh, onDe
   // Update documents when props change (fallback)
   useEffect(() => {
     if (propDocuments.length > 0 && documents.length === 0 && !isLoading) {
-      console.log('📋 Using prop documents as fallback');
+      // console.log('Using prop documents as fallback');
       setDocuments(propDocuments);
     }
   }, [propDocuments, documents.length, isLoading]);
