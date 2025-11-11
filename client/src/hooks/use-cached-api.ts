@@ -230,14 +230,15 @@ export const useCachedChatHistory = () => {
     }
 
     try {
-      const response = await apiRequest<{ messages: Message[] }>(
+      const response = await apiRequest<{ messages: Message[]; updatedAt: string }>(
         API_ENDPOINTS.CHAT_HISTORY(sessionId)
       );
       
       const messages = response.messages || [];
+      const serverTimestamp = response.updatedAt ? new Date(response.updatedAt).getTime() : undefined;
       
-      // Cache the result
-      setChatSessionHistory(sessionId, messages);
+      // Cache the result with server timestamp
+      setChatSessionHistory(sessionId, messages, serverTimestamp);
       
       return messages;
     } catch (error) {

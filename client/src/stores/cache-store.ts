@@ -22,6 +22,7 @@ interface ChatSessionCache {
   messages: any[]; // Using any[] to match Message type from schema
   lastAccessed: number;
   cachedAt: number;
+  latestMessageTimestamp?: number; // Timestamp of most recent message for staleness detection
 }
 
 interface CacheEntry<T> {
@@ -74,8 +75,8 @@ interface CacheState {
   getChatHistory: () => ChatMessage[];
   
   // New Chat Session Cache Methods
-  setChatSessionHistory: (sessionId: string, messages: any[]) => void;
-  getChatSessionHistory: (sessionId: string) => any[] | null;
+  setChatSessionHistory: (sessionId: string, messages: any[], serverTimestamp?: number) => void;
+  getChatSessionHistory: (sessionId: string, serverTimestamp?: number) => any[] | null;
   invalidateChatSession: (sessionId: string) => void;
   preloadChatSession: (sessionId: string, messages: any[]) => void;
   
@@ -298,25 +299,54 @@ export const useCacheStore = create<CacheState>()(
       },
 
       // Chat Session Cache Methods
-      setChatSessionHistory: (sessionId: string, messages: any[]) => {
+      setChatSessionHistory: (sessionId: string, messages: any[], serverTimestamp?: number) => {
         const { chatSessions } = get();
         const newSessions = new Map(chatSessions);
+        
+        // Extract latest message timestamp from messages array
+        let latestMessageTimestamp: number | undefined;
+        if (messages.length > 0) {
+          // Messages should have createdAt field (ISO string or timestamp)
+          const lastMessage = messages[messages.length - 1];
+          if (lastMessage?.createdAt) {
+            latestMessageTimestamp = typeof lastMessage.createdAt === 'string' 
+              ? new Date(lastMessage.createdAt).getTime()
+              : lastMessage.createdAt;
+          }
+        }
+        
+        // Use provided server timestamp if available, otherwise use extracted timestamp
+        const versionTimestamp = serverTimestamp || latestMessageTimestamp;
+        
         newSessions.set(sessionId, {
           sessionId,
           messages,
           lastAccessed: Date.now(),
           cachedAt: Date.now(),
+          latestMessageTimestamp: versionTimestamp,
         });
         set({ chatSessions: newSessions }, false, `setChatSessionHistory:${sessionId}`);
       },
 
-      getChatSessionHistory: (sessionId: string) => {
+      getChatSessionHistory: (sessionId: string, serverTimestamp?: number) => {
         const { chatSessions } = get();
         const cached = chatSessions.get(sessionId);
         
         if (!cached) {
           //console.log(`💬 No cached chat history for session: ${sessionId}`);
           return null;
+        }
+        
+        // If server timestamp provided, check if server has newer data
+        if (serverTimestamp !== undefined && cached.latestMessageTimestamp !== undefined) {
+          if (serverTimestamp > cached.latestMessageTimestamp) {
+            console.log(`🔄 Server has newer data for session ${sessionId} (server: ${new Date(serverTimestamp).toISOString()}, cached: ${new Date(cached.latestMessageTimestamp).toISOString()})`);
+            // Return null to force a fresh fetch
+            const newSessions = new Map(chatSessions);
+            newSessions.delete(sessionId);
+            set({ chatSessions: newSessions }, false, `staleDataDetected:${sessionId}`);
+            return null;
+          }
         }
         
         // Check if cache is expired (30 minutes)
@@ -354,12 +384,24 @@ export const useCacheStore = create<CacheState>()(
         const now = Date.now();
         
         if (!cached || (now - cached.cachedAt) > (DEFAULT_TTL.CHAT_SESSION * 0.7)) {
+          // Extract latest message timestamp
+          let latestMessageTimestamp: number | undefined;
+          if (messages.length > 0) {
+            const lastMessage = messages[messages.length - 1];
+            if (lastMessage?.createdAt) {
+              latestMessageTimestamp = typeof lastMessage.createdAt === 'string' 
+                ? new Date(lastMessage.createdAt).getTime()
+                : lastMessage.createdAt;
+            }
+          }
+          
           const newSessions = new Map(chatSessions);
           newSessions.set(sessionId, {
             sessionId,
             messages,
             lastAccessed: now,
             cachedAt: now,
+            latestMessageTimestamp,
           });
           set({ chatSessions: newSessions }, false, `preloadChatSession:${sessionId}`);
           console.log(`🚀 Preloaded chat session: ${sessionId} (${messages.length} messages)`);

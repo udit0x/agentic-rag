@@ -48,6 +48,7 @@ class QueryResponse(BaseModel):
 class ChatHistoryResponse(BaseModel):
     sessionId: str
     messages: List[Dict[str, Any]]
+    updatedAt: str  # ISO timestamp of session's last update
 
 class GenerateTitleRequest(BaseModel):
     sessionId: str
@@ -582,5 +583,6 @@ async def get_chat_history(session_id: str):
                 "createdAt": msg["createdAt"],
             }
             for msg in messages
-        ]
+        ],
+        updatedAt=session["updatedAt"].isoformat() if isinstance(session["updatedAt"], datetime) else session["updatedAt"]
     )

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Menu, 
@@ -9,7 +9,8 @@ import {
   ChevronLeft,
   Clock,
   Search,
-  MoreHorizontal
+  MoreHorizontal,
+  Loader2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -91,12 +92,68 @@ export function Sidebar({
   const [searchQuery, setSearchQuery] = useState("");
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [deletingChats, setDeletingChats] = useState<Set<string>>(new Set());
+  const [displayedCount, setDisplayedCount] = useState(15); // Start with 15 chats
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const isMobile = useIsMobile();
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const loadMoreTriggerRef = useRef<HTMLDivElement>(null);
 
   const filteredHistory = chatHistory.filter(chat =>
     chat.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  // Slice to show only displayedCount items
+  const visibleHistory = filteredHistory.slice(0, displayedCount);
+  const hasMore = displayedCount < filteredHistory.length;
+
+  // Load more function
+  const loadMore = useCallback(() => {
+    if (isLoadingMore || !hasMore) return;
+    
+    setIsLoadingMore(true);
+    
+    // Simulate loading delay for smooth UX
+    setTimeout(() => {
+      setDisplayedCount(prev => Math.min(prev + 15, filteredHistory.length));
+      setIsLoadingMore(false);
+    }, 300);
+  }, [isLoadingMore, hasMore, filteredHistory.length]);
+
+  // Reset displayed count when search changes
+  useEffect(() => {
+    setDisplayedCount(15);
+  }, [searchQuery]);
+
+  // Intersection Observer for infinite scroll
+  useEffect(() => {
+    if (!isOpen) return;
+
+    observerRef.current = new IntersectionObserver(
+      (entries) => {
+        const target = entries[0];
+        if (target.isIntersecting && hasMore && !isLoadingMore) {
+          loadMore();
+        }
+      },
+      {
+        root: null,
+        rootMargin: '100px',
+        threshold: 0.1,
+      }
+    );
+
+    if (loadMoreTriggerRef.current) {
+      observerRef.current.observe(loadMoreTriggerRef.current);
+    }
+
+    return () => {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+      }
+    };
+  }, [isOpen, hasMore, isLoadingMore, loadMore]);
 
 const formatDate = (dateString: string): string => {
   const date = new Date(dateString);
@@ -128,8 +185,8 @@ const formatDate = (dateString: string): string => {
       return;
     }
     
-    // Prevent clicking when loading or if it's already the current chat
-    if ((isLoadingChat && loadingChatId === chatId) || currentChatId === chatId) {
+    // Prevent clicking if it's already the current chat
+    if (currentChatId === chatId) {
       return;
     }
     
@@ -356,13 +413,13 @@ const formatDate = (dateString: string): string => {
 
       {/* Chat History */}
       <div className="flex-1 min-h-0">
-        <ScrollArea className="h-full px-1.5 sm:px-2">
+        <ScrollArea className="h-full px-1.5 sm:px-2" ref={scrollAreaRef}>
           <div className={cn(
             "space-y-1 pb-4",
             isMobile && "pb-2"
           )}>
             <AnimatePresence>
-              {filteredHistory.map((chat, index) => (
+              {visibleHistory.map((chat, index) => (
                 <div key={chat.id}>
                   <motion.div
                     initial={{ opacity: 0, y: 20 }}
@@ -371,11 +428,7 @@ const formatDate = (dateString: string): string => {
                     transition={{ delay: index * 0.05 }}
                     className={cn(
                       "group relative rounded-lg transition-colors",
-                      // Only make it clickable if not loading and not current chat
-                      !(isLoadingChat && loadingChatId === chat.id) && currentChatId !== chat.id && "cursor-pointer hover:bg-muted/20 active:bg-muted/30",
-                      // Show loading state styling
-                      isLoadingChat && loadingChatId === chat.id && "bg-muted/30 cursor-wait animate-pulse",
-                      // Current chat styling
+                      currentChatId !== chat.id && "cursor-pointer hover:bg-muted/20 active:bg-muted/30",
                       currentChatId === chat.id && "bg-muted/40 border-2 border-primary/30 shadow-sm cursor-default",
                       !isOpen && "mx-1"
                     )}
@@ -389,93 +442,50 @@ const formatDate = (dateString: string): string => {
                       <div className={cn("flex-1 min-w-0", !isOpen && "flex justify-center")}>
                         {isOpen ? (
                           <>
-                            {/* Show loading state for this specific chat */}
-                            {isLoadingChat && loadingChatId === chat.id ? (
-                              <div className="flex items-center gap-3">
-                                <OrbitalLoader 
-                                  className="w-5 h-5"
+                            <h3 className={cn(
+                              "font-medium text-foreground mb-2",
+                              isMobile ? "text-sm" : "text-sm"
+                            )}>
+                              {isTitleGenerating && titleGeneratingChatId === chat.id ? (
+                                <DecryptedText
+                                  text={chat.title}
+                                  speed={80}
+                                  maxIterations={20}
+                                  animateOn="view"
+                                  className="text-foreground"
+                                  encryptedClassName="text-foreground/60"
                                 />
-                                <div className="flex-1">
-                                  <h3 className={cn(
-                                    "font-medium text-muted-foreground mb-2",
-                                    isMobile ? "text-sm" : "text-sm"
-                                  )}>
-                                    Loading...
-                                  </h3>
-                                  <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-2">
-                                      <Clock className={cn(
-                                        "text-muted-foreground",
-                                        isMobile ? "h-2.5 w-2.5" : "h-3 w-3"
-                                      )} />
-                                      <span className={cn(
-                                        "text-muted-foreground",
-                                        isMobile ? "text-[10px]" : "text-xs"
-                                      )}>
-                                        {formatDate(chat.createdAt)}
-                                      </span>
-                                    </div>
-                                    <Badge variant="secondary" className={cn(
-                                      "px-2 py-0",
-                                      isMobile ? "text-[10px]" : "text-xs"
-                                    )}>
-                                      {chat.messageCount}
-                                    </Badge>
-                                  </div>
-                                </div>
-                              </div>
-                            ) : (
-                              <>
-                                <h3 className={cn(
-                                  "font-medium text-foreground mb-2", // Allow wrapping by removing line-clamp-1
-                                  isMobile ? "text-sm" : "text-sm"
+                              ) : (
+                                chat.title
+                              )}
+                            </h3>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <Clock className={cn(
+                                  "text-muted-foreground",
+                                  isMobile ? "h-2.5 w-2.5" : "h-3 w-3"
+                                )} />
+                                <span className={cn(
+                                  "text-muted-foreground",
+                                  isMobile ? "text-[10px]" : "text-xs"
                                 )}>
-                                  {isTitleGenerating && titleGeneratingChatId === chat.id ? (
-                                    <DecryptedText
-                                      text={chat.title}
-                                      speed={80}
-                                      maxIterations={20}
-                                      animateOn="view"
-                                      className="text-foreground"
-                                      encryptedClassName="text-foreground/60"
-                                    />
-                                  ) : (
-                                    chat.title
-                                  )}
-                                </h3>
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center gap-2">
-                                    <Clock className={cn(
-                                      "text-muted-foreground",
-                                      isMobile ? "h-2.5 w-2.5" : "h-3 w-3"
-                                    )} />
-                                    <span className={cn(
-                                      "text-muted-foreground",
-                                      isMobile ? "text-[10px]" : "text-xs"
-                                    )}>
-                                      {formatDate(chat.createdAt)}
-                                    </span>
-                                  </div>
-                                  <Badge variant="secondary" className={cn(
-                                    "px-2 py-0",
-                                    isMobile ? "text-[10px]" : "text-xs"
-                                  )}>
-                                    {chat.messageCount}
-                                  </Badge>
-                                </div>
-                              </>
-                            )}
+                                  {formatDate(chat.createdAt)}
+                                </span>
+                              </div>
+                              <Badge variant="secondary" className={cn(
+                                "px-2 py-0",
+                                isMobile ? "text-[10px]" : "text-xs"
+                              )}>
+                                {chat.messageCount}
+                              </Badge>
+                            </div>
                           </>
                         ) : (
-                          !isMobile && ( // Don't show tooltip items on mobile
+                          !isMobile && (
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <div className="flex items-center justify-center w-8 h-8 rounded-md bg-muted/50">
-                                  {isLoadingChat && loadingChatId === chat.id ? (
-                                    <OrbitalLoader className="w-4 h-4" />
-                                  ) : (
-                                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                                  )}
+                                  <MessageSquare className="h-4 w-4 text-muted-foreground" />
                                 </div>
                               </TooltipTrigger>
                               <TooltipContent side="right" className="max-w-64">
@@ -571,12 +581,24 @@ const formatDate = (dateString: string): string => {
                 </motion.div>
                   
                   {/* Subtle divider between chats */}
-                  {index < filteredHistory.length - 1 && (
-                    <div className="mx-3 my-2 border-b border-white/20" />
+                  {index < visibleHistory.length - 1 && (
+                    <div className="mx-3 my-2 border-b border-white/30 mix-blend-difference" />
                   )}
                 </div>
               ))}
             </AnimatePresence>
+            
+            {/* Load more trigger */}
+            {hasMore && isOpen && (
+              <div ref={loadMoreTriggerRef} className="py-4 flex justify-center">
+                {isLoadingMore && (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-xs">Loading more chats...</span>
+                  </div>
+                )}
+              </div>
+            )}
             
             {filteredHistory.length === 0 && isOpen && (
               <motion.div
