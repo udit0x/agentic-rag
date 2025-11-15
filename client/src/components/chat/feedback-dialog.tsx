@@ -135,6 +135,9 @@ export function FeedbackDialog({ open, onOpenChange, onSubmit }: FeedbackDialogP
                 <AlertCircle className="h-5 w-5 text-amber-500" />
                 What went wrong?
               </DialogTitle>
+              <DialogDescription>
+                Help us improve by letting us know what went wrong with this response.
+              </DialogDescription>
             </DialogHeader>
 
             <div className="space-y-5 py-2.5">

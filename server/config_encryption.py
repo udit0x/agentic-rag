@@ -22,13 +22,25 @@ class ConfigEncryption:
         """Initialize encryption with a master key."""
         # Get master key from environment or generate one
         master_key = os.getenv('CONFIG_MASTER_KEY')
+        environment = os.getenv('ENVIRONMENT', 'production')
         
         if not master_key:
+            # Check if we're in production
+            if environment == 'production':
+                raise ValueError(
+                    "CONFIG_MASTER_KEY must be set in production environment. "
+                    "Never use default encryption keys in production!"
+                )
+            
             # For development, use a derived key from a password
             password = os.getenv('CONFIG_PASSWORD', 'default-dev-password-change-in-production')
             salt = os.getenv('CONFIG_SALT', 'default-salt-change-in-production').encode()
             
-            logger.warning("Using default encryption password - set CONFIG_MASTER_KEY or CONFIG_PASSWORD in production!")
+            if password == 'default-dev-password-change-in-production':
+                logger.warning(
+                    "Using default encryption password in development. "
+                    "Set CONFIG_MASTER_KEY or CONFIG_PASSWORD for production!"
+                )
             
             # Derive key from password
             kdf = PBKDF2HMAC(

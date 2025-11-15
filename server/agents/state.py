@@ -72,7 +72,6 @@ class DocumentSummaryResult(TypedDict):
     common_themes: Optional[List[str]]  # For multi-doc
     comparative_analysis: Optional[str]  # For multi-doc
     synthesis: Optional[str]  # For multi-doc
-    confidence_score: float
 
 class AgentTrace(TypedDict):
     """Individual agent execution trace."""

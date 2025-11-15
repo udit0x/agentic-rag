@@ -172,7 +172,6 @@ export function applyEventToCache(
         }
         
         // Match the refinement to the correct user message
-        // Backend sends userMessageId (serverId), so use that for matching
         const refinedForId = ev.userMessageId;
         
         // Don't overwrite if already set to prevent flicker

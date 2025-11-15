@@ -15,15 +15,13 @@ export function useAppHelp(): UseAppHelpReturn {
   const [shouldShowHelp, setShouldShowHelp] = useState(false);
 
   useEffect(() => {
-    // Check if user has visited before
     const hasVisited = localStorage.getItem(HELP_STORAGE_KEY);
     
     if (!hasVisited) {
       setIsFirstVisit(true);
-      // Auto-open help dialog after a short delay for better UX
       const timer = setTimeout(() => {
         setShouldShowHelp(true);
-      }, 800); // Delay to let the page load first
+      }, 1200); // Increased delay to ensure page is fully loaded
 
       return () => clearTimeout(timer);
     }

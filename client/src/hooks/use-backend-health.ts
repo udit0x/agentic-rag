@@ -9,8 +9,7 @@ export interface BackendHealthStatus {
 }
 
 /**
- * Hook to check if the Python FastAPI backend is running and healthy
- * Prevents users from accessing the app when backend is down
+ * Service health monitoring
  */
 export function useBackendHealth() {
   const [status, setStatus] = useState<BackendHealthStatus>({
@@ -24,34 +23,30 @@ export function useBackendHealth() {
     try {
       setStatus((prev) => ({ ...prev, isChecking: true, error: null }));
 
-      // Check Express server health (port 3000)
-      const expressResponse = await fetch(`${API_CONFIG.API_BASE_URL}/api/ts-health`, {
+      // Primary service check
+      const primaryResponse = await fetch(`${API_CONFIG.API_BASE_URL}/api/ts-health`, {
         method: "GET",
-        signal: AbortSignal.timeout(5000), // 5 second timeout
+        signal: AbortSignal.timeout(5000),
       });
 
-      if (!expressResponse.ok) {
-        throw new Error(`Express server unhealthy: ${expressResponse.status}`);
+      if (!primaryResponse.ok) {
+        throw new Error(`Service unavailable: ${primaryResponse.status}`);
       }
 
-      // Check Python FastAPI backend health through Express proxy
-      // This endpoint should be proxied to Python's /api/health
-      const pythonResponse = await fetch(`${API_CONFIG.API_BASE_URL}/api/health`, {
+      // Secondary service check
+      const secondaryResponse = await fetch(`${API_CONFIG.API_BASE_URL}/api/health`, {
         method: "GET",
-        signal: AbortSignal.timeout(5000), // 5 second timeout
+        signal: AbortSignal.timeout(5000),
       });
 
-      if (!pythonResponse.ok) {
-        throw new Error(
-          `Python backend unhealthy: ${pythonResponse.status} ${pythonResponse.statusText}`
-        );
+      if (!secondaryResponse.ok) {
+        throw new Error(`Service unavailable: ${secondaryResponse.status}`);
       }
 
-      const healthData = await pythonResponse.json();
+      const healthData = await secondaryResponse.json();
       
-      // Validate response structure
       if (!healthData || healthData.status !== "healthy") {
-        throw new Error("Python backend returned invalid health status");
+        throw new Error("Invalid service status");
       }
 
       setStatus({
@@ -63,9 +58,9 @@ export function useBackendHealth() {
 
       return true;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      const errorMessage = error instanceof Error ? error.message : "Service check failed";
       
-      console.error("[BACKEND_HEALTH] Health check failed:", errorMessage);
+      console.error("[HEALTH] Check failed:", errorMessage);
 
       setStatus({
         isHealthy: false,
@@ -78,12 +73,10 @@ export function useBackendHealth() {
     }
   };
 
-  // Initial health check on mount
   useEffect(() => {
     checkHealth();
   }, []);
 
-  // Periodic health check every 30 seconds when backend is healthy
   useEffect(() => {
     if (!status.isHealthy) {
       return;
@@ -91,7 +84,7 @@ export function useBackendHealth() {
 
     const intervalId = setInterval(() => {
       checkHealth();
-    }, 30000); // 30 seconds
+    }, 30000);
 
     return () => clearInterval(intervalId);
   }, [status.isHealthy]);

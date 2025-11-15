@@ -2,8 +2,7 @@ import { useUser } from "@clerk/clerk-react";
 import { useEffect, useState } from "react";
 
 /**
- * Hook to sync Clerk user data with backend database
- * Automatically creates or updates user record when user signs in
+ * User data synchronization
  */
 export function useUserSync() {
   const { user, isSignedIn, isLoaded } = useUser();
@@ -33,7 +32,7 @@ export function useUserSync() {
           preferences: user.unsafeMetadata?.preferences as Record<string, any> | undefined,
         };
 
-        // Call backend to sync user
+        // Sync user data
         const response = await fetch("/api/users/sync", {
           method: "POST",
           headers: {
@@ -54,15 +53,13 @@ export function useUserSync() {
         const errorMessage = error instanceof Error ? error.message : "Failed to sync user";
         setSyncError(errorMessage);
         
-        // If it's a connection error, it might be backend down
+        // Connection error handling
         if (errorMessage.includes("fetch failed") || 
             errorMessage.includes("504") || 
             errorMessage.includes("502") ||
             errorMessage.includes("ECONNREFUSED")) {
-          console.error("[USER_SYNC] Backend appears to be down - blocking access");
-          // The health check will handle blocking the user
+          console.error("[USER_SYNC] Service unavailable - blocking access");
         }
-        // Don't block the user for other errors - they can still use the app
       } finally {
         setIsSyncing(false);
       }

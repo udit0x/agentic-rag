@@ -1020,8 +1020,7 @@ You've selected **{len(document_ids)} documents**, but I can only summarize **on
                 "summaries": [summary.model_dump()],
                 "common_themes": None,
                 "comparative_analysis": None,
-                "synthesis": None,
-                "confidence_score": summary.confidence_score
+                "synthesis": None
             }
             
             state["final_response"] = response
@@ -1042,7 +1041,13 @@ You've selected **{len(document_ids)} documents**, but I can only summarize **on
         except Exception as e:
             error_msg = f"Document summary agent failed: {str(e)}"
             state["error_message"] = error_msg
-            state["final_response"] = "I encountered an error while generating the document summary. Please try again."
+            
+            # Check if it's an Azure Search availability issue
+            if "not available" in str(e).lower() or "not indexed" in str(e).lower() or "no indexed content" in str(e).lower():
+                state["final_response"] = "Sorry, the document summary feature is currently not available. Please ensure your documents are properly indexed, or try asking specific questions about the document instead."
+            else:
+                state["final_response"] = "I encountered an error while generating the document summary. Please try again."
+            
             state["response_type"] = "error"
             
             if self.config["enable_tracing"]:
@@ -1061,8 +1066,7 @@ You've selected **{len(document_ids)} documents**, but I can only summarize **on
         response = f"""## 📄 Document Summary: **{summary.document_name}**
 
 **Document Type:** {summary.document_type}  
-**Word Count:** ~{summary.word_count:,} words  
-**Confidence:** {summary.confidence_score:.0%}
+**Word Count:** ~{summary.word_count:,} words
 
 ---
 
@@ -1105,8 +1109,6 @@ You've selected **{len(document_ids)} documents**, but I can only summarize **on
                     response += f"**Key Dates:** {', '.join(summary.important_entities['dates'][:10])}\n"
                 if summary.important_entities.get("locations"):
                     response += f"**Locations:** {', '.join(summary.important_entities['locations'][:10])}\n"
-        
-        response += f"\n---\n\n*This summary was generated with {summary.confidence_score:.0%} confidence based on the full document content.*"
         
         return response
 

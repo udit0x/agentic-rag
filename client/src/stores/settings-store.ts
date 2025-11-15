@@ -360,7 +360,7 @@ export const useSettingsStore = create<SettingsState>()(
             const payload: Record<string, any> = {};
             payload[key] = value;
             
-            await apiRequest(API_ENDPOINTS.USER_PREFERENCES, {
+            await apiRequest(API_ENDPOINTS.USER.SETTINGS, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload),
@@ -414,7 +414,7 @@ export const useSettingsStore = create<SettingsState>()(
             embeddingModel: embedding.model,
           };
           
-          const response: any = await apiRequest(API_ENDPOINTS.CONFIG_TEST, {
+          const response: any = await apiRequest(API_ENDPOINTS.CONFIG.PING, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(testData),
@@ -443,7 +443,7 @@ export const useSettingsStore = create<SettingsState>()(
           set({
             llmTest: { 
               status: 'error', 
-              message: `Connection Failed: ${error.message || 'Unable to reach configuration endpoint'}` 
+              message: `Connection Failed: ${error.message || 'Unable to connect'}` 
             },
             embeddingTest: { status: 'error', message: 'Test aborted due to connection failure' },
             isTesting: false,
@@ -511,8 +511,8 @@ export const useSettingsStore = create<SettingsState>()(
           payload.apiKey = apiKey;
           
           // Save as personal API key (user-specific, bypasses quota)
-          await apiRequest(API_ENDPOINTS.USER_PERSONAL_KEY, {
-            method: 'POST',
+          await apiRequest(API_ENDPOINTS.USER.KEY, {
+            method: "POST",
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
           });
@@ -534,8 +534,8 @@ export const useSettingsStore = create<SettingsState>()(
         
         try {
           // Delete from backend first
-          await apiRequest(API_ENDPOINTS.USER_PERSONAL_KEY, {
-            method: 'DELETE',
+          await apiRequest(API_ENDPOINTS.USER.KEY, {
+            method: "DELETE",
           });
           
           // Reset to defaults - this ensures store is clean
@@ -561,7 +561,7 @@ export const useSettingsStore = create<SettingsState>()(
       
       loadConfiguration: async () => {
         try {
-          const response: any = await apiRequest(API_ENDPOINTS.CONFIG_CURRENT);
+          const response: any = await apiRequest(API_ENDPOINTS.CONFIG.CURRENT);
           
           if (response && response.config) {
             const config = response.config;

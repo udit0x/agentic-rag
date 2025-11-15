@@ -100,14 +100,13 @@ export function UploadProvider({ children }: UploadProviderProps) {
         documentId: string;
         filename: string;
         chunksCreated: number;
-      }>(API_ENDPOINTS.DOCUMENT_UPLOAD, {
+      }>(API_ENDPOINTS.DOCUMENT.UPLOAD, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           filename: file.name,
           contentType: contentType,
           content: content,
-          // userId now validated server-side from JWT token
         }),
       });
 

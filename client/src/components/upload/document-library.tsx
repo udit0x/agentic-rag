@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useCachedDocuments, useCachedDocumentContent } from "@/hooks/use-cached-api";
 
@@ -83,6 +83,14 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
   const [error, setError] = useState<string | null>(null);
   const { fetchDocumentContent } = useCachedDocumentContent();
 
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+
   const getFileExtension = (filename: string) => {
     return filename.split('.').pop()?.toUpperCase() || 'FILE';
   };
@@ -138,6 +146,9 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
             {getFileExtension(document.filename)}
           </Badge>
         </DialogTitle>
+        <DialogDescription>
+          Preview of {document.filename} ({formatFileSize(document.size)})
+        </DialogDescription>
       </DialogHeader>
       
         <div className="flex flex-col gap-4">

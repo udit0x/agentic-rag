@@ -19,6 +19,7 @@ from server.config_manager import config_manager, AppConfig, LLMConfig, Embeddin
 from server.agents.query_refinement import query_refinement_agent
 from server.agents.title_generator import title_generator
 from server.auth_middleware import get_authenticated_user_id, require_authenticated_user
+from server.error_utils import safe_error_response
 from server.hybrid_middleware import get_api_key_for_request
 
 logger = logging.getLogger(__name__)
@@ -142,8 +143,12 @@ async def stream_query_with_refinement(
         # Re-raise HTTP exceptions (auth failures, etc.)
         raise
     except Exception as e:
-        logger.error("Quota check failed: %s", str(e))
-        raise HTTPException(status_code=500, detail=f"Quota check failed: {str(e)}")
+        raise safe_error_response(
+            status_code=500,
+            user_message="Unable to process request",
+            exception=e,
+            log_context="Quota check failed"
+        )
     
     async def generate_stream():
         """Generate streaming response with main processing immediately, refinement in parallel."""
@@ -685,7 +690,12 @@ async def query_documents(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+        raise safe_error_response(
+            status_code=500,
+            user_message="Unable to process query",
+            exception=e,
+            log_context="Query execution failed"
+        )
 
 @router.post("/generate-title", response_model=GenerateTitleResponse)
 async def generate_title(
@@ -730,7 +740,12 @@ async def generate_title(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Title generation failed: {str(e)}")
+        raise safe_error_response(
+            status_code=500,
+            user_message="Unable to generate title",
+            exception=e,
+            log_context="Title generation failed"
+        )
 
 @router.get("/chat/{session_id}", response_model=ChatHistoryResponse)
 async def get_chat_history(

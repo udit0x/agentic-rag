@@ -490,13 +490,9 @@ You are an expert at assessing document relevance for search queries. Your task 
             # Apply AI-driven filtering
             filtered_results = self._apply_ai_filtering(results, assessment)
             
-            #print(f"[RETRIEVER] AI filtering: {len(results)} -> {len(filtered_results)} documents")
-            #print(f"[RETRIEVER] Filtering strategy: {assessment.get('filtering_decision', 'unknown')}")
-            
             return filtered_results
             
         except Exception as e:
-            #print(f"[RETRIEVER] AI filtering error: {e}, returning all results")
             return results
     
     def _prepare_documents_for_ai_assessment(self, results: List[Dict[str, Any]]) -> str:
@@ -758,7 +754,6 @@ Document {i} (ID: {doc_id}):
         scored_queries.sort(key=lambda x: x[0], reverse=True)
         selected = [query for _, query in scored_queries[:max_select]]
         
-        #print(f"[RETRIEVER] Selected {len(selected)} diverse queries from {len(refined_queries)} options")
         return selected
     
     async def _apply_lightweight_filtering(
@@ -809,7 +804,6 @@ Document {i} (ID: {doc_id}):
         if len(filtered) > target_count:
             filtered = sorted(filtered, key=lambda x: x.get('score', 0), reverse=True)[:target_count]
 
-        #print(f"[RETRIEVER] Lightweight filtering: score threshold {score_threshold:.3f}, kept {len(filtered)}/{len(results)}")
         return filtered
 
     async def _expand_with_neighboring_chunks(
@@ -898,12 +892,9 @@ Document {i} (ID: {doc_id}):
             if not is_duplicate:
                 seen_content.add(content_key)
                 deduplicated.append(result)
-                #print(f"[RETRIEVER] Added unique content - ID: {result.get('id', 'unknown')[:8]}...")
             else:
-                #print(f"[RETRIEVER] Skipped duplicate content - ID: {result.get('id', 'unknown')[:8]}...")
                 pass
         
-        #print(f"[RETRIEVER] Deduplication: {len(results)} -> {len(deduplicated)} chunks")
         return deduplicated
         """Remove chunks with very similar content to avoid showing duplicates."""
         if not results:
@@ -935,10 +926,8 @@ Document {i} (ID: {doc_id}):
             if not is_duplicate:
                 seen_content.add(content_key)
                 deduplicated.append(result)
-                #print(f"[RETRIEVER] Added unique content - ID: {result.get('id', 'unknown')[:8]}...")
             else:
                 logger.debug("Skipped duplicate content - ID: %s", result.get('id', 'unknown')[:8])
-        #print(f"[RETRIEVER] Deduplication: {len(results)} -> {len(deduplicated)} chunks")
         return deduplicated
 
     async def _rerank_results(
@@ -1250,26 +1239,21 @@ Rank from 1 (most relevant) to N (least relevant).
                 score_variance = max(top_scores) - min(top_scores)
                 
                 if score_variance < 0.1:  # Scores are very close, use AI re-ranking
-                    #print(f"[RETRIEVER] Close scores detected (variance: {score_variance:.3f}), using AI re-ranking for {classification['type']} query")
                     reranked_results = await self._rerank_results(filtered_results, classification, query)
                 else:
                     reranked_results = filtered_results
-                    #print(f"[RETRIEVER] Clear score differences (variance: {score_variance:.3f}), skipped AI re-ranking for {classification['type']} query")
             elif len(filtered_results) >= 2:
                 # With only 2 results, check if they're very close
                 top_scores = [r.get('score', 0) for r in filtered_results[:2]]
                 score_variance = max(top_scores) - min(top_scores)
                 
                 if score_variance < 0.05:  # Even closer threshold for 2 results
-                    #print(f"[RETRIEVER] Very close scores with 2 results (variance: {score_variance:.3f}), using AI re-ranking for {classification['type']} query")
                     reranked_results = await self._rerank_results(filtered_results, classification, query)
                 else:
                     reranked_results = filtered_results
-                    #print(f"[RETRIEVER] Clear winner with 2 results (variance: {score_variance:.3f}), skipped AI re-ranking for {classification['type']} query")
             else:
                 # Single result or empty - no need for re-ranking
                 reranked_results = filtered_results
-                #print(f"[RETRIEVER] Single/no results, skipped AI re-ranking for {classification['type']} query")
             
             # Basic deduplication only
             deduplicated_results = self._deduplicate_content(reranked_results)

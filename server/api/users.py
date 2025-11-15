@@ -4,6 +4,7 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import uuid
+import os
 
 from server.database_interface import db_storage
 from server.auth_middleware import require_authenticated_user
@@ -564,12 +565,15 @@ async def reset_user_quota_admin(
     """
     [ADMIN ONLY] Reset a user's quota to a specific value.
     
-    TODO: Add admin role checking
+    Requires ADMIN_EMAIL environment variable to be set.
     """
     try:
-        # TODO: Add admin check
-        # For now, only allow owner to reset quotas
-        admin_user = await db_storage.getUserByEmail("uditkashyap29@gmail.com")
+        # Check if user is admin (configured via environment variable)
+        admin_email = os.getenv("ADMIN_EMAIL")
+        if not admin_email:
+            raise HTTPException(status_code=500, detail="Admin functionality not configured")
+        
+        admin_user = await db_storage.getUserByEmail(admin_email)
         if not admin_user or admin_user["id"] != authenticated_user_id:
             raise HTTPException(status_code=403, detail="Admin access required")
         
@@ -595,12 +599,15 @@ async def set_unlimited_quota_admin(
     """
     [ADMIN ONLY] Set unlimited quota for a user.
     
-    TODO: Add admin role checking
+    Requires ADMIN_EMAIL environment variable to be set.
     """
     try:
-        # TODO: Add admin check
-        # For now, only allow owner to set unlimited quotas
-        admin_user = await db_storage.getUserByEmail("uditkashyap29@gmail.com")
+        # Check if user is admin (configured via environment variable)
+        admin_email = os.getenv("ADMIN_EMAIL")
+        if not admin_email:
+            raise HTTPException(status_code=500, detail="Admin functionality not configured")
+        
+        admin_user = await db_storage.getUserByEmail(admin_email)
         if not admin_user or admin_user["id"] != authenticated_user_id:
             raise HTTPException(status_code=403, detail="Admin access required")
         

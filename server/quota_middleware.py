@@ -3,7 +3,7 @@ Quota middleware for API rate limiting with hybrid key storage.
 
 Security Requirements:
 - All quota operations must be atomic (no race conditions)
-- Owner account (uditkashyap29@gmail.com) has unlimited usage
+- Admin accounts configured via ADMIN_EMAIL environment variable have unlimited usage
 - Users with personal API keys don't consume quota
 - Backend enforcement only - never trust client values
 - Return quota information in responses for transparency
@@ -228,9 +228,15 @@ def get_user_encryption_key(user_id: str) -> bytes:
     """
     # Get master key from environment
     master_key = os.getenv("USER_KEY_MASTER", "default-master-key-change-in-production")
+    environment = os.getenv("ENVIRONMENT", "production")
     
     if master_key == "default-master-key-change-in-production":
-        logger.warning("Using default USER_KEY_MASTER - set in production!")
+        if environment == "production":
+            raise ValueError(
+                "USER_KEY_MASTER must be set in production environment. "
+                "Never use default encryption keys in production!"
+            )
+        logger.warning("Using default USER_KEY_MASTER in development - set in production!")
     
     # Derive user-specific key using PBKDF2
     kdf = PBKDF2HMAC(

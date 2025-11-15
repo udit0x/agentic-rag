@@ -74,7 +74,7 @@ export function AuthGate({ children }: AuthGateProps) {
     // Continue to show content even with sync error
   }
 
-  // CRITICAL: Block access if backend is unhealthy
+  // Block access if service is unavailable
   if (!isHealthy && !isChecking) {
     return (
       <div className="min-h-screen relative overflow-hidden bg-background">
@@ -152,7 +152,7 @@ export function AuthGate({ children }: AuthGateProps) {
     );
   }
 
-  // Show backend health check in progress
+  // Show service health check in progress
   if (isChecking && !isHealthy) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -162,7 +162,7 @@ export function AuthGate({ children }: AuthGateProps) {
           transition={{ duration: 0.3 }}
           className="flex flex-col items-center gap-4"
         >
-          <OrbitalLoader message="Checking backend services..." messagePlacement="bottom" />
+          <OrbitalLoader message="Connecting to services..." messagePlacement="bottom" />
         </motion.div>
       </div>
     );

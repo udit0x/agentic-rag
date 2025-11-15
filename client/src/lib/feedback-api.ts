@@ -53,7 +53,7 @@ export interface MessageFeedback {
 export async function submitMessageFeedback(
   data: SubmitFeedbackRequest
 ): Promise<FeedbackResponse> {
-  // Transform camelCase to snake_case for Python API
+  // Transform payload for API
   const payload = {
     message_id: data.messageId,
     session_id: data.sessionId,

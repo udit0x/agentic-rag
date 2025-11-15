@@ -44,8 +44,7 @@ export const useCachedDocuments = () => {
 
     try {
       //console.log('Fetching fresh document library from API');
-      // userId validation now happens server-side via JWT token
-      const documents = await apiRequest<Document[]>(API_ENDPOINTS.DOCUMENTS);
+      const documents = await apiRequest<Document[]>(API_ENDPOINTS.DOCUMENT.LIST);
       
       // Cache the result
       setDocumentLibrary(documents);
@@ -74,7 +73,7 @@ export const useCachedDocuments = () => {
 
   const deleteDocument = async (documentId: string): Promise<void> => {
     try {
-      await apiRequest(API_ENDPOINTS.DOCUMENT_DELETE(documentId), {
+      await apiRequest(API_ENDPOINTS.DOCUMENT.DELETE(documentId), {
         method: 'DELETE',
       });
       
@@ -111,7 +110,7 @@ export const useCachedDocumentContent = () => {
     try {
       // console.log(`Fetching fresh content for document: ${documentId}`);
       const response = await apiRequest<{ content: string }>(
-        API_ENDPOINTS.DOCUMENT_CONTENT(documentId)
+        API_ENDPOINTS.DOCUMENT.CONTENT(documentId)
       );
       
       const content = response.content || 'No content available';
@@ -162,7 +161,7 @@ export const useCachedQueries = () => {
       };
 
       const response = await apiRequest<{ response: string }>(
-        API_ENDPOINTS.QUERY,
+        API_ENDPOINTS.EXECUTE,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -232,9 +231,8 @@ export const useCachedChatHistory = () => {
     }
 
     try {
-      // userId validation now happens server-side via JWT token
       const response = await apiRequest<{ messages: Message[]; updatedAt: string }>(
-        API_ENDPOINTS.CHAT_HISTORY(sessionId)
+        API_ENDPOINTS.CHAT.HISTORY(sessionId)
       );
       
       const messages = response.messages || [];

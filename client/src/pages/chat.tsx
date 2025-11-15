@@ -84,7 +84,6 @@ export default function Chat() {
   const { data: chatSessions, isLoading: isLoadingChatSessions, refetch: refetchChatSessions } = useQuery({
     queryKey: ["chat-sessions", userId],
     queryFn: async () => {
-      // userId is now validated server-side from JWT token
       const response = await enhancedApiRequest<{
         sessions: Array<{
           id: string;
@@ -101,7 +100,7 @@ export default function Chat() {
         page: number;
         limit: number;
         hasMore: boolean;
-      }>(API_ENDPOINTS.CHAT_SESSIONS);
+      }>(API_ENDPOINTS.CHAT.SESSIONS);
       
       // Transform the data to match the expected format
       const sessions = response.sessions.map(session => ({
@@ -167,16 +166,16 @@ export default function Chat() {
     llmProvider: "azure" as "openai" | "azure",
     openaiApiKey: "",
     openaiModel: "gpt-4o",
-    azureApiKey: "", // Will be loaded from backend
-    azureEndpoint: "", // Will be loaded from backend
-    azureDeploymentName: "gpt-4o", // Will be loaded from backend
+    azureApiKey: "",
+    azureEndpoint: "",
+    azureDeploymentName: "gpt-4o",
     geminiApiKey: "",
     geminiModel: "gemini-1.5-pro",
     // Embeddings Configuration - defaults from environment
     embeddingProvider: "azure" as "openai" | "azure",
-    embeddingApiKey: "", // Will be loaded from backend
-    embeddingEndpoint: "", // Will be loaded from backend
-    embeddingModel: "text-embedding-3-large", // Will be loaded from backend
+    embeddingApiKey: "",
+    embeddingEndpoint: "",
+    embeddingModel: "text-embedding-3-large",
   });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<{ focus: () => void }>(null);
@@ -188,7 +187,7 @@ export default function Chat() {
   useEffect(() => {
     const loadConfiguration = async () => {
       try {
-        const response: any = await enhancedApiRequest(API_ENDPOINTS.CONFIG_CURRENT);
+        const response: any = await enhancedApiRequest(API_ENDPOINTS.CONFIG.CURRENT);
         if (response && response.config) {
           const config = response.config;
           
@@ -360,7 +359,7 @@ export default function Chat() {
 
   const deleteMutation = useMutation({
     mutationFn: async (documentId: string) => {
-      const response = await enhancedApiRequest(API_ENDPOINTS.DOCUMENT_DELETE(documentId), {
+      const response = await enhancedApiRequest(API_ENDPOINTS.DOCUMENT.DELETE(documentId), {
         method: "DELETE",
       });
       return response;
@@ -385,13 +384,12 @@ export default function Chat() {
 
   const queryMutation = useMutation({
     mutationFn: async (query: string) => {
-      const response = await enhancedApiRequest<QueryResponse>(API_ENDPOINTS.QUERY, {
+      const response = await enhancedApiRequest<QueryResponse>(API_ENDPOINTS.EXECUTE, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query,
           sessionId,
-          // userId now validated server-side from JWT token
           topK: 5,
           enableTracing,
           debugMode,
@@ -449,7 +447,7 @@ export default function Chat() {
     let refinementTimeout: NodeJS.Timeout | null = null;
 
     try {
-      // console.log('[STREAM] Initiating fetch to:', API_ENDPOINTS.QUERY_STREAM);
+      // console.log('[STREAM] Initiating fetch to:', API_ENDPOINTS.EXECUTE_STREAM);
       // console.log('[STREAM] Request body:', {
       //   query,
       //   sessionId: streamSessionId.startsWith('temp-session-') ? undefined : streamSessionId,
@@ -459,10 +457,10 @@ export default function Chat() {
       //   documentIds,
       // });
       
-      const response = await fetch(API_ENDPOINTS.QUERY_STREAM, {
+      const response = await fetch(API_ENDPOINTS.EXECUTE_STREAM, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include", // CRITICAL: Required to send JWT authentication cookie
+        credentials: "include",
         body: JSON.stringify({
           query,
           sessionId: streamSessionId.startsWith('temp-session-') ? undefined : streamSessionId,
@@ -489,7 +487,7 @@ export default function Chat() {
       // Set timeout for refinement (5 seconds max wait - reduced from 10s)
       refinementTimeout = setTimeout(() => {
         if (!hasReceivedRefinement) {
-          console.warn('[STREAM] Refinement timeout - proceeding without refined questions');
+          // Refinement timeout - proceeding without refined questions (silent)
           hasReceivedRefinement = true;
         }
       }, 5000); // Reduced from 10000ms to 5000ms
@@ -889,7 +887,7 @@ export default function Chat() {
   const handleDeleteConfiguration = async () => {
     try {
       // Delete the personal API key from the users table (restores quota system)
-      await enhancedApiRequest(API_ENDPOINTS.USER_PERSONAL_KEY, {
+      await enhancedApiRequest(API_ENDPOINTS.USER.KEY, {
         method: "DELETE",
       });
 
@@ -939,8 +937,8 @@ export default function Chat() {
         documentRelevanceThreshold: settingsToSave.documentRelevanceThreshold,
       };
 
-      // Save configuration to backend using proper API endpoint
-      await enhancedApiRequest(API_ENDPOINTS.CONFIG_SAVE, {
+      // Save configuration
+      await enhancedApiRequest(API_ENDPOINTS.CONFIG.SAVE, {
         method: "POST",
         body: JSON.stringify(configData),
         headers: {
@@ -962,7 +960,7 @@ export default function Chat() {
       // If user provided an API key, save it as their personal key (bypasses quota)
       if (personalApiKey) {
         try {
-          await enhancedApiRequest(API_ENDPOINTS.USER_PERSONAL_KEY, {
+          await enhancedApiRequest(API_ENDPOINTS.USER.KEY, {
             method: "POST",
             body: JSON.stringify({
               apiKey: personalApiKey,
@@ -1265,7 +1263,7 @@ export default function Chat() {
       });
       
       // Fire DELETE call in background (non-blocking)
-      enhancedApiRequest(API_ENDPOINTS.DELETE_CHAT_SESSION(chatId), {
+      enhancedApiRequest(API_ENDPOINTS.CHAT.DELETE(chatId), {
         method: "DELETE",
       })
         .then(() => {

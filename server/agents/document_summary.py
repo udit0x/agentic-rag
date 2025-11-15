@@ -27,7 +27,6 @@ class DocumentSummary(BaseModel):
         description="Key entities: people, organizations, dates, locations, products",
         default_factory=dict
     )
-    confidence_score: float = Field(description="AI confidence in summary quality (0-1)")
     word_count: int = Field(description="Approximate word count")
     key_sections: List[str] = Field(description="Main sections or topics covered", default_factory=list)
 
@@ -190,7 +189,6 @@ Analyze this document thoroughly and provide a comprehensive, structured summary
 3. **Extract Structure**: Identify how the document is organized
 4. **Find Entities**: Note important people, organizations, dates, products, locations
 5. **Be Accurate**: Base everything strictly on the document content
-6. **Assess Confidence**: Rate your confidence based on document clarity and completeness
 
 **Output Format (JSON):**
 {{
@@ -208,7 +206,6 @@ Analyze this document thoroughly and provide a comprehensive, structured summary
     "locations": ["location1", ...],
     "products": ["product1", "product2", ...]
   }},
-  "confidence_score": 0.0-1.0,  // Your confidence in this summary
   "word_count": {word_count},
   "key_sections": ["section1", "section2", ...]  // Main sections if identifiable
 }}
@@ -236,7 +233,6 @@ Synthesize these section summaries into ONE comprehensive structured summary for
 2. **Extract Patterns**: Find overarching themes across all sections
 3. **Identify Structure**: How do the sections relate to form the whole document?
 4. **Consolidate Entities**: Merge entities mentioned across sections
-5. **Assess Completeness**: Rate confidence based on section coverage
 
 **Output Format (JSON):**
 {{
@@ -254,7 +250,6 @@ Synthesize these section summaries into ONE comprehensive structured summary for
     "locations": ["location1", ...],
     "products": ["product1", "product2", ...]
   }},
-  "confidence_score": 0.0-1.0,  // Confidence in this synthesis
   "word_count": {word_count},
   "key_sections": ["section1", "section2", ...]  // Main sections identified
 }}
@@ -302,6 +297,11 @@ Synthesize these section summaries into ONE comprehensive structured summary for
             # Instead of retrieving ALL chunks (408), get ~50-100 most relevant + neighbors
             from server.azure_client import rag_client
             
+            # Check if Azure Search client is initialized
+            if not rag_client or not rag_client.search_client:
+                logger.warning("Azure Search not configured - summary agent requires indexed documents")
+                raise Exception("Document summary is not available. Azure Search is not configured.")
+            
             logger.info("Using semantic slicing for %s", document_name)
             
             # Step 1: Get semantically relevant chunks (top 50-100)
@@ -344,11 +344,9 @@ Synthesize these section summaries into ONE comprehensive structured summary for
                         llm, document_id, all_chunks, document_name, word_count
                     )
             else:
-                # Fallback: No chunks in Azure Search yet (rare)
-                logger.info("No chunks in Azure Search, using direct content (%d words)", word_count)
-                summary = await self._summarize_direct(
-                    llm, document_id, document_content, document_name, word_count
-                )
+                # No chunks found - document may not be properly indexed
+                logger.warning("No chunks found in Azure Search for document %s", document_id)
+                raise Exception("No indexed content found for this document. Please ensure the document has been fully processed and indexed.")
             
             if enable_tracing:
                 duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -368,7 +366,6 @@ Synthesize these section summaries into ONE comprehensive structured summary for
                 document_type="Unknown",
                 structure_analysis="Unable to analyze structure",
                 important_entities={},
-                confidence_score=0.0,
                 word_count=len(document_content.split()),
                 key_sections=[]
             )

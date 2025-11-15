@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Dialog, DialogPortal, DialogOverlay, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogPortal, DialogOverlay, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Button } from "@/components/ui/button";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -102,12 +102,12 @@ export function AppHelpDialog({ isOpen, onClose, isFirstTime = false, onGetStart
                 )}>
                   {isFirstTime ? "Welcome to AI Orchestrator" : "How It Works"}
                 </DialogTitle>
-                <p className="text-muted-foreground text-xs md:text-sm max-w-xl mx-auto">
+                <DialogDescription className="text-muted-foreground text-xs md:text-sm max-w-xl mx-auto">
                   {isFirstTime 
                     ? "Your intelligent document analysis platform" 
                     : "AI-powered document intelligence system"
                   }
-                </p>
+                </DialogDescription>
               </div>
 
               {/* Three Sections with VERTICAL Dividers */}
