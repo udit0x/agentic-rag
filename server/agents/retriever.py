@@ -1,4 +1,5 @@
 """Retriever Agent for document search and ranking."""
+import logging
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 import hashlib
@@ -11,6 +12,8 @@ from server.azure_client import azure_client
 from server.agents.state import DocumentChunk, QueryClassification, AgentTrace
 from server.config_manager import config_manager
 from server.storage import storage
+
+logger = logging.getLogger(__name__)
 
 class DocumentCache:
     """Cache entry for retrieved documents."""
@@ -53,10 +56,10 @@ class RetrieverAgent:
         try:
             config = config_manager.get_current_config()
             use_gk = config.useGeneralKnowledge if config else True
-            print(f"[RETRIEVER_AGENT] useGeneralKnowledge = {use_gk}, config_source = {config.source if config else 'none'}")
+            logger.debug("useGeneralKnowledge = %s, config_source = %s", use_gk, config.source if config else 'none')
             return use_gk
         except Exception as e:
-            print(f"[RETRIEVER_AGENT] Error getting useGeneralKnowledge config: {e}")
+            logger.warning("Error getting useGeneralKnowledge config: %s", e)
             return True  # Default to True
     
     def _generate_query_hash(self, query: str, classification: Dict[str, Any]) -> str:
@@ -122,7 +125,7 @@ class RetrieverAgent:
         # Check if documents meet quality threshold
         avg_score = sum(doc.get('score', 0) for doc in documents) / len(documents)
         if avg_score < self.relevance_threshold:
-            print(f"[RETRIEVER_AGENT] Documents below quality threshold (avg_score: {avg_score:.2f}), not caching")
+            logger.debug("Documents below quality threshold (avg_score: %.2f), not caching", avg_score)
             return
         
         if session_id not in self.document_cache:
@@ -146,7 +149,7 @@ class RetrieverAgent:
             # Remove oldest entry
             self.document_cache[session_id].pop(0)
         
-        print(f"[RETRIEVER_AGENT] Cached {len(documents)} documents for session {session_id} (avg_score: {avg_score:.2f})")
+        logger.info("Cached %d documents for session %s (avg_score: %.2f)", len(documents), session_id, avg_score)
     
     def _update_cache_reuse_stats(self, cache_entry: DocumentCache) -> None:
         """Update cache reuse statistics."""
@@ -203,7 +206,7 @@ class RetrieverAgent:
     ) -> List[Dict[str, Any]]:
         """DISABLED: Apply AI-driven post-retrieval filtering based on classification."""
         # PERFORMANCE OPTIMIZATION: Disabled AI metadata filtering
-        print("[RETRIEVER] AI metadata filtering disabled for performance")
+        logger.debug("AI metadata filtering disabled for performance")
         return results
         
         try:
@@ -213,7 +216,7 @@ class RetrieverAgent:
             
             llm = get_llm()
             if not llm:
-                print("[RETRIEVER] AI metadata filtering unavailable, using basic filtering")
+                logger.debug("AI metadata filtering unavailable, using basic filtering")
                 return results
             
             # AI-driven classification-aware filtering
@@ -268,12 +271,12 @@ For **FACTUAL** queries: Prioritize comprehensive, authoritative content
             # Apply AI-driven optimization
             optimized_results = self._apply_ai_optimization(results, optimization_result)
             
-            print(f"[RETRIEVER] AI optimization ({classification['type']}): {len(results)} -> {len(optimized_results)} documents")
+            logger.info("AI optimization (%s): %d -> %d documents", classification['type'], len(results), len(optimized_results))
             
             return optimized_results
             
         except Exception as e:
-            print(f"[RETRIEVER] AI metadata filtering error: {e}, returning original results")
+            logger.error("AI metadata filtering error: %s, returning original results", e)
             return results
     
     def _apply_ai_optimization(
@@ -331,7 +334,7 @@ For **FACTUAL** queries: Prioritize comprehensive, authoritative content
         
         # If we have few results, don't filter aggressively
         if len(results) <= 3:
-            print("[RETRIEVER] Few results, skipping AI filtering")
+            logger.debug("Few results, skipping AI filtering")
             return results
         
         try:
@@ -342,7 +345,7 @@ For **FACTUAL** queries: Prioritize comprehensive, authoritative content
             llm = get_llm()
             if not llm:
                 # Fallback: return all results if AI is unavailable
-                print("[RETRIEVER] AI filtering unavailable, returning all results")
+                logger.debug("AI filtering unavailable (first fallback), returning all results")
                 return results
             
             # SIMPLIFIED AI-driven relevance assessment prompt - comparative query aware
@@ -417,12 +420,12 @@ For **FACTUAL** queries: Prioritize comprehensive, authoritative content
             # Apply smart filtering
             filtered_results = self._apply_smart_filtering(results, assessment)
             
-            print(f"[RETRIEVER] Smart AI filtering: {len(results)} -> {len(filtered_results)} documents")
+            logger.info("Smart AI filtering: %d -> %d documents", len(results), len(filtered_results))
             
             return filtered_results
             
         except Exception as e:
-            print(f"[RETRIEVER] AI filtering error: {e}, returning all results")
+            logger.error("AI filtering error: %s, returning all results", e)
             return results
         
         try:
@@ -433,7 +436,7 @@ For **FACTUAL** queries: Prioritize comprehensive, authoritative content
             llm = get_llm()
             if not llm:
                 # Fallback: return all results if AI is unavailable
-                print("[RETRIEVER] AI filtering unavailable, returning all results")
+                logger.debug("AI filtering unavailable (second fallback), returning all results")
                 return results
             
             # AI-driven relevance assessment prompt
@@ -545,15 +548,15 @@ Document {i} (ID: {doc_id}):
         filtering_strategy = assessment.get("filtering_strategy", "keep_all")
         coverage_assessment = assessment.get("information_coverage_assessment", "single_source_sufficient")
         
-        #print(f"[RETRIEVER] AI Assessment - Strategy: {filtering_strategy}, Coverage: {coverage_assessment}")
+        logger.debug("AI Assessment - Strategy: %s, Coverage: %s", filtering_strategy, coverage_assessment)
         
         if filtering_strategy == "keep_all" or not relevant_ids:
-            #print(f"[RETRIEVER] AI recommends keeping all documents")
+            logger.debug("AI recommends keeping all documents")
             return results
         
         if filtering_strategy == "comprehensive_coverage":
             # AI detected that question needs multiple information sources
-            #print(f"[RETRIEVER] AI detected comprehensive information need - ensuring diverse document coverage")
+            logger.debug("AI detected comprehensive information need - ensuring diverse document coverage")
 
             # Keep all relevant documents for comprehensive coverage
             filtered_results = []
@@ -565,7 +568,7 @@ Document {i} (ID: {doc_id}):
             # Ensure we have enough diverse sources (minimum 4-5 for comprehensive)
             min_docs_needed = 4 if len(results) >= 8 else 3
             if len(filtered_results) < min_docs_needed and len(results) >= min_docs_needed:
-                #print(f"[RETRIEVER] Ensuring sufficient documents for comprehensive coverage ({min_docs_needed})")
+                logger.debug("Ensuring sufficient documents for comprehensive coverage (%d)", min_docs_needed)
                 remaining_results = [r for r in results if r.get("id", "") not in relevant_ids]
                 additional_needed = min_docs_needed - len(filtered_results)
                 # Add diverse additional documents (not just highest scoring)
@@ -576,7 +579,7 @@ Document {i} (ID: {doc_id}):
         
         if filtering_strategy == "balanced_comparison":
             # For comparative queries, ensure we keep diverse content
-            print(f"[RETRIEVER] AI detected comparative query - ensuring balanced document selection")
+            logger.info("AI detected comparative query - ensuring balanced document selection")
             
             filtered_results = []
             for result in results:
@@ -586,7 +589,7 @@ Document {i} (ID: {doc_id}):
             
             # Safety: ensure we have enough documents for comparison (minimum 3)
             if len(filtered_results) < 3 and len(results) >= 3:
-                #print(f"[RETRIEVER] Ensuring minimum documents for comparison")
+                logger.debug("Ensuring minimum documents for comparison")
                 remaining_results = [r for r in results if r.get("id", "") not in relevant_ids]
                 additional_needed = 3 - len(filtered_results)
                 additional_docs = sorted(remaining_results, key=lambda x: x.get('score', 0), reverse=True)[:additional_needed]
@@ -596,7 +599,7 @@ Document {i} (ID: {doc_id}):
         
         if filtering_strategy == "focused_selection":
             # AI determined that specific, focused documents are sufficient
-            print(f"[RETRIEVER] AI recommends focused document selection")
+            logger.info("AI recommends focused document selection")
             filtered_results = []
             for result in results:
                 doc_id = result.get("id", "")
@@ -616,7 +619,7 @@ Document {i} (ID: {doc_id}):
         
         # Safety: if AI filtered too aggressively, keep top results by score
         if len(filtered_results) < 2 and len(results) >= 2:
-            print(f"[RETRIEVER] AI filtering too aggressive, keeping top 3 by score")
+            logger.warning("AI filtering too aggressive, keeping top 3 by score")
             return sorted(results, key=lambda x: x.get('score', 0), reverse=True)[:3]
         
         return filtered_results if filtered_results else results
@@ -723,7 +726,7 @@ Document {i} (ID: {doc_id}):
         
         # Ensure we don't filter out everything
         if not filtered_results and results:
-            #print("[RETRIEVER] AI filtering too aggressive, keeping top result")
+            logger.warning("AI filtering too aggressive, keeping top result")
             top_result = max(results, key=lambda x: x.get("score", 0))
             top_result["ai_relevance_score"] = 0.5
             top_result["combined_score"] = top_result.get("score", 0)
@@ -793,7 +796,7 @@ Document {i} (ID: {doc_id}):
             
             # Re-sort after boosting
             results = sorted(results, key=lambda x: x.get('score', 0), reverse=True)
-            print(f"[RETRIEVER] Boosted {sum(1 for r in results if r.get('has_numbers'))} chunks with numerical data for counterfactual query")
+            logger.debug("Boosted %d chunks with numerical data for counterfactual query", sum(1 for r in results if r.get('has_numbers')))
         
         # Simple score-based filtering - keep results above average score
         scores = [r.get('score', 0) for r in results]
@@ -860,7 +863,7 @@ Document {i} (ID: {doc_id}):
                         break
         
         if len(expanded) > len(results):
-            print(f"[RETRIEVER] Context expansion: {len(results)} -> {len(expanded)} chunks (added {len(expanded) - len(results)} neighboring chunks)")
+            logger.info("Context expansion: %d -> %d chunks (added %d neighboring chunks)", len(results), len(expanded), len(expanded) - len(results))
         
         return expanded
 
@@ -934,14 +937,15 @@ Document {i} (ID: {doc_id}):
                 deduplicated.append(result)
                 #print(f"[RETRIEVER] Added unique content - ID: {result.get('id', 'unknown')[:8]}...")
             else:
-                print(f"[RETRIEVER] Skipped duplicate content - ID: {result.get('id', 'unknown')[:8]}...")
+                logger.debug("Skipped duplicate content - ID: %s", result.get('id', 'unknown')[:8])
         #print(f"[RETRIEVER] Deduplication: {len(results)} -> {len(deduplicated)} chunks")
         return deduplicated
 
     async def _rerank_results(
         self, 
         results: List[Dict[str, Any]], 
-        classification: QueryClassification
+        classification: QueryClassification,
+        query: str = ""
     ) -> List[Dict[str, Any]]:
         """AI-driven re-ranking based on classification and content analysis."""
         if not results:
@@ -954,13 +958,14 @@ Document {i} (ID: {doc_id}):
             
             llm = get_llm()
             if not llm:
-                print("[RETRIEVER] AI re-ranking unavailable, using score-based sorting")
+                logger.debug("AI re-ranking unavailable, using score-based sorting")
                 return sorted(results, key=lambda x: x.get("score", 0), reverse=True)
             
             # AI-driven re-ranking prompt
             rerank_prompt = ChatPromptTemplate.from_template("""
 You are an expert at ranking documents based on their relevance to specific query types and user intent.
 
+**User Query**: {query}
 **Query Classification**: {classification_type}
 **Classification Details**: {classification_info}
 
@@ -968,11 +973,17 @@ You are an expert at ranking documents based on their relevance to specific quer
 {documents_summary}
 
 **Instructions**:
-Re-rank these documents based on their relevance to the query type:
+Re-rank these documents to DIRECTLY ANSWER the user's query. Prioritize documents that contain:
+1. **Direct answers** to what the user is asking
+2. **Specific details** (numbers, dates, names, values) that match the query intent
+3. **Complete information** rather than partial context
 
-- **FACTUAL**: Prioritize comprehensive, authoritative, well-structured content
+For each classification type:
+- **FACTUAL**: Prioritize documents with specific facts, data, and direct answers to the question
 - **TEMPORAL**: Prioritize documents with timeline info, dates, evolution indicators  
 - **COUNTERFACTUAL**: Prioritize documents with numerical data, scenarios, calculations
+
+**Key principle**: If the user asks a specific question, rank documents with specific answers HIGHER than general contextual information.
 
 **Response Format** (JSON):
 {{
@@ -1003,6 +1014,7 @@ Rank from 1 (most relevant) to N (least relevant).
             chain = rerank_prompt | llm | parser
             
             ranking_result = await chain.ainvoke({
+                "query": query,
                 "classification_type": classification["type"],
                 "classification_info": str(classification_info),
                 "documents_summary": documents_summary
@@ -1011,12 +1023,12 @@ Rank from 1 (most relevant) to N (least relevant).
             # Apply AI ranking
             reranked_results = self._apply_ai_ranking(results, ranking_result)
             
-            print(f"[RETRIEVER] AI re-ranking applied for {classification['type']} query")
+            logger.info("AI re-ranking applied for %s query", classification['type'])
             
             return reranked_results
             
         except Exception as e:
-            print(f"[RETRIEVER] AI re-ranking error: {e}, using basic score sorting")
+            logger.error("AI re-ranking error: %s, using basic score sorting", e)
             return sorted(results, key=lambda x: x.get("score", 0), reverse=True)
     
     def _apply_ai_ranking(
@@ -1093,9 +1105,9 @@ Rank from 1 (most relevant) to N (least relevant).
         
         # Debug logging for document filtering
         if document_ids:
-            print(f"[RETRIEVER_DEBUG] Document filtering requested: {document_ids}")
+            logger.debug("Document filtering requested: %s", document_ids)
         else:
-            print("[RETRIEVER_DEBUG] No document filtering - searching all documents")
+            logger.debug("No document filtering - searching all documents")
         
         # Check cache first (if session_id provided and not forcing retrieval)
         if session_id and not force_retrieval:
@@ -1106,7 +1118,7 @@ Rank from 1 (most relevant) to N (least relevant).
                 # Update cache statistics
                 self._update_cache_reuse_stats(cache_entry)
                 
-                print(f"[RETRIEVER_AGENT] Using cached documents (similarity: {similarity:.2f})")
+                logger.info("Using cached documents (similarity: %.2f)", similarity)
                 
                 # Return cached documents with updated metadata
                 cached_metadata = cache_entry.metadata.copy()
@@ -1134,7 +1146,7 @@ Rank from 1 (most relevant) to N (least relevant).
                 # Select top 2-3 most diverse refined queries instead of all 5
                 selected_refined = self._select_diverse_queries(enhanced_query, refined_queries, max_select=2)
                 search_queries.extend(selected_refined)
-                print(f"[RETRIEVER] Optimized search: original + {len(selected_refined)}/{len(refined_queries)} refined queries")
+                logger.debug("Optimized search: original + %d/%d refined queries", len(selected_refined), len(refined_queries))
             
             # OPTIMIZATION: Batch search with higher k, then deduplicate
             all_results = []
@@ -1142,7 +1154,7 @@ Rank from 1 (most relevant) to N (least relevant).
             # OPTIMIZATION: Increase k for single-document queries (more aggressive retrieval)
             if document_ids and len(document_ids) == 1:
                 batch_k = max_chunks * 4  # 20 chunks for single document (4x5)
-                print(f"[RETRIEVER] Single document mode: using expanded k={batch_k}")
+                logger.debug("Single document mode: using expanded k=%d", batch_k)
             else:
                 batch_k = max_chunks * 2  # 10 chunks for multi-document (2x5)
             
@@ -1151,11 +1163,11 @@ Rank from 1 (most relevant) to N (least relevant).
             if force_lower_threshold:
                 # Use a significantly lower threshold for broader search
                 search_threshold = 0.3  # Much lower than default 0.65
-                print(f"[RETRIEVER] Using lower threshold {search_threshold} for broader search")
+                logger.info("Using lower threshold %s for broader search", search_threshold)
             elif document_ids and len(document_ids) == 1:
                 # Auto-enable lower threshold for single-document queries
                 search_threshold = 0.55  # More permissive than 0.65, but not as low as 0.3
-                print(f"[RETRIEVER] Single document mode: using permissive threshold {search_threshold}")
+                logger.debug("Single document mode: using permissive threshold %s", search_threshold)
             
             for i, search_query in enumerate(search_queries):
                 query_results = await self.azure_client.semantic_search(
@@ -1172,7 +1184,7 @@ Rank from 1 (most relevant) to N (least relevant).
                     result['source_query_text'] = search_query
                 
                 all_results.extend(query_results)
-                print(f"[RETRIEVER] Query {i+1}: {len(query_results)} results")
+                logger.debug("Query %d: %d results", i+1, len(query_results))
             
             # OPTIMIZATION: Fast deduplication first, then process smaller set
             seen_chunks = set()
@@ -1190,14 +1202,14 @@ Rank from 1 (most relevant) to N (least relevant).
             # Take top results after deduplication - increased limit for better filtering
             raw_results = sorted(unique_results, key=lambda x: x.get('score', 0), reverse=True)[:max_chunks * 3]
             
-            print(f"[RETRIEVER] Optimized results: {len(all_results)} -> {len(unique_results)} unique -> {len(raw_results)} top")
+            logger.info("Optimized results: %d -> %d unique -> %d top", len(all_results), len(unique_results), len(raw_results))
             if raw_results:
-                print(f"[RETRIEVER] Top scores: {[r.get('score', 0) for r in raw_results[:3]]}")
+                logger.debug("Top scores: %s", [r.get('score', 0) for r in raw_results[:3]])
             
             # Check if no documents found and general knowledge is enabled
             no_docs_found = not raw_results
             if no_docs_found and use_general_knowledge:
-                print(f"[RETRIEVER] No documents found, useGeneralKnowledge=True - suggesting general knowledge fallback")
+                logger.info("No documents found, useGeneralKnowledge=True - suggesting general knowledge fallback")
                 return [], {
                     "total_found": 0,
                     "enhanced_query": enhanced_query,
@@ -1206,7 +1218,7 @@ Rank from 1 (most relevant) to N (least relevant).
                     "fallback_reason": "No relevant documents found with sufficient score threshold"
                 }
             elif no_docs_found:
-                print(f"[RETRIEVER] No documents found, useGeneralKnowledge=False - no fallback available")
+                logger.info("No documents found, useGeneralKnowledge=False - no fallback")
                 return [], {
                     "total_found": 0,
                     "enhanced_query": enhanced_query,
@@ -1223,13 +1235,13 @@ Rank from 1 (most relevant) to N (least relevant).
                 
                 # If lightweight filtering removes too many good results, use AI filtering
                 if len(filtered_results) < max_chunks and len(raw_results) >= max_chunks:
-                    print(f"[RETRIEVER] Lightweight filtering too aggressive, using AI filtering")
+                    logger.warning("Lightweight filtering too aggressive, using AI filtering")
                     filtered_results = await self._filter_relevant_results(raw_results, query, classification)
                 else:
-                    print(f"[RETRIEVER] Lightweight filtering: {len(raw_results)} -> {len(filtered_results)} chunks")
+                    logger.debug("Lightweight filtering: %d -> %d chunks", len(raw_results), len(filtered_results))
             else:
                 filtered_results = raw_results
-                print(f"[RETRIEVER] Skipped filtering - result count acceptable: {len(raw_results)}")
+                logger.debug("Skipped filtering - result count acceptable: %d", len(raw_results))
             
             # OPTIMIZATION: Unified smart AI re-ranking - use AI when scores are ambiguous for ALL query types
             if len(filtered_results) >= 3:
@@ -1239,7 +1251,7 @@ Rank from 1 (most relevant) to N (least relevant).
                 
                 if score_variance < 0.1:  # Scores are very close, use AI re-ranking
                     #print(f"[RETRIEVER] Close scores detected (variance: {score_variance:.3f}), using AI re-ranking for {classification['type']} query")
-                    reranked_results = await self._rerank_results(filtered_results, classification)
+                    reranked_results = await self._rerank_results(filtered_results, classification, query)
                 else:
                     reranked_results = filtered_results
                     #print(f"[RETRIEVER] Clear score differences (variance: {score_variance:.3f}), skipped AI re-ranking for {classification['type']} query")
@@ -1250,7 +1262,7 @@ Rank from 1 (most relevant) to N (least relevant).
                 
                 if score_variance < 0.05:  # Even closer threshold for 2 results
                     #print(f"[RETRIEVER] Very close scores with 2 results (variance: {score_variance:.3f}), using AI re-ranking for {classification['type']} query")
-                    reranked_results = await self._rerank_results(filtered_results, classification)
+                    reranked_results = await self._rerank_results(filtered_results, classification, query)
                 else:
                     reranked_results = filtered_results
                     #print(f"[RETRIEVER] Clear winner with 2 results (variance: {score_variance:.3f}), skipped AI re-ranking for {classification['type']} query")
@@ -1265,9 +1277,9 @@ Rank from 1 (most relevant) to N (least relevant).
             # Take top k results
             final_results = deduplicated_results[:max_chunks]
             
-            print(f"[RETRIEVER] Final results count: {len(final_results)}")
+            logger.info("Final results count: %d", len(final_results))
             if final_results:
-                print(f"[RETRIEVER] Final scores: {[r.get('score', 0) for r in final_results[:3]]}")
+                logger.debug("Final scores: %s", [r.get('score', 0) for r in final_results[:3]])
             
             # Convert to DocumentChunk format
             document_chunks = []
@@ -1313,7 +1325,7 @@ Rank from 1 (most relevant) to N (least relevant).
             return document_chunks, metadata
             
         except Exception as e:
-            print(f"Retriever Agent error: {e}")
+            logger.error("Retriever Agent error: %s", e, exc_info=True)
             return [], {
                 "error": str(e),
                 "enhanced_query": query,
@@ -1398,7 +1410,7 @@ Rank from 1 (most relevant) to N (least relevant).
             "remaining_entries": sum(len(entries) for entries in self.document_cache.values())
         }
         
-        print(f"[RETRIEVER_AGENT] Cache cleanup: {stats}")
+        logger.info("Cache cleanup: %s", stats)
         return stats
 
 

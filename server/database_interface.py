@@ -6,11 +6,14 @@ database implementations (SQLite, PostgreSQL) and technologies (raw SQL, Drizzle
 import uuid
 import json
 import subprocess
+import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 import sys
 import os
+
+logger = logging.getLogger(__name__)
 
 class DatabaseStorage:
     """Database storage implementation that bridges to TypeScript/Drizzle ORM for database portability."""
@@ -30,14 +33,12 @@ class DatabaseStorage:
                     from server.database_postgresql import postgresql_storage
                     self._storage_backend = postgresql_storage
                     await self._storage_backend.initialize()
-                    print(f"[Database] Using PostgreSQL backend")
+                    logger.info("Using PostgreSQL backend")
                 except ImportError as e:
-                    print(f"[Database] PostgreSQL backend not available: {e}")
-                    print("[Database] Falling back to SQLite backend")
+                    logger.warning("PostgreSQL backend not available: %s - falling back to SQLite", str(e))
                     await self._initialize_sqlite_fallback()
                 except Exception as e:
-                    print(f"[Database] PostgreSQL connection failed: {e}")
-                    print("[Database] Falling back to SQLite backend")
+                    logger.warning("PostgreSQL connection failed: %s - falling back to SQLite", str(e))
                     await self._initialize_sqlite_fallback()
             else:
                 await self._initialize_sqlite_fallback()
@@ -49,7 +50,7 @@ class DatabaseStorage:
         from server.database_sqlite import db_storage
         self._storage_backend = db_storage
         await self._storage_backend.initialize()
-        print(f"[Database] Using SQLite backend")
+        logger.info("Using SQLite backend")
     
     async def ensure_initialized(self):
         """Ensure the database is initialized."""

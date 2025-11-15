@@ -1,4 +1,5 @@
 """Temporal Agent for detecting knowledge evolution and conflicts across time periods."""
+import logging
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -16,6 +17,8 @@ from pydantic import BaseModel
 from server.providers import get_llm
 from server.agents.state import DocumentChunk, TemporalAnalysis
 from server.azure_client import azure_client
+
+logger = logging.getLogger(__name__)
 
 
 class TemporalConflict(BaseModel):
@@ -222,7 +225,7 @@ You are an expert temporal analyst specialized in understanding how information,
             )
             
         except Exception as e:
-            print(f"Temporal Agent error: {e}")
+            logger.error("Temporal Agent error: %s", e, exc_info=True)
             return self._fallback_temporal_analysis(chunks)
     
     def _prepare_document_content(self, chunks: List[DocumentChunk]) -> str:

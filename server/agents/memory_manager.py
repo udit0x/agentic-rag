@@ -1,5 +1,6 @@
 """Memory Management Service for conversation and cache cleanup."""
 
+import logging
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 import asyncio
@@ -10,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from server.agents.conversation_memory import conversation_memory_agent
 from server.agents.query_refinement import query_refinement_agent
 from server.agents.retriever import retriever_agent
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryManager:
@@ -31,7 +34,7 @@ class MemoryManager:
         
         self._is_running = True
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup_loop())
-        print(f"[MEMORY_MANAGER] Started periodic cleanup (every {self.cleanup_interval_hours} hours)")
+        logger.info("Started periodic cleanup (every %d hours)", self.cleanup_interval_hours)
     
     async def stop_periodic_cleanup(self) -> None:
         """Stop periodic cleanup task."""
@@ -42,7 +45,7 @@ class MemoryManager:
                 await self._cleanup_task
             except asyncio.CancelledError:
                 pass
-        print("[MEMORY_MANAGER] Stopped periodic cleanup")
+        logger.info("Stopped periodic cleanup")
     
     async def _periodic_cleanup_loop(self) -> None:
         """Periodic cleanup loop."""
@@ -53,12 +56,12 @@ class MemoryManager:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"[MEMORY_MANAGER] Error in cleanup loop: {e}")
+                logger.error("Error in cleanup loop: %s", e, exc_info=True)
                 await asyncio.sleep(300)  # Wait 5 minutes before retrying
     
     async def cleanup_all_caches(self) -> Dict[str, Any]:
         """Perform comprehensive cleanup of all caches and memory."""
-        print("[MEMORY_MANAGER] Starting comprehensive cache cleanup...")
+        logger.info("Starting comprehensive cache cleanup...")
         
         cleanup_stats = {
             "timestamp": datetime.now(),
@@ -94,17 +97,17 @@ class MemoryManager:
             )
             cleanup_stats["total_memory_freed"] = total_freed
             
-            print(f"[MEMORY_MANAGER] Cleanup completed: {total_freed} entries freed")
+            logger.info("Cleanup completed: %d entries freed", total_freed)
             
         except Exception as e:
-            print(f"[MEMORY_MANAGER] Error during cleanup: {e}")
+            logger.error("Error during cleanup: %s", e, exc_info=True)
             cleanup_stats["error"] = str(e)
         
         return cleanup_stats
     
     async def cleanup_session(self, session_id: str) -> Dict[str, bool]:
         """Cleanup all caches for a specific session."""
-        print(f"[MEMORY_MANAGER] Cleaning up session: {session_id}")
+        logger.info("Cleaning up session: %s", session_id)
         
         results = {
             "conversation_memory_cleared": False,
@@ -123,10 +126,10 @@ class MemoryManager:
             # Clear retriever cache
             results["retriever_cache_cleared"] = self.retriever_agent.clear_session_cache(session_id)
             
-            print(f"[MEMORY_MANAGER] Session {session_id} cleanup completed")
+            logger.info("Session %s cleanup completed", session_id)
             
         except Exception as e:
-            print(f"[MEMORY_MANAGER] Error cleaning session {session_id}: {e}")
+            logger.error("Error cleaning session %s: %s", session_id, e, exc_info=True)
         
         return results
     
@@ -162,7 +165,7 @@ class MemoryManager:
     
     async def force_cleanup_all(self) -> Dict[str, int]:
         """Force immediate cleanup of all caches (use with caution)."""
-        print("[MEMORY_MANAGER] Forcing complete cache clearance...")
+        logger.warning("Forcing complete cache clearance...")
         
         results = {
             "conversation_sessions_cleared": 0,
@@ -182,10 +185,10 @@ class MemoryManager:
             # Clear retriever cache
             results["retriever_entries_cleared"] = self.retriever_agent.clear_all_cache()
             
-            print(f"[MEMORY_MANAGER] Force cleanup completed: {results}")
+            logger.info("Force cleanup completed: %s", results)
             
         except Exception as e:
-            print(f"[MEMORY_MANAGER] Error in force cleanup: {e}")
+            logger.error("Error in force cleanup: %s", e, exc_info=True)
             results["error"] = str(e)
         
         return results
@@ -194,7 +197,7 @@ class MemoryManager:
         """Configure cleanup intervals."""
         self.cleanup_interval_hours = cleanup_hours
         self.session_timeout_hours = session_timeout_hours
-        print(f"[MEMORY_MANAGER] Updated config: cleanup every {cleanup_hours}h, session timeout {session_timeout_hours}h")
+        logger.info("Updated config: cleanup every %dh, session timeout %dh", cleanup_hours, session_timeout_hours)
 
 
 # Global memory manager instance

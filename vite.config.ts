@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import tailwindcss from "tailwindcss";
 import autoprefixer from "autoprefixer";
 import postcssImport from "postcss-import";
+import svgr from "vite-plugin-svgr";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -13,7 +14,7 @@ const pythonApiUrl = process.env.PYTHON_BACKEND_URL || "http://localhost:8000";
 const expressApiUrl = process.env.EXPRESS_BACKEND_URL || "http://localhost:5000";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), svgr()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "client", "src"),
@@ -32,6 +33,12 @@ export default defineConfig({
       deny: ["**/.*"],
     },
     proxy: {
+      // Route health check to Python FastAPI directly
+      "/api/health": {
+        target: pythonApiUrl,
+        changeOrigin: true,
+        secure: false,
+      },
       // Route specific endpoints to Python FastAPI
       "/api/query": {
         target: pythonApiUrl,
@@ -50,11 +57,6 @@ export default defineConfig({
       },
       // Route document and storage endpoints to TypeScript Express
       "/api/documents": {
-        target: expressApiUrl,
-        changeOrigin: true,
-        secure: false,
-      },
-      "/api/health": {
         target: expressApiUrl,
         changeOrigin: true,
         secure: false,

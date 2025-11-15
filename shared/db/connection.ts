@@ -22,7 +22,7 @@ export const createConnection = () => {
 
   if (DB_TYPE === "sqlite") {
     const dbPath = process.env.DB_PATH || "./data/local.sqlite";
-    console.log(`🗄️ Connecting to SQLite database: ${dbPath}`);
+    // console.log(`Connecting to SQLite database: ${dbPath}`);
     
     // Create directory if it doesn't exist
     const dir = path.dirname(dbPath);
@@ -40,14 +40,14 @@ export const createConnection = () => {
     sqlite.pragma('temp_store = memory');
     
     dbConnection = drizzle(sqlite, { schema: sqliteSchema });
-    console.log(`✅ Connected to SQLite database`);
+    // console.log(`Connected to SQLite database`);
   } else if (DB_TYPE === "postgresql") {
     const databaseUrl = process.env.DATABASE_URL;
     if (!databaseUrl) {
       throw new Error("DATABASE_URL is required for PostgreSQL");
     }
     
-    console.log(`🗄️ Connecting to PostgreSQL database`);
+    // console.log(`Connecting to PostgreSQL database`);
     
     // Parse the DATABASE_URL to get connection details
     const dbUrl = new URL(databaseUrl);
@@ -65,7 +65,7 @@ export const createConnection = () => {
     });
     
     dbConnection = drizzlePg(pool, { schema: postgresSchema });
-    console.log(`✅ Connected to PostgreSQL database`);
+    // console.log(`Connected to PostgreSQL database`);
   } else {
     throw new Error(`Unsupported database type: ${DB_TYPE}. Use 'sqlite' or 'postgresql'`);
   }
@@ -81,7 +81,7 @@ export const createOptimizedIndexes = async () => {
     const sqlite = (db as any).run;
     
     // Core indexes for fast queries
-    console.log("🚀 Creating SQLite performance indexes...");
+    // console.log("Creating SQLite performance indexes...");
     
     // Message table indexes
     sqlite?.(`CREATE INDEX IF NOT EXISTS idx_messages_session_sequence ON messages(session_id, sequence_number)`);
@@ -111,7 +111,7 @@ export const createOptimizedIndexes = async () => {
     sqlite?.(`CREATE INDEX IF NOT EXISTS idx_messages_session_role_created ON messages(session_id, role, created_at)`);
     sqlite?.(`CREATE INDEX IF NOT EXISTS idx_analytics_time_type ON query_analytics(timestamp, query_type)`);
     
-    console.log("✅ SQLite performance indexes created");
+    // console.log("SQLite performance indexes created");
   }
 };
 
@@ -129,6 +129,6 @@ export const closeConnection = () => {
   if (dbConnection && isSQLite()) {
     (dbConnection as any).close?.();
     dbConnection = null;
-    console.log("🔌 SQLite connection closed");
+    // console.log("SQLite connection closed");
   }
 };

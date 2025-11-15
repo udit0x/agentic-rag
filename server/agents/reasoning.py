@@ -1,4 +1,5 @@
 """Reasoning Agent for standard factual synthesis."""
+import logging
 from typing import List, Dict, Any
 from datetime import datetime
 from langchain_core.prompts import ChatPromptTemplate
@@ -11,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from server.providers import get_llm
 from server.agents.state import DocumentChunk, QueryClassification, AgentTrace
 from server.config_manager import config_manager
+
+logger = logging.getLogger(__name__)
 
 # Enhanced reasoning prompt template
 REASONING_PROMPT = """You are an expert knowledge analyst that synthesizes information from documents to answer questions accurately and comprehensively.
@@ -96,7 +99,7 @@ class ReasoningAgent:
                 # Rebuild chains when LLM is available
                 self._build_chains()
             except Exception as e:
-                print(f"[REASONING_AGENT] Error getting LLM: {e}")
+                logger.error("Error getting LLM: %s", e, exc_info=True)
                 return None
         return self.llm
     
@@ -106,7 +109,7 @@ class ReasoningAgent:
             config = config_manager.get_current_config()
             return config.useGeneralKnowledge if config else True
         except Exception as e:
-            print(f"[REASONING_AGENT] Error getting useGeneralKnowledge config: {e}")
+            logger.error("Error getting useGeneralKnowledge config: %s", e, exc_info=True)
             return True  # Default to True
     
     def _build_chains(self):
@@ -204,13 +207,13 @@ class ReasoningAgent:
     ) -> str:
         """Fallback reasoning when LLM is unavailable."""
         use_general_knowledge = self._get_use_general_knowledge()
-        print(f"[REASONING_AGENT] Fallback reasoning called, chunks={len(chunks)}, useGeneralKnowledge={use_general_knowledge}")
+        logger.info("Fallback reasoning called, chunks=%d, useGeneralKnowledge=%s", len(chunks), use_general_knowledge)
         
         if not chunks:
             if use_general_knowledge:
                 return "I couldn't find any relevant information in the uploaded documents. However, general knowledge responses are enabled, so this should have been handled by the general knowledge agent."
             else:
-                print(f"[REASONING_AGENT] Fallback: Returning disabled message since useGeneralKnowledge=False")
+                logger.info("Fallback: Returning disabled message since useGeneralKnowledge=False")
                 return "I couldn't find any relevant information in the uploaded documents to answer your question. General knowledge responses are currently disabled. Please upload documents that contain information related to your query, or enable general knowledge responses in Settings."
         
         # Simple template-based response
@@ -253,18 +256,18 @@ class ReasoningAgent:
                 return self._fallback_reasoning(query, chunks)
 
             if not chunks:
-                print(f"[REASONING_AGENT] No chunks found, useGeneralKnowledge={use_general_knowledge}")
+                logger.info("No chunks found, useGeneralKnowledge=%s", use_general_knowledge)
                 if use_general_knowledge:
                     # This case should not happen as it should route to general knowledge agent
                     return "I couldn't find any relevant information in the uploaded documents. However, general knowledge responses are enabled, so this should have been handled by the general knowledge agent."
                 else:
                     # General knowledge is disabled - provide clear message
-                    print(f"[REASONING_AGENT] Returning disabled message since useGeneralKnowledge=False")
+                    logger.info("Returning disabled message since useGeneralKnowledge=False")
                     return "I couldn't find any relevant information in the uploaded documents to answer your question. General knowledge responses are currently disabled. Please upload documents that contain information related to your query, or enable general knowledge responses in Settings."            # Determine if we should use hybrid mode
             should_use_hybrid = self._should_use_hybrid_mode(chunks, classification)
             
             if should_use_hybrid and self.hybrid_chain:
-                print(f"[REASONING_AGENT] Using hybrid mode (documents + general knowledge)")
+                logger.debug("Using hybrid mode (documents + general knowledge)")
                 # Generate response using hybrid chain
                 response = await self.hybrid_chain.ainvoke({
                     "query": query,
@@ -272,7 +275,7 @@ class ReasoningAgent:
                     "classification": classification
                 })
             else:
-                print(f"[REASONING_AGENT] Using standard document-only mode")
+                logger.debug("Using standard document-only mode")
                 # Generate response using standard chain
                 response = await self.reasoning_chain.ainvoke({
                     "query": query,
@@ -284,7 +287,7 @@ class ReasoningAgent:
             return response
             
         except Exception as e:
-            print(f"Reasoning Agent error: {e}")
+            logger.error("Reasoning Agent error: %s", e, exc_info=True)
             return self._fallback_reasoning(query, chunks)
     
     def create_trace(

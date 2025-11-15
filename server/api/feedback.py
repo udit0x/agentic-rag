@@ -10,8 +10,8 @@ from datetime import datetime
 import logging
 
 # Database and auth imports
-from database_interface import db_storage
-from auth_middleware import require_authenticated_user
+from server.database_interface import db_storage
+from server.auth_middleware import require_authenticated_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])

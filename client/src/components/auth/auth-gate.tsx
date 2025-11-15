@@ -2,8 +2,12 @@ import { SignIn, useUser } from "@clerk/clerk-react";
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useUserSync } from "@/hooks/use-user-sync";
+import { useBackendHealth } from "@/hooks/use-backend-health";
 import Aurora from "@/components/ui/Aurora";
 import { OrbitalLoader } from "@/components/ui/orbital-loader";
+import { Button } from "@/components/ui/button";
+import { RefreshCw, ServerOff } from "lucide-react";
+import { Link } from "wouter";
 
 interface AuthGateProps {
   children: React.ReactNode;
@@ -12,6 +16,7 @@ interface AuthGateProps {
 export function AuthGate({ children }: AuthGateProps) {
   const { isSignedIn, isLoaded, user } = useUser();
   const { isSyncing, syncError } = useUserSync();
+  const { isHealthy, isChecking, error: healthError, retry } = useBackendHealth();
   const [showContent, setShowContent] = useState(false);
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
 
@@ -22,14 +27,14 @@ export function AuthGate({ children }: AuthGateProps) {
   }, [isLoaded, initialLoadComplete]);
 
   useEffect(() => {
-    if (isLoaded && isSignedIn && !isSyncing && initialLoadComplete) {
+    if (isLoaded && isSignedIn && !isSyncing && initialLoadComplete && isHealthy) {
       // Small delay for smooth transition after user sync
       const timer = setTimeout(() => setShowContent(true), 300);
       return () => clearTimeout(timer);
     } else {
       setShowContent(false);
     }
-  }, [isLoaded, isSignedIn, isSyncing, initialLoadComplete]);
+  }, [isLoaded, isSignedIn, isSyncing, initialLoadComplete, isHealthy]);
 
   // Show loading state while Clerk is initializing
   if (!isLoaded || !initialLoadComplete) {
@@ -69,6 +74,100 @@ export function AuthGate({ children }: AuthGateProps) {
     // Continue to show content even with sync error
   }
 
+  // CRITICAL: Block access if backend is unhealthy
+  if (!isHealthy && !isChecking) {
+    return (
+      <div className="min-h-screen relative overflow-hidden bg-background">
+        {/* Aurora background */}
+        <div className="absolute inset-0 opacity-30 w-full h-full">
+          <Aurora
+            colorStops={['#7c3aed', '#06b6d4', '#8b5cf6']}
+            amplitude={2.5}
+            blend={0.7}
+            speed={0.5}
+          />
+        </div>
+
+        {/* Gradient overlay */}
+        <div className="absolute inset-0 bg-gradient-to-br from-background/60 via-background/40 to-background/60 backdrop-blur-sm" />
+
+        {/* Content */}
+        <div className="relative z-10 min-h-screen flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, ease: "easeOut" }}
+            className="max-w-md w-full"
+          >
+            <div className="bg-card/80 backdrop-blur-xl border border-border/50 rounded-3xl p-10 shadow-2xl">
+              {/* Icon */}
+              <motion.div
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ delay: 0.2, type: "spring", stiffness: 200 }}
+                className="flex justify-center mb-8"
+              >
+                <div className="relative">
+                  <div className="absolute inset-0 bg-violet-500/20 blur-xl rounded-full" />
+                  <div className="relative bg-gradient-to-br from-violet-500/10 to-cyan-500/10 p-5 rounded-full">
+                    <ServerOff className="w-10 h-10 text-muted-foreground" strokeWidth={1.5} />
+                  </div>
+                </div>
+              </motion.div>
+
+              {/* Message */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.3 }}
+                className="text-center mb-8"
+              >
+                <h2 className="text-2xl font-semibold text-foreground mb-3">
+                  Service Temporarily Unavailable
+                </h2>
+                <p className="text-muted-foreground text-sm leading-relaxed">
+                  We're having trouble connecting to our services right now. Please try again in a moment.
+                </p>
+              </motion.div>
+
+              {/* Retry Button */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.4 }}
+              >
+                <Button
+                  onClick={retry}
+                  className="w-full h-11"
+                  variant="default"
+                >
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  Try Again
+                </Button>
+              </motion.div>
+            </div>
+          </motion.div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show backend health check in progress
+  if (isChecking && !isHealthy) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.3 }}
+          className="flex flex-col items-center gap-4"
+        >
+          <OrbitalLoader message="Checking backend services..." messagePlacement="bottom" />
+        </motion.div>
+      </div>
+    );
+  }
+
   // Show loading state while Clerk is initializing
   if (!isLoaded) {
     return (
@@ -90,7 +189,7 @@ export function AuthGate({ children }: AuthGateProps) {
     return (
       <div className="min-h-screen relative overflow-hidden bg-background">
         {/* Aurora background */}
-        <div className="absolute inset-0 opacity-40">
+        <div className="absolute inset-0 opacity-40 w-full h-full">
           <Aurora
             colorStops={['#7c3aed', '#06b6d4', '#8b5cf6']}
             amplitude={2.5}
@@ -145,7 +244,7 @@ export function AuthGate({ children }: AuthGateProps) {
                 transition={{ delay: 0.2 }}
               >
                 <h1 className="text-3xl font-bold text-foreground mb-2">
-                  Welcome to Agentic RAG
+                  Welcome to MindMesh
                 </h1>
                 <p className="text-muted-foreground">
                   Sign in to access your document AI assistant
@@ -183,23 +282,18 @@ export function AuthGate({ children }: AuthGateProps) {
                     otpCodeFieldInput: "bg-background border-border text-foreground",
                     formHeaderTitle: "text-foreground",
                     formHeaderSubtitle: "text-muted-foreground",
-                    // Make form buttons more visible
                     formFieldAction: "text-primary hover:text-primary/80",
                     formFieldAction__password: "text-primary hover:text-primary/80",
-                    // Ensure input text is white/foreground color
                     formFieldInputGroup: "bg-background text-foreground",
-                    // Alternative button styles
                     alternativeMethodsBlockButton: "border-border bg-background hover:bg-accent text-foreground",
                     alternativeMethodsBlockButtonText: "text-foreground",
-                    // Make sure all text inputs have proper contrast
                     formFieldRow: "text-foreground",
                     formFieldHintText: "text-muted-foreground",
                     formFieldSuccessText: "text-green-600 dark:text-green-400",
                     formFieldErrorText: "text-red-600 dark:text-red-400",
-                    // CAPTCHA styling
                     identityPreview: "bg-background/50 border-border text-foreground",
                     identityPreviewEditButtonIcon: "text-primary",
-                    footer: "hidden", // Hide footer to make it cleaner
+                    footer: "hidden",
                   },
                   layout: {
                     socialButtonsPlacement: "top",
@@ -210,6 +304,8 @@ export function AuthGate({ children }: AuthGateProps) {
                 signUpUrl="/sign-up"
                 forceRedirectUrl="/"
                 fallbackRedirectUrl="/"
+                afterSignInUrl="/"
+                afterSignUpUrl="/"
               />
             </motion.div>
 
@@ -219,7 +315,18 @@ export function AuthGate({ children }: AuthGateProps) {
               transition={{ delay: 0.5 }}
               className="mt-6 text-center text-xs text-muted-foreground"
             >
-              By signing in, you agree to our Terms of Service and Privacy Policy
+              By signing in, you agree to our{" "}
+              <Link href="/terms-of-use">
+                <span className="text-primary hover:underline cursor-pointer">
+                  Terms of Use
+                </span>
+              </Link>
+              {" "}and{" "}
+              <Link href="/privacy-policy">
+                <span className="text-primary hover:underline cursor-pointer">
+                  Privacy Policy
+                </span>
+              </Link>
             </motion.p>
           </motion.div>
         </div>

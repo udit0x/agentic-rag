@@ -306,6 +306,12 @@
   .border.hover-elevate:not(.no-hover-interaction-elevate)::after {
     inset: -1px;
   }
+
+  /* Remove focus ring only for destructive buttons to avoid accessibility issues */
+  button.bg-destructive:focus-visible {
+    box-shadow: none !important;
+    outline: none !important;
+  }
 }
 
 @theme inline {

@@ -18,7 +18,7 @@ export function useStableSession() {
   const getSessionId = useCallback(() => sessionIdRef.current, []);
 
   const migrate = useCallback((tempId: string, realId: string, queryClient: QueryClient, userMessageId?: string) => {
-    console.log("[MIGRATE] Starting migration:", { tempId, realId, userMessageId });
+    // console.log("[MIGRATE] Starting migration:", { tempId, realId, userMessageId });
     
     if (sessionIdRef.current === tempId) {
       setSession(realId);
@@ -30,16 +30,16 @@ export function useStableSession() {
       refinedQueries?: string[] 
     }>(["chat-history", tempId]);
     
-    console.log("[MIGRATE] Temp session data:", {
-      messageCount: temp?.messages?.length,
-      messages: temp?.messages?.map(m => ({
-        id: m.id,
-        serverId: m.serverId,
-        role: m.role,
-        content: m.content.substring(0, 30) + "..."
-      })),
-      refinedQueriesFor: temp?.refinedQueriesFor
-    });
+    // console.log("[MIGRATE] Temp session data:", {
+    //   messageCount: temp?.messages?.length,
+    //   messages: temp?.messages?.map(m => ({
+    //     id: m.id,
+    //     serverId: m.serverId,
+    //     role: m.role,
+    //     content: m.content.substring(0, 30) + "..."
+    //   })),
+    //   refinedQueriesFor: temp?.refinedQueriesFor
+    // });
     
     queryClient.setQueryData(
       ["chat-history", realId], 
@@ -57,19 +57,19 @@ export function useStableSession() {
                 serverId: (userMessageId && m.role === "user") ? userMessageId : m.serverId
               };
               
-              if (userMessageId && m.role === "user") {
-                console.log("[MIGRATE] Injected serverId during migration:", {
-                  messageId: m.id,
-                  serverId: userMessageId
-                });
-              }
+              // if (userMessageId && m.role === "user") {
+              //   // console.log("[MIGRATE] Injected serverId during migration:", {
+              //   //   messageId: m.id,
+              //   //   serverId: userMessageId
+              //   // });
+              // }
               
-              console.log("[MIGRATE] Adding message to real session:", {
-                key,
-                originalId: m.id,
-                serverId: migratedMessage.serverId,
-                newSessionId: realId
-              });
+              // console.log("[MIGRATE] Adding message to real session:", {
+              //   key,
+              //   originalId: m.id,
+              //   serverId: migratedMessage.serverId,
+              //   newSessionId: realId
+              // });
               acc.set(key, migratedMessage);
             }
             return acc;
@@ -81,15 +81,15 @@ export function useStableSession() {
           refinedQueries: temp?.refinedQueries ?? old?.refinedQueries,
         };
         
-        console.log("[MIGRATE] Migration complete:", {
-          messageCount: result.messages.length,
-          refinedQueriesFor: result.refinedQueriesFor,
-          messages: result.messages.map(m => ({
-            id: m.id,
-            serverId: m.serverId,
-            role: m.role
-          }))
-        });
+        // console.log("[MIGRATE] Migration complete:", {
+        //   messageCount: result.messages.length,
+        //   refinedQueriesFor: result.refinedQueriesFor,
+        //   messages: result.messages.map(m => ({
+        //     id: m.id,
+        //     serverId: m.serverId,
+        //     role: m.role
+        //   }))
+        // });
         
         // Preserve refinedQueriesFor and refinedQueries from temp session
         return result;

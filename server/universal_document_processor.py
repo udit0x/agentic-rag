@@ -1,4 +1,5 @@
 """Universal document processing pipeline supporting multiple file types."""
+import logging
 import base64
 import io
 import json
@@ -14,6 +15,8 @@ from server.config_manager import config_manager
 # PDF processing
 import fitz  # pymupdf
 
+logger = logging.getLogger(__name__)
+
 # Document loaders
 try:
     from langchain_community.document_loaders import (
@@ -23,7 +26,7 @@ try:
     )
     UNSTRUCTURED_AVAILABLE = True
 except ImportError:
-    print("[WARN] Unstructured not available, falling back to alternative methods")
+    logger.warning("Unstructured not available, falling back to alternative methods")
     UNSTRUCTURED_AVAILABLE = False
 
 # CSV/Excel processing
@@ -31,7 +34,7 @@ try:
     import pandas as pd
     PANDAS_AVAILABLE = True
 except ImportError:
-    print("[WARN] Pandas not available, CSV support limited")
+    logger.warning("Pandas not available, CSV support limited")
     PANDAS_AVAILABLE = False
 
 # DOCX fallback
@@ -39,7 +42,7 @@ try:
     from docx import Document as DocxDocument
     PYTHON_DOCX_AVAILABLE = True
 except ImportError:
-    print("[WARN] python-docx not available")
+    logger.warning("python-docx not available")
     PYTHON_DOCX_AVAILABLE = False
 
 # PPTX fallback
@@ -47,7 +50,7 @@ try:
     from pptx import Presentation
     PYTHON_PPTX_AVAILABLE = True
 except ImportError:
-    print("[WARN] python-pptx not available")
+    logger.warning("python-pptx not available")
     PYTHON_PPTX_AVAILABLE = False
 
 # OCR support
@@ -129,7 +132,7 @@ class DocumentExtractor:
     @staticmethod
     async def extract_pdf_text(file_bytes: bytes, filename: str, force_ocr: bool = False) -> Tuple[str, Dict[str, Any]]:
         """Extract text from PDF with OCR fallback."""
-        print(f"[EXTRACTOR] Processing PDF: {filename}")
+        logger.info("Processing PDF: %s", filename)
         
         metrics = {
             "extraction_mode": "Direct",
@@ -158,7 +161,7 @@ class DocumentExtractor:
             ocr_needed = force_ocr or not ocr_processor.is_text_content_sufficient(text_content)
             
             if ocr_needed:
-                print(f"[EXTRACTOR] PDF requires OCR processing: {filename}")
+                logger.info("PDF requires OCR processing: %s", filename)
                 metrics["ocr_triggered"] = True
                 metrics["extraction_mode"] = "OCR"
                 
@@ -170,26 +173,26 @@ class DocumentExtractor:
                     if ocr_text and len(ocr_text.strip()) > 0:
                         text_content = ocr_text
                         metrics.update(ocr_metrics.finalize())
-                        print(f"[EXTRACTOR] OCR successful: {len(text_content)} chars")
+                        logger.info("OCR successful: %d chars extracted", len(text_content))
                     else:
                         metrics["errors"].append("OCR extraction yielded no content")
                         
                 except Exception as ocr_error:
-                    print(f"[EXTRACTOR] OCR failed: {str(ocr_error)}")
+                    logger.error("OCR failed for %s: %s", filename, str(ocr_error))
                     metrics["errors"].append(f"OCR failed: {str(ocr_error)}")
             
             return text_content, metrics
             
         except Exception as e:
             error_msg = f"PDF extraction failed: {str(e)}"
-            print(f"[EXTRACTOR] {error_msg}")
+            logger.error("PDF extraction failed for %s: %s", filename, str(e))
             metrics["errors"].append(error_msg)
             return "", metrics
     
     @staticmethod
     def extract_docx_text(file_bytes: bytes, filename: str) -> Tuple[str, Dict[str, Any]]:
         """Extract text from DOCX files."""
-        print(f"[EXTRACTOR] Processing DOCX: {filename}")
+        logger.info("Processing DOCX: %s", filename)
         
         metrics = {
             "extraction_mode": "Direct",
@@ -212,11 +215,11 @@ class DocumentExtractor:
                 os.unlink(tmp_path)
                 
                 metrics["total_chars"] = len(text_content)
-                print(f"[EXTRACTOR] DOCX extracted via Unstructured: {len(text_content)} chars")
+                logger.info("DOCX extracted via Unstructured: %d chars", len(text_content))
                 return text_content, metrics
                 
             except Exception as e:
-                print(f"[EXTRACTOR] Unstructured DOCX failed: {str(e)}")
+                logger.warning("Unstructured DOCX extraction failed for %s: %s", filename, str(e))
                 metrics["errors"].append(f"Unstructured failed: {str(e)}")
         
         # Fallback to python-docx
@@ -226,23 +229,23 @@ class DocumentExtractor:
                 text_content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
                 
                 metrics["total_chars"] = len(text_content)
-                print(f"[EXTRACTOR] DOCX extracted via python-docx: {len(text_content)} chars")
+                logger.info("DOCX extracted via python-docx: %d chars", len(text_content))
                 return text_content, metrics
                 
             except Exception as e:
-                print(f"[EXTRACTOR] python-docx failed: {str(e)}")
+                logger.warning("python-docx extraction failed for %s: %s", filename, str(e))
                 metrics["errors"].append(f"python-docx failed: {str(e)}")
         
         # If all methods fail
         error_msg = "No DOCX extraction method available"
-        print(f"[EXTRACTOR] {error_msg}")
+        logger.error("DOCX extraction failed for %s: %s", filename, error_msg)
         metrics["errors"].append(error_msg)
         return "", metrics
     
     @staticmethod
     def extract_pptx_text(file_bytes: bytes, filename: str) -> Tuple[str, Dict[str, Any]]:
         """Extract text from PPTX files."""
-        print(f"[EXTRACTOR] Processing PPTX: {filename}")
+        logger.info("Processing PPTX: %s", filename)
         
         metrics = {
             "extraction_mode": "Direct",
@@ -265,11 +268,11 @@ class DocumentExtractor:
                 os.unlink(tmp_path)
                 
                 metrics["total_chars"] = len(text_content)
-                print(f"[EXTRACTOR] PPTX extracted via Unstructured: {len(text_content)} chars")
+                logger.info("PPTX extracted via Unstructured: %d chars", len(text_content))
                 return text_content, metrics
                 
             except Exception as e:
-                print(f"[EXTRACTOR] Unstructured PPTX failed: {str(e)}")
+                logger.warning("Unstructured PPTX extraction failed for %s: %s", filename, str(e))
                 metrics["errors"].append(f"Unstructured failed: {str(e)}")
         
         # Fallback to python-pptx
@@ -295,23 +298,23 @@ class DocumentExtractor:
                     text_content += slide_text + "\n"
                 
                 metrics["total_chars"] = len(text_content)
-                print(f"[EXTRACTOR] PPTX extracted via python-pptx: {len(text_content)} chars")
+                logger.info("PPTX extracted via python-pptx: %d chars", len(text_content))
                 return text_content, metrics
                 
             except Exception as e:
-                print(f"[EXTRACTOR] python-pptx failed: {str(e)}")
+                logger.warning("python-pptx extraction failed for %s: %s", filename, str(e))
                 metrics["errors"].append(f"python-pptx failed: {str(e)}")
         
         # If all methods fail
         error_msg = "No PPTX extraction method available"
-        print(f"[EXTRACTOR] {error_msg}")
+        logger.error("PPTX extraction failed for %s: %s", filename, error_msg)
         metrics["errors"].append(error_msg)
         return "", metrics
     
     @staticmethod
     def extract_csv_text(file_bytes: bytes, filename: str) -> Tuple[str, Dict[str, Any]]:
         """Extract text from CSV files with intelligent sampling."""
-        print(f"[EXTRACTOR] Processing CSV: {filename}")
+        logger.info("Processing CSV: %s", filename)
         
         metrics = {
             "extraction_mode": "Smart Sampling",
@@ -355,12 +358,13 @@ class DocumentExtractor:
                 
                 text_content = "\n".join(text_lines)
                 metrics["total_chars"] = len(text_content)
-                print(f"[EXTRACTOR] CSV extracted via basic reader: {total_rows} total rows, {metrics['rows_sampled']} sampled, {len(text_content)} chars")
+                logger.info("CSV extracted via basic reader: %d total rows, %d sampled, %d chars", 
+                           total_rows, metrics['rows_sampled'], len(text_content))
                 return text_content, metrics
                 
             except Exception as e:
                 error_msg = f"Basic CSV extraction failed: {str(e)}"
-                print(f"[EXTRACTOR] {error_msg}")
+                logger.error("Basic CSV extraction failed for %s: %s", filename, str(e))
                 metrics["errors"].append(error_msg)
                 return "", metrics
         
@@ -418,19 +422,20 @@ class DocumentExtractor:
                 metrics["errors"].append("Content truncated to 50KB")
             
             metrics["total_chars"] = len(text_content)
-            print(f"[EXTRACTOR] CSV Smart Processed: {original_rows:,} total rows, {metrics['rows_sampled']} sampled, {len(text_content)} chars")
+            logger.info("CSV processed: %d total rows, %d sampled, %d chars", 
+                       original_rows, metrics['rows_sampled'], len(text_content))
             return text_content, metrics
             
         except Exception as e:
             error_msg = f"Pandas CSV extraction failed: {str(e)}"
-            print(f"[EXTRACTOR] {error_msg}")
+            logger.error("Pandas CSV extraction failed for %s: %s", filename, str(e))
             metrics["errors"].append(error_msg)
             return "", metrics
     
     @staticmethod
     def extract_xlsx_text(file_bytes: bytes, filename: str, use_smart_sampling: bool = True) -> Tuple[str, Dict[str, Any]]:
         """Extract text from Excel files with intelligent sampling and summarization."""
-        print(f"[EXTRACTOR] Processing XLSX: {filename} (Smart Sampling: {use_smart_sampling})")
+        logger.info("Processing XLSX: %s (Smart Sampling: %s)", filename, use_smart_sampling)
         
         metrics = {
             "extraction_mode": "Smart Sampling",
@@ -443,7 +448,7 @@ class DocumentExtractor:
         
         if not PANDAS_AVAILABLE:
             error_msg = "Pandas not available for Excel processing"
-            print(f"[EXTRACTOR] {error_msg}")
+            logger.error("XLSX extraction failed for %s: %s", filename, error_msg)
             metrics["errors"].append(error_msg)
             return "", metrics
         
@@ -531,19 +536,20 @@ class DocumentExtractor:
                 metrics["errors"].append("Final content truncated to 100KB for processing efficiency")
             
             metrics["total_chars"] = len(text_content)
-            print(f"[EXTRACTOR] XLSX Smart Processed: {len(sheets)} sheets, {total_rows:,} total rows, {metrics['rows_sampled']:,} rows sampled, {len(text_content)} chars")
+            logger.info("XLSX processed: %d sheets, %d total rows, %d sampled, %d chars", 
+                       len(sheets), total_rows, metrics['rows_sampled'], len(text_content))
             return text_content, metrics
             
         except Exception as e:
             error_msg = f"Excel extraction failed: {str(e)}"
-            print(f"[EXTRACTOR] {error_msg}")
+            logger.error("Excel extraction failed for %s: %s", filename, str(e))
             metrics["errors"].append(error_msg)
             return "", metrics
     
     @staticmethod
     def extract_json_text(file_bytes: bytes, filename: str) -> Tuple[str, Dict[str, Any]]:
         """Extract text from JSON files."""
-        print(f"[EXTRACTOR] Processing JSON: {filename}")
+        logger.info("Processing JSON: %s", filename)
         
         metrics = {
             "extraction_mode": "Direct",
@@ -570,19 +576,19 @@ class DocumentExtractor:
                 metrics["errors"].append("Large JSON truncated to 50KB")
             
             metrics["total_chars"] = len(text_content)
-            print(f"[EXTRACTOR] JSON extracted: {len(text_content)} chars")
+            logger.info("JSON extracted: %d chars", len(text_content))
             return text_content, metrics
             
         except Exception as e:
             error_msg = f"JSON extraction failed: {str(e)}"
-            print(f"[EXTRACTOR] {error_msg}")
+            logger.error("JSON extraction failed for %s: %s", filename, str(e))
             metrics["errors"].append(error_msg)
             return "", metrics
     
     @staticmethod
     def extract_markdown_text(file_bytes: bytes, filename: str) -> Tuple[str, Dict[str, Any]]:
         """Extract text from Markdown files."""
-        print(f"[EXTRACTOR] Processing Markdown: {filename}")
+        logger.info("Processing Markdown: %s", filename)
         
         metrics = {
             "extraction_mode": "Direct",
@@ -605,30 +611,30 @@ class DocumentExtractor:
                 os.unlink(tmp_path)
                 
                 metrics["total_chars"] = len(text_content)
-                print(f"[EXTRACTOR] Markdown extracted via Unstructured: {len(text_content)} chars")
+                logger.info("Markdown extracted via Unstructured: %d chars", len(text_content))
                 return text_content, metrics
                 
             except Exception as e:
-                print(f"[EXTRACTOR] Unstructured Markdown failed: {str(e)}")
+                logger.warning("Unstructured Markdown extraction failed for %s: %s", filename, str(e))
                 metrics["errors"].append(f"Unstructured failed: {str(e)}")
         
         # Fallback to plain text
         try:
             text_content = file_bytes.decode("utf-8", errors="ignore")
             metrics["total_chars"] = len(text_content)
-            print(f"[EXTRACTOR] Markdown extracted as plain text: {len(text_content)} chars")
+            logger.info("Markdown extracted as plain text: %d chars", len(text_content))
             return text_content, metrics
             
         except Exception as e:
             error_msg = f"Markdown extraction failed: {str(e)}"
-            print(f"[EXTRACTOR] {error_msg}")
+            logger.error("Markdown extraction failed for %s: %s", filename, str(e))
             metrics["errors"].append(error_msg)
             return "", metrics
     
     @staticmethod
     def extract_txt_text(file_bytes: bytes, filename: str) -> Tuple[str, Dict[str, Any]]:
         """Extract text from plain text files."""
-        print(f"[EXTRACTOR] Processing TXT: {filename}")
+        logger.info("Processing TXT: %s", filename)
         
         metrics = {
             "extraction_mode": "Direct",
@@ -654,19 +660,19 @@ class DocumentExtractor:
                 metrics["errors"].append("Used UTF-8 with error ignoring")
             
             metrics["total_chars"] = len(text_content)
-            print(f"[EXTRACTOR] TXT extracted: {len(text_content)} chars")
+            logger.info("TXT extracted: %d chars", len(text_content))
             return text_content, metrics
             
         except Exception as e:
             error_msg = f"Text extraction failed: {str(e)}"
-            print(f"[EXTRACTOR] {error_msg}")
+            logger.error("Text extraction failed for %s: %s", filename, str(e))
             metrics["errors"].append(error_msg)
             return "", metrics
     
     @staticmethod
     def extract_html_text(file_bytes: bytes, filename: str) -> Tuple[str, Dict[str, Any]]:
         """Extract text from HTML files."""
-        print(f"[EXTRACTOR] Processing HTML: {filename}")
+        logger.info("Processing HTML: %s", filename)
         
         metrics = {
             "extraction_mode": "Direct",
@@ -688,7 +694,7 @@ class DocumentExtractor:
                 
                 text_content = soup.get_text(separator='\n', strip=True)
                 metrics["total_chars"] = len(text_content)
-                print(f"[EXTRACTOR] HTML extracted via BeautifulSoup: {len(text_content)} chars")
+                logger.info("HTML extracted via BeautifulSoup: %d chars", len(text_content))
                 return text_content, metrics
                 
             except ImportError:
@@ -702,12 +708,12 @@ class DocumentExtractor:
                 
                 metrics["total_chars"] = len(text_content)
                 metrics["errors"].append("Used basic HTML tag removal (BeautifulSoup not available)")
-                print(f"[EXTRACTOR] HTML extracted via regex: {len(text_content)} chars")
+                logger.info("HTML extracted via regex: %d chars", len(text_content))
                 return text_content, metrics
                 
         except Exception as e:
             error_msg = f"HTML extraction failed: {str(e)}"
-            print(f"[EXTRACTOR] {error_msg}")
+            logger.error("HTML extraction failed for %s: %s", filename, str(e))
             metrics["errors"].append(error_msg)
             return "", metrics
 
@@ -730,9 +736,8 @@ async def process_document(
     Returns:
         Tuple of (extracted_text, size_in_bytes, processing_metrics)
     """
-    print(f"[UNIVERSAL] Processing document: {filename}")
-    print(f"[UNIVERSAL] Content type: {content_type}")
-    print(f"[UNIVERSAL] Content length: {len(content)} chars")
+    logger.info("Processing document: %s (type: %s)", filename, content_type)
+    logger.debug("Content length: %d chars", len(content))
     
     # Initialize processing metrics
     processing_metrics = {
@@ -759,31 +764,31 @@ async def process_document(
             file_size = len(file_bytes)
             file_size_mb = file_size / (1024 * 1024)
             
-            print(f"[UNIVERSAL] Decoded file size: {file_size} bytes ({file_size_mb:.2f} MB)")
+            logger.debug("Decoded file size: %d bytes (%.2f MB)", file_size, file_size_mb)
             
             # Check file size limits
             if file_size_mb > doc_limits.max_file_size_mb:
                 error_msg = f"File too large: {file_size_mb:.2f} MB exceeds limit of {doc_limits.max_file_size_mb} MB"
-                print(f"[UNIVERSAL] REJECTED: {error_msg}")
+                logger.error("REJECTED: %s", error_msg)
                 processing_metrics["errors"].append(error_msg)
                 raise ValueError(error_msg)
             
             # Warning for large files
             if file_size_mb > doc_limits.warn_file_size_mb:
                 warning_msg = f"Large file warning: {file_size_mb:.2f} MB (above {doc_limits.warn_file_size_mb} MB threshold)"
-                print(f"[UNIVERSAL] WARNING: {warning_msg}")
+                logger.warning(warning_msg)
                 processing_metrics["warnings"] = processing_metrics.get("warnings", [])
                 processing_metrics["warnings"].append(warning_msg)
                 
         except Exception as decode_error:
             error_msg = f"Failed to decode base64 content: {str(decode_error)}"
-            print(f"[UNIVERSAL] {error_msg}")
+            logger.error(error_msg)
             processing_metrics["errors"].append(error_msg)
             return "", 0, processing_metrics
         # Detect file type
         file_type = detect_file_type(content_type, filename)
         processing_metrics["file_type"] = file_type
-        print(f"[UNIVERSAL] Detected file type: {file_type}")
+        logger.info("Detected file type: %s", file_type)
         
         # Route to appropriate extractor (file_bytes already decoded earlier)
         extractor = DocumentExtractor()
@@ -835,14 +840,14 @@ async def process_document(
         char_count = len(text_content)
         if char_count > doc_limits.max_extracted_chars:
             error_msg = f"Extracted content too large: {char_count:,} characters exceeds limit of {doc_limits.max_extracted_chars:,}"
-            print(f"[UNIVERSAL] REJECTED: {error_msg}")
+            logger.error("REJECTED: %s", error_msg)
             processing_metrics["errors"].append(error_msg)
             raise ValueError(error_msg)
         
         # Warning for large character count
         if char_count > doc_limits.warn_extracted_chars:
             warning_msg = f"Large content warning: {char_count:,} characters (above {doc_limits.warn_extracted_chars:,} threshold)"
-            print(f"[UNIVERSAL] WARNING: {warning_msg}")
+            logger.warning(warning_msg)
             processing_metrics["warnings"] = processing_metrics.get("warnings", [])
             processing_metrics["warnings"].append(warning_msg)
         
@@ -855,19 +860,18 @@ async def process_document(
         # Validate extracted content
         if not text_content or len(text_content.strip()) < 10:
             warning_msg = f"Minimal content extracted ({len(text_content)} chars)"
-            print(f"[UNIVERSAL] Warning: {warning_msg}")
+            logger.warning(warning_msg)
             processing_metrics["errors"].append(warning_msg)
         
-        print(f"[UNIVERSAL] Processing completed successfully")
-        print(f"[UNIVERSAL] Extracted: {len(text_content)} chars from {file_type} file")
+        logger.info("Processing completed: %d chars extracted from %s file", len(text_content), file_type)
         
         return text_content, file_size, processing_metrics
         
     except Exception as e:
         error_msg = f"Document processing failed: {str(e)}"
-        print(f"[UNIVERSAL] Error: {error_msg}")
+        logger.error("Document processing failed for %s: %s", filename, str(e))
         processing_metrics["errors"].append(error_msg)
         
         import traceback
-        traceback.print_exc()
+        logger.debug("Traceback: %s", traceback.format_exc())
         raise

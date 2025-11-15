@@ -13,6 +13,7 @@ import { submitMessageFeedback, type FeedbackType } from "@/lib/feedback-api";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import LogoIcon from "@/assets/logo.svg?react";
 
 interface MessageBubbleProps {
   message: Message;
@@ -116,12 +117,12 @@ export function MessageBubble({
   // Auto-show questions when they become available, then auto-collapse after delay
   useEffect(() => {
     if (refinedQueries && refinedQueries.length > 0 && showRefinedQueries) {
-      console.log('[MessageBubble] Showing refined queries:', {
-        count: refinedQueries.length,
-        showRefinedQueries,
-        messageId: message.id,
-        messageServerId: message.serverId
-      });
+      // console.log('[MessageBubble] Showing refined queries:', {
+      //   count: refinedQueries.length,
+      //   showRefinedQueries,
+      //   messageId: message.id,
+      //   messageServerId: message.serverId
+      // });
       setIsQuestionsExpanded(true); // Auto-expand initially
       
       // Auto-collapse after 6 seconds (keep header visible, just collapse the list)
@@ -239,17 +240,17 @@ export function MessageBubble({
       className={cn(
         "flex items-start", // Added items-start to align to top
         isMobile ? "gap-2" : "gap-3", // Tighter spacing on mobile
-        isUser ? "justify-end" : "justify-start"
+        isUser ? (isMobile ? "justify-end pr-5" : "justify-end") : (isMobile ? "justify-start pl-2" : "justify-start")
       )}
       data-testid={`message-${message.role}`}
     >
       {!isUser && (
         <div className="flex-shrink-0 pt-1"> {/* Added pt-1 for slight top padding */}
           <div className={cn(
-            "flex items-center justify-center rounded-full bg-primary text-primary-foreground",
+            "flex items-center justify-center rounded-full bg-primary text-primary-foreground overflow-visible",
             isMobile ? "h-7 w-7" : "h-8 w-8" // Smaller avatar on mobile
           )}>
-            <Bot className={cn(isMobile ? "h-3.5 w-3.5" : "h-4 w-4")} />
+            <LogoIcon className={cn(isMobile ? "h-8 w-8 scale-125" : "h-8 w-8 scale-125")} />
           </div>
         </div>
       )}
@@ -259,7 +260,7 @@ export function MessageBubble({
           "flex flex-col gap-1 min-w-0", // Added min-w-0 to prevent overflow
           isUser ? [
             "items-end", 
-            isMobile ? "max-w-[85%]" : "max-w-2xl" // Wider on mobile for better use of space
+            isMobile ? "max-w-[85%]" : "max-w-2xl" // Reduced from 85% to 75% on mobile to accommodate avatar
           ] : [
             "items-start flex-1", 
             isMobile ? "max-w-[85%]" : "max-w-full"
@@ -298,7 +299,7 @@ export function MessageBubble({
             isMobile ? "px-3 py-2.5 text-sm" : "px-4 py-3 text-base", // Smaller padding and text on mobile
             isUser
               ? "bg-primary text-primary-foreground shadow-sm"
-              : "bg-card border border-card-border"
+              : "bg-card border border-card-border cursor-pointer hover:shadow-md transition-shadow"
           )}
           data-testid="message-content"
           onClick={!isUser ? () => {
@@ -344,7 +345,12 @@ export function MessageBubble({
                       const index = parseInt(citationMatch[1], 10);
                       return (
                         <button
-                          onClick={() => onCitationClick?.(index, message.sources, message.id, message.agentTraces as any[])}
+                          onClick={(e) => {
+                            e.stopPropagation(); // Prevent parent message click
+                            onCitationClick?.(index, message.sources, message.id, message.agentTraces as any[]);
+                            // Also trigger message selection to show context panel
+                            onMessageClick?.(message.id, message.sources, message.agentTraces as any[]);
+                          }}
                           className={cn(
                             "inline-flex items-center align-super font-medium text-primary hover:underline",
                             isMobile ? "text-[10px]" : "text-xs"
@@ -491,7 +497,12 @@ export function MessageBubble({
                     return (
                       <button
                         key={filename}
-                        onClick={() => onCitationClick?.(data.citations[0] - 1, message.sources, message.id, message.agentTraces as any[])}
+                        onClick={(e) => {
+                          e.stopPropagation(); // Prevent parent message click
+                          onCitationClick?.(data.citations[0] - 1, message.sources, message.id, message.agentTraces as any[]);
+                          // Also trigger message selection to show context panel
+                          onMessageClick?.(message.id, message.sources, message.agentTraces as any[]);
+                        }}
                         className={cn(
                           "group flex items-center gap-2 bg-background border border-border hover:border-primary/50 rounded-lg transition-all hover:shadow-sm",
                           isMobile ? "px-2.5 py-2 text-xs" : "px-3 py-2"

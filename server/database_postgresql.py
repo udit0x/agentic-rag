@@ -3,10 +3,13 @@ import os
 import json
 import asyncio
 import asyncpg
+import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 import uuid
+
+logger = logging.getLogger(__name__)
 
 class PostgreSQLConnection:
     """Async PostgreSQL connection wrapper with singleton pattern."""
@@ -39,7 +42,7 @@ class PostgreSQLConnection:
             if not all([parsed_url.hostname, parsed_url.username, parsed_url.password]):
                 raise ValueError(f"Invalid DATABASE_URL format: missing required components")
             
-            print(f"[Database] Connecting to PostgreSQL at {parsed_url.hostname}:{parsed_url.port or 5432}")
+            logger.info("Connecting to PostgreSQL at %s:%s", parsed_url.hostname, parsed_url.port or 5432)
             
             # Create connection pool with explicit connection parameters
             # ⚡ OPTIMIZED: Increased pool size and timeout for Azure PostgreSQL
@@ -57,10 +60,10 @@ class PostgreSQLConnection:
                     'application_name': 'agentic-rag-python',
                 }
             )
-            print(f"[Database] PostgreSQL connection established")
+            logger.info("PostgreSQL connection pool established")
             
         except Exception as e:
-            print(f"[Database] Connection failed: {e}")
+            logger.error("PostgreSQL connection failed: %s", str(e))
             raise
     
     async def ensure_tables_exist(self):
@@ -85,7 +88,7 @@ class PostgreSQLConnection:
                     missing_tables.append(table)
             
             if missing_tables:
-                print(f"[Database] Warning: Missing tables: {', '.join(missing_tables)}")
+                logger.warning("Missing database tables: %s", ', '.join(missing_tables))
     
     async def execute(self, query: str, *args):
         """Execute a query."""
@@ -572,6 +575,36 @@ class PostgreSQLStorage:
             values.append(data['lastLoginAt'])
             param_count += 1
         
+        # User preference settings
+        if 'theme' in data:
+            update_fields.append(f"theme = ${param_count}")
+            values.append(data['theme'])
+            param_count += 1
+        if 'enable_animations' in data:
+            update_fields.append(f"enable_animations = ${param_count}")
+            values.append(data['enable_animations'])
+            param_count += 1
+        if 'enable_keyboard_shortcuts' in data:
+            update_fields.append(f"enable_keyboard_shortcuts = ${param_count}")
+            values.append(data['enable_keyboard_shortcuts'])
+            param_count += 1
+        if 'use_general_knowledge' in data:
+            update_fields.append(f"use_general_knowledge = ${param_count}")
+            values.append(data['use_general_knowledge'])
+            param_count += 1
+        if 'document_relevance_threshold' in data:
+            update_fields.append(f"document_relevance_threshold = ${param_count}")
+            values.append(data['document_relevance_threshold'])
+            param_count += 1
+        if 'temperature' in data:
+            update_fields.append(f"temperature = ${param_count}")
+            values.append(data['temperature'])
+            param_count += 1
+        if 'max_tokens' in data:
+            update_fields.append(f"max_tokens = ${param_count}")
+            values.append(data['max_tokens'])
+            param_count += 1
+        
         update_fields.append(f"updated_at = ${param_count}")
         values.append(datetime.now())
         param_count += 1
@@ -706,6 +739,130 @@ class PostgreSQLStorage:
     async def get_message(self, message_id: str) -> dict | None:
         """Get a message by ID."""
         row = await self.db.fetchone("SELECT * FROM messages WHERE id = $1", message_id)
+        return self._convert_row_to_dict(row) if row else None
+    
+    # ==================== QUOTA MANAGEMENT ====================
+    
+    async def decrementQuota(self, user_id: str) -> dict | None:
+        """
+        Atomically decrement user's quota and return updated user data.
+        
+        Uses UPDATE...WHERE...RETURNING to ensure atomicity and prevent race conditions.
+        Multiple simultaneous requests will be handled correctly by the database.
+        
+        Args:
+            user_id: User ID to decrement quota for
+        
+        Returns:
+            Updated user data if successful, None if quota already at 0
+        
+        Security:
+        - Atomic operation prevents race conditions
+        - WHERE clause ensures we only decrement if quota > 0
+        - Returns None if quota exhausted (no rows updated)
+        """
+        row = await self.db.fetchone("""
+            UPDATE users
+            SET remaining_quota = remaining_quota - 1,
+                updated_at = NOW()
+            WHERE id = $1 AND remaining_quota > 0
+            RETURNING *
+        """, user_id)
+        
+        return self._convert_row_to_dict(row) if row else None
+    
+    async def setUnlimitedQuota(self, user_id: str, unlimited: bool = True) -> dict:
+        """
+        Set a user's unlimited quota status.
+        
+        Args:
+            user_id: User ID
+            unlimited: True for unlimited, False for limited (50 quota)
+        
+        Returns:
+            Updated user data
+        """
+        if unlimited:
+            # Set unlimited and clear quota count
+            await self.db.execute("""
+                UPDATE users
+                SET is_unlimited = TRUE,
+                    remaining_quota = NULL,
+                    updated_at = NOW()
+                WHERE id = $1
+            """, user_id)
+        else:
+            # Set limited and initialize quota to 50
+            await self.db.execute("""
+                UPDATE users
+                SET is_unlimited = FALSE,
+                    remaining_quota = 50,
+                    updated_at = NOW()
+                WHERE id = $1
+            """, user_id)
+        
+        row = await self.db.fetchone("SELECT * FROM users WHERE id = $1", user_id)
+        return self._convert_row_to_dict(row)
+    
+    async def resetUserQuota(self, user_id: str, quota: int = 50) -> dict:
+        """
+        Reset a user's quota to a specific value.
+        
+        Args:
+            user_id: User ID
+            quota: New quota value (default 50)
+        
+        Returns:
+            Updated user data
+        """
+        await self.db.execute("""
+            UPDATE users
+            SET remaining_quota = $1,
+                updated_at = NOW()
+            WHERE id = $2 AND is_unlimited = FALSE
+        """, quota, user_id)
+        
+        row = await self.db.fetchone("SELECT * FROM users WHERE id = $1", user_id)
+        return self._convert_row_to_dict(row)
+    
+    async def setUserApiKey(self, user_id: str, api_key_hash: str) -> dict:
+        """
+        Set a user's personal API key hash.
+        
+        Args:
+            user_id: User ID
+            api_key_hash: SHA-256 hash of the API key
+        
+        Returns:
+            Updated user data
+        """
+        await self.db.execute("""
+            UPDATE users
+            SET api_key_hash = $1,
+                updated_at = NOW()
+            WHERE id = $2
+        """, api_key_hash, user_id)
+        
+        row = await self.db.fetchone("SELECT * FROM users WHERE id = $1", user_id)
+        return self._convert_row_to_dict(row)
+    
+    async def getUserQuota(self, user_id: str) -> dict | None:
+        """
+        Get quota information for a user.
+        
+        Args:
+            user_id: User ID
+        
+        Returns:
+            Dict with quota information or None if user not found
+        """
+        row = await self.db.fetchone("""
+            SELECT id, email, is_unlimited, remaining_quota, 
+                   (api_key_hash IS NOT NULL) as has_personal_key
+            FROM users
+            WHERE id = $1
+        """, user_id)
+        
         return self._convert_row_to_dict(row) if row else None
 
 # Global storage instance

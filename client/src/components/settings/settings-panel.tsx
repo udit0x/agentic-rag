@@ -1,102 +1,145 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Settings, X, Moon, Sun, Monitor, Keyboard, Zap, Info, Cog, Save, CheckCircle, Linkedin } from "lucide-react";
+import { Settings, X, Moon, Sun, Monitor, Cog, Save, Trash2, Loader2, Eye, EyeOff, Zap, Info, CheckCircle2, XCircle, Circle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useQuotaStore } from "@/stores/quota-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import ShinyText from "@/components/ui/ShinyText";
+import Lottie from "lottie-react";
+import settingsAnimation from "@/assets/animations/settingsV2.json";
+import linkedinAnimation from "@/assets/animations/linkedin.json";
+import { useToast } from "@/hooks/use-toast";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  settings: {
-    enableTracing: boolean;
-    debugMode: boolean;
-    temperature: number;
-    maxTokens: number;
-    model: string;
-    theme: "light" | "dark" | "system";
-    enableAnimations: boolean;
-    enableKeyboardShortcuts: boolean;
-    useGeneralKnowledge: boolean;
-    documentRelevanceThreshold: number;
-    // LLM Configuration
-    llmProvider: "openai" | "azure";
-    openaiApiKey: string;
-    openaiModel: string;
-    azureApiKey: string;
-    azureEndpoint: string;
-    azureDeploymentName: string;
-    // Embeddings Configuration
-    embeddingProvider: "openai" | "azure";
-    embeddingApiKey: string;
-    embeddingEndpoint: string;
-    embeddingModel: string;
-  };
-  onSettingsChange: (key: string, value: any) => void;
-  onSaveConfiguration?: () => void;
 }
 
-export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onSaveConfiguration }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [activeTab, setActiveTab] = useState<"general" | "configuration">("general");
-  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({
+    openaiApiKey: false,
+    azureApiKey: false,
+    embeddingApiKey: false,
+  });
   const isMobile = useIsMobile();
+  const [hoveredTab, setHoveredTab] = useState<string | null>(null);
+  const [animationKey, setAnimationKey] = useState(0);
+  const [linkedinHovered, setLinkedinHovered] = useState(false);
+  const { toast } = useToast();
+  
+  // Debounced threshold save
+  const [thresholdSaveTimeout, setThresholdSaveTimeout] = useState<NodeJS.Timeout | null>(null);
+  
+  // Quota state for mobile display
+  const { quotaRemaining, isUnlimited, hasPersonalKey, getQuotaStatus } = useQuotaStore();
+  const quotaStatus = getQuotaStatus();
 
-  const validateConfiguration = () => {
-    const errors: Record<string, string> = {};
+  // Settings store - SINGLE SOURCE OF TRUTH
+  const {
+    llm,
+    embedding,
+    general,
+    llmTest,
+    embeddingTest,
+    validationErrors,
+    isSaving,
+    isDeleting,
+    isTesting,
+    canSave,
+    canTest,
+    isConfigurationSaved,
+    setLLMProvider,
+    setLLMField,
+    setEmbeddingProvider,
+    setEmbeddingField,
+    setGeneralSetting,
+    testConfiguration,
+    saveConfiguration,
+    deleteConfiguration,
+    resetTestResults,
+    loadConfiguration,
+  } = useSettingsStore();
 
-    // Only validate LLM API keys if the user is trying to save a new LLM configuration
-    // For existing configured systems, we might allow settings-only updates
-    
-    // Validate LLM configuration - only if switching to a new provider or no key is set
-    if (settings.llmProvider === "openai" && !settings.openaiApiKey.trim()) {
-      errors.openaiApiKey = "OpenAI API key is required";
+  // Load configuration when panel opens
+  useEffect(() => {
+    if (isOpen) {
+      loadConfiguration();
     }
-    if (settings.llmProvider === "azure") {
-      if (!settings.azureApiKey.trim()) errors.azureApiKey = "Azure API key is required";
-      if (!settings.azureEndpoint.trim()) errors.azureEndpoint = "Azure endpoint is required";
-      if (!settings.azureDeploymentName.trim()) errors.azureDeploymentName = "Azure deployment name is required";
-    }
+  }, [isOpen]); // Only depend on isOpen, not loadConfiguration
 
-    // Validate embeddings configuration - always required since embeddings are core functionality
-    if (!settings.embeddingApiKey.trim()) {
-      errors.embeddingApiKey = `${settings.embeddingProvider === "azure" ? "Azure" : "OpenAI"} API key is required for embeddings`;
-    }
-    if (settings.embeddingProvider === "azure" && !settings.embeddingEndpoint.trim()) {
-      errors.embeddingEndpoint = "Azure endpoint is required for embeddings";
-    }
-
-    setValidationErrors(errors);
-    return Object.keys(errors).length === 0;
+  const togglePasswordVisibility = (field: string) => {
+    setShowPasswords(prev => ({
+      ...prev,
+      [field]: !prev[field]
+    }));
   };
 
-  const handleSaveConfiguration = () => {
-    if (validateConfiguration()) {
-      onSaveConfiguration?.();
+  const handleTest = async () => {
+    await testConfiguration();
+  };
+
+  const handleSave = async () => {
+    try {
+      await saveConfiguration();
+      toast({
+        title: "Configuration saved",
+        description: "Your API keys and settings have been securely saved.",
+      });
+    } catch (error) {
+      toast({
+        title: "Failed to save configuration",
+        description: "There was an error saving your configuration. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
-  const handleProviderChange = (provider: string, type: 'llm' | 'embedding') => {
-    if (type === 'llm') {
-      onSettingsChange('llmProvider', provider);
-    } else {
-      onSettingsChange('embeddingProvider', provider);
+  const handleDelete = async () => {
+    setShowDeleteDialog(false);
+    try {
+      await deleteConfiguration();
+      toast({
+        title: "Configuration removed",
+        description: "Your API keys have been removed. You'll use the free tier with quota limits.",
+      });
+    } catch (error) {
+      toast({
+        title: "Failed to remove configuration",
+        description: "There was an error removing your configuration. Please try again.",
+        variant: "destructive",
+      });
     }
-    
-    // Clear validation errors when provider changes to give user a fresh start
-    setValidationErrors({});
   };
+
+  const getValidationError = (field: string): string | undefined => {
+    return validationErrors.find(e => e.field === field)?.message;
+  };
+
+  const hasAnyConfiguration = isConfigurationSaved || !!(llm.openaiApiKey || llm.azureApiKey || embedding.apiKey);
 
   const tabs = [
-    { id: "general", label: "General", icon: Settings },
-    { id: "configuration", label: "Configuration", icon: Cog }
+    { id: "general", label: "General", icon: Settings, useAnimation: true },
+    { id: "configuration", label: "Configuration", icon: Cog, useAnimation: false }
   ];
 
   const themeIcons = {
@@ -105,7 +148,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
     system: Monitor,
   };
 
-  const ThemeIcon = themeIcons[settings.theme];
+  const ThemeIcon = themeIcons[general.theme];
 
   return (
     <AnimatePresence>
@@ -148,13 +191,35 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                   <button
                     key={tab.id}
                     onClick={() => setActiveTab(tab.id as any)}
+                    onMouseEnter={() => {
+                      setHoveredTab(tab.id);
+                      if (tab.useAnimation) {
+                        setAnimationKey(prev => prev + 1);
+                      }
+                    }}
+                    onMouseLeave={() => setHoveredTab(null)}
                     className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium transition-colors relative ${
                       activeTab === tab.id
                         ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
-                    <tab.icon className="h-4 w-4" />
+                    {tab.useAnimation ? (
+                      <div className="[&_svg_path]:stroke-foreground [&_svg_path]:fill-none">
+                        <Lottie
+                          key={animationKey}
+                          animationData={settingsAnimation}
+                          loop={false}
+                          autoplay={true}
+                          style={{ width: 16, height: 16 }}
+                          rendererSettings={{
+                            preserveAspectRatio: 'xMidYMid meet',
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <tab.icon className="h-4 w-4" />
+                    )}
                     <span className="hidden sm:block">{tab.label}</span>
                     {activeTab === tab.id && (
                       <motion.div
@@ -179,6 +244,50 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                   >
                     {activeTab === "general" && (
                       <>
+                        {/* Quota Card - Mobile Only */}
+                        {isMobile && !isUnlimited && !hasPersonalKey && (
+                          <Card>
+                            <CardContent className="pt-4 pb-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-sm font-medium">Message Quota</span>
+                                <Badge 
+                                  variant={quotaStatus === 'exhausted' ? 'destructive' : 'secondary'}
+                                  className={quotaStatus === 'low' ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' : ''}
+                                >
+                                  {quotaRemaining} remaining
+                                </Badge>
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                {quotaStatus === 'exhausted' 
+                                  ? "Add your API key to continue chatting."
+                                  : quotaStatus === 'low'
+                                    ? "Running low. Consider adding your API key."
+                                    : `${quotaRemaining} messages in your free tier.`
+                                }
+                              </p>
+                            </CardContent>
+                          </Card>
+                        )}
+                        
+                        {isMobile && (isUnlimited || hasPersonalKey) && (
+                          <Card>
+                            <CardContent className="pt-4 pb-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-sm font-medium">Message Quota</span>
+                                <Badge variant="secondary">
+                                  {isUnlimited ? "Unlimited" : "Your Key"}
+                                </Badge>
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                {hasPersonalKey 
+                                  ? "Using your personal API key."
+                                  : "Unlimited messages available."
+                                }
+                              </p>
+                            </CardContent>
+                          </Card>
+                        )}
+
                         <Card>
                           <CardHeader>
                             <CardTitle className="text-base">Knowledge</CardTitle>
@@ -193,15 +302,21 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                               </div>
                               <Switch
                                 id="use-general-knowledge"
-                                checked={settings.useGeneralKnowledge}
-                                onCheckedChange={(checked) => onSettingsChange("useGeneralKnowledge", checked)}
+                                checked={general.useGeneralKnowledge}
+                                onCheckedChange={async (checked) => {
+                                  await setGeneralSetting("useGeneralKnowledge", checked);
+                                  toast({
+                                    title: `General knowledge ${checked ? 'enabled' : 'disabled'}`,
+                                    description: `The AI ${checked ? 'can now' : 'can no longer'} use its built-in knowledge when no relevant documents are found.`,
+                                  });
+                                }}
                               />
                             </div>
 
                             <div className="space-y-3">
                               <div className="space-y-2">
                                 <Label htmlFor="document-relevance-threshold">
-                                  Document Relevance Threshold: {(settings.documentRelevanceThreshold * 100).toFixed(0)}%
+                                  Document Relevance Threshold: {(general.documentRelevanceThreshold * 100).toFixed(0)}%
                                 </Label>
                                 <p className="text-xs text-muted-foreground">
                                   Adjust how selective the model is when retrieving context.
@@ -212,8 +327,25 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                                 min={0.1}
                                 max={0.95}
                                 step={0.05}
-                                value={[settings.documentRelevanceThreshold]}
-                                onValueChange={([value]) => onSettingsChange("documentRelevanceThreshold", value)}
+                                value={[general.documentRelevanceThreshold]}
+                                onValueChange={([value]) => {
+                                  // Update UI immediately
+                                  setGeneralSetting("documentRelevanceThreshold", value);
+                                  
+                                  // Debounce the toast to avoid spam
+                                  if (thresholdSaveTimeout) {
+                                    clearTimeout(thresholdSaveTimeout);
+                                  }
+                                  
+                                  const timeout = setTimeout(() => {
+                                    toast({
+                                      title: "Threshold updated",
+                                      description: `Document relevance threshold set to ${(value * 100).toFixed(0)}%`,
+                                    });
+                                  }, 500);
+                                  
+                                  setThresholdSaveTimeout(timeout);
+                                }}
                                 className="w-full"
                               />
                               <div className="flex justify-between text-xs text-muted-foreground">
@@ -245,8 +377,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                                 </div>
                                 <Switch
                                   id="enable-tracing"
-                                  checked={settings.enableTracing}
-                                  onCheckedChange={(checked) => onSettingsChange("enableTracing", checked)}
+                                  checked={general.enableTracing}
+                                  onCheckedChange={(checked) => setGeneralSetting("enableTracing", checked)}
                                 />
                               </div>
                           </CardContent>
@@ -274,8 +406,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                             <div className="space-y-2">
                               <Label htmlFor="llm-provider">LLM Provider</Label>
                               <Select
-                                value={settings.llmProvider}
-                                onValueChange={(value) => handleProviderChange(value, 'llm')}
+                                value={llm.provider}
+                                onValueChange={(value) => setLLMProvider(value as 'openai' | 'azure')}
                               >
                                 <SelectTrigger>
                                   <SelectValue placeholder="Select LLM provider" />
@@ -287,27 +419,40 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                               </Select>
                             </div>
 
-                            {settings.llmProvider === "openai" && (
+                            {llm.provider === "openai" && (
                               <>
                                 <div className="space-y-2">
                                   <Label htmlFor="openai-api-key">API Key</Label>
-                                  <Input
-                                    id="openai-api-key"
-                                    type="password"
-                                    placeholder="Enter the OpenAI API key"
-                                    value={settings.openaiApiKey}
-                                    onChange={(e) => onSettingsChange("openaiApiKey", e.target.value)}
-                                    className={validationErrors.openaiApiKey ? "border-red-500 focus:border-red-500" : ""}
-                                  />
-                                  {validationErrors.openaiApiKey && (
-                                    <p className="text-xs text-red-500">{validationErrors.openaiApiKey}</p>
+                                  <div className="relative">
+                                    <Input
+                                      id="openai-api-key"
+                                      type={showPasswords.openaiApiKey ? "text" : "password"}
+                                      placeholder="Enter the OpenAI API key"
+                                      value={llm.openaiApiKey}
+                                      onChange={(e) => setLLMField("openaiApiKey", e.target.value)}
+                                      className={getValidationError("openaiApiKey") ? "border-red-500 focus:border-red-500 pr-10" : "pr-10"}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => togglePasswordVisibility('openaiApiKey')}
+                                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                                    >
+                                      {showPasswords.openaiApiKey ? (
+                                        <EyeOff className="h-4 w-4" />
+                                      ) : (
+                                        <Eye className="h-4 w-4" />
+                                      )}
+                                    </button>
+                                  </div>
+                                  {getValidationError("openaiApiKey") && (
+                                    <p className="text-xs text-red-500">{getValidationError("openaiApiKey")}</p>
                                   )}
                                 </div>
                                 <div className="space-y-2">
                                   <Label htmlFor="openai-model">Model</Label>
                                   <Select
-                                    value={settings.openaiModel}
-                                    onValueChange={(value) => onSettingsChange("openaiModel", value)}
+                                    value={llm.openaiModel}
+                                    onValueChange={(value) => setLLMField("openaiModel", value)}
                                   >
                                     <SelectTrigger>
                                       <SelectValue placeholder="Select model" />
@@ -323,20 +468,33 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                               </>
                             )}
 
-                            {settings.llmProvider === "azure" && (
+                            {llm.provider === "azure" && (
                               <>
                                 <div className="space-y-2">
                                   <Label htmlFor="azure-api-key">API Key</Label>
-                                  <Input
-                                    id="azure-api-key"
-                                    type="password"
-                                    placeholder="Enter Azure API key"
-                                    value={settings.azureApiKey}
-                                    onChange={(e) => onSettingsChange("azureApiKey", e.target.value)}
-                                    className={validationErrors.azureApiKey ? "border-red-500 focus:border-red-500" : ""}
-                                  />
-                                  {validationErrors.azureApiKey && (
-                                    <p className="text-xs text-red-500">{validationErrors.azureApiKey}</p>
+                                  <div className="relative">
+                                    <Input
+                                      id="azure-api-key"
+                                      type={showPasswords.azureApiKey ? "text" : "password"}
+                                      placeholder="Enter Azure API key"
+                                      value={llm.azureApiKey}
+                                      onChange={(e) => setLLMField("azureApiKey", e.target.value)}
+                                      className={getValidationError("azureApiKey") ? "border-red-500 focus:border-red-500 pr-10" : "pr-10"}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => togglePasswordVisibility('azureApiKey')}
+                                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                                    >
+                                      {showPasswords.azureApiKey ? (
+                                        <EyeOff className="h-4 w-4" />
+                                      ) : (
+                                        <Eye className="h-4 w-4" />
+                                      )}
+                                    </button>
+                                  </div>
+                                  {getValidationError("azureApiKey") && (
+                                    <p className="text-xs text-red-500">{getValidationError("azureApiKey")}</p>
                                   )}
                                 </div>
                                 <div className="space-y-2">
@@ -344,12 +502,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                                   <Input
                                     id="azure-endpoint"
                                     placeholder="https://your-resource.openai.azure.com/"
-                                    value={settings.azureEndpoint}
-                                    onChange={(e) => onSettingsChange("azureEndpoint", e.target.value)}
-                                    className={validationErrors.azureEndpoint ? "border-red-500 focus:border-red-500" : ""}
+                                    value={llm.azureEndpoint}
+                                    onChange={(e) => setLLMField("azureEndpoint", e.target.value)}
+                                    className={getValidationError("azureEndpoint") ? "border-red-500 focus:border-red-500" : ""}
                                   />
-                                  {validationErrors.azureEndpoint && (
-                                    <p className="text-xs text-red-500">{validationErrors.azureEndpoint}</p>
+                                  {getValidationError("azureEndpoint") && (
+                                    <p className="text-xs text-red-500">{getValidationError("azureEndpoint")}</p>
                                   )}
                                 </div>
                                 <div className="space-y-2">
@@ -357,12 +515,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                                   <Input
                                     id="azure-deployment"
                                     placeholder="gpt-4o"
-                                    value={settings.azureDeploymentName}
-                                    onChange={(e) => onSettingsChange("azureDeploymentName", e.target.value)}
-                                    className={validationErrors.azureDeploymentName ? "border-red-500 focus:border-red-500" : ""}
+                                    value={llm.azureDeploymentName}
+                                    onChange={(e) => setLLMField("azureDeploymentName", e.target.value)}
+                                    className={getValidationError("azureDeploymentName") ? "border-red-500 focus:border-red-500" : ""}
                                   />
-                                  {validationErrors.azureDeploymentName && (
-                                    <p className="text-xs text-red-500">{validationErrors.azureDeploymentName}</p>
+                                  {getValidationError("azureDeploymentName") && (
+                                    <p className="text-xs text-red-500">{getValidationError("azureDeploymentName")}</p>
                                   )}
                                 </div>
                               </>
@@ -379,8 +537,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                             <div className="space-y-2">
                               <Label htmlFor="embedding-provider">Embeddings Provider</Label>
                               <Select
-                                value={settings.embeddingProvider}
-                                onValueChange={(value) => handleProviderChange(value, 'embedding')}
+                                value={embedding.provider}
+                                onValueChange={(value) => setEmbeddingProvider(value as 'openai' | 'azure')}
                               >
                                 <SelectTrigger>
                                   <SelectValue placeholder="Select embeddings provider" />
@@ -394,31 +552,44 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
 
                             <div className="space-y-2">
                               <Label htmlFor="embedding-api-key">API Key</Label>
-                              <Input
-                                id="embedding-api-key"
-                                type="password"
-                                placeholder={settings.embeddingProvider === "azure" ? "Azure API key" : "OpenAI API key"}
-                                value={settings.embeddingApiKey}
-                                onChange={(e) => onSettingsChange("embeddingApiKey", e.target.value)}
-                                className={validationErrors.embeddingApiKey ? "border-red-500 focus:border-red-500" : ""}
-                              />
-                              {validationErrors.embeddingApiKey && (
-                                <p className="text-xs text-red-500">{validationErrors.embeddingApiKey}</p>
+                              <div className="relative">
+                                <Input
+                                  id="embedding-api-key"
+                                  type={showPasswords.embeddingApiKey ? "text" : "password"}
+                                  placeholder={embedding.provider === "azure" ? "Azure API key" : "OpenAI API key"}
+                                  value={embedding.apiKey}
+                                  onChange={(e) => setEmbeddingField("apiKey", e.target.value)}
+                                  className={getValidationError("embeddingApiKey") ? "border-red-500 focus:border-red-500 pr-10" : "pr-10"}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => togglePasswordVisibility('embeddingApiKey')}
+                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                                >
+                                  {showPasswords.embeddingApiKey ? (
+                                    <EyeOff className="h-4 w-4" />
+                                  ) : (
+                                    <Eye className="h-4 w-4" />
+                                  )}
+                                </button>
+                              </div>
+                              {getValidationError("embeddingApiKey") && (
+                                <p className="text-xs text-red-500">{getValidationError("embeddingApiKey")}</p>
                               )}
                             </div>
 
-                            {settings.embeddingProvider === "azure" && (
+                            {embedding.provider === "azure" && (
                               <div className="space-y-2">
                                 <Label htmlFor="embedding-endpoint">Endpoint</Label>
                                 <Input
                                   id="embedding-endpoint"
                                   placeholder="https://your-resource.openai.azure.com/"
-                                  value={settings.embeddingEndpoint}
-                                  onChange={(e) => onSettingsChange("embeddingEndpoint", e.target.value)}
-                                  className={validationErrors.embeddingEndpoint ? "border-red-500 focus:border-red-500" : ""}
+                                  value={embedding.endpoint}
+                                  onChange={(e) => setEmbeddingField("endpoint", e.target.value)}
+                                  className={getValidationError("embeddingEndpoint") ? "border-red-500 focus:border-red-500" : ""}
                                 />
-                                {validationErrors.embeddingEndpoint && (
-                                  <p className="text-xs text-red-500">{validationErrors.embeddingEndpoint}</p>
+                                {getValidationError("embeddingEndpoint") && (
+                                  <p className="text-xs text-red-500">{getValidationError("embeddingEndpoint")}</p>
                                 )}
                               </div>
                             )}
@@ -426,42 +597,118 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                             <div className="space-y-2">
                               <Label htmlFor="embedding-model">Model</Label>
                               <Select
-                                value={settings.embeddingModel}
-                                onValueChange={(value) => onSettingsChange("embeddingModel", value)}
+                                value={embedding.model}
+                                onValueChange={(value) => setEmbeddingField("model", value)}
                               >
                                 <SelectTrigger>
                                   <SelectValue placeholder="Select embedding model" />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  {settings.embeddingProvider === "azure" ? (
-                                    <>
-                                      <SelectItem value="text-embedding-3-large">text-embedding-3-large</SelectItem>
-                                      <SelectItem value="text-embedding-3-small">text-embedding-3-small</SelectItem>
-                                      <SelectItem value="text-embedding-ada-002">text-embedding-ada-002</SelectItem>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <SelectItem value="text-embedding-3-large">text-embedding-3-large</SelectItem>
-                                      <SelectItem value="text-embedding-3-small">text-embedding-3-small</SelectItem>
-                                      <SelectItem value="text-embedding-ada-002">text-embedding-ada-002</SelectItem>
-                                    </>
-                                  )}
+                                  <SelectItem value="text-embedding-3-large">text-embedding-3-large</SelectItem>
+                                  <SelectItem value="text-embedding-3-small">text-embedding-3-small</SelectItem>
+                                  <SelectItem value="text-embedding-ada-002">text-embedding-ada-002</SelectItem>
                                 </SelectContent>
                               </Select>
                             </div>
                           </CardContent>
                         </Card>
 
-                        {/* Save Configuration Button */}
-                        <div className="flex justify-end pt-4 border-t border-border">
+                        {/* Test Results - Minimal Design */}
+                        {(llmTest.status !== 'idle' || embeddingTest.status !== 'idle') && (
+                          <div className="relative border border-border rounded-lg bg-background/50 backdrop-blur-sm">
+                            <button
+                              onClick={resetTestResults}
+                              className="absolute top-2 right-2 text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+                              aria-label="Dismiss test results"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                            <div className="pt-3 pb-3 px-4 pr-8 space-y-2">
+                              {llmTest.message && (
+                                <div className="flex items-center gap-2.5">
+                                  {llmTest.status === 'testing' ? (
+                                    <Circle className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
+                                  ) : llmTest.status === 'success' ? (
+                                    <CheckCircle2 className="h-3.5 w-3.5 text-foreground/80" />
+                                  ) : (
+                                    <XCircle className="h-3.5 w-3.5 text-foreground/80" />
+                                  )}
+                                  <span className={`text-xs font-medium ${
+                                    llmTest.status === 'error' ? 'text-foreground/70' : 'text-foreground/80'
+                                  }`}>
+                                    {llmTest.message}
+                                  </span>
+                                </div>
+                              )}
+                              {embeddingTest.message && (
+                                <div className="flex items-center gap-2.5">
+                                  {embeddingTest.status === 'testing' ? (
+                                    <Circle className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
+                                  ) : embeddingTest.status === 'success' ? (
+                                    <CheckCircle2 className="h-3.5 w-3.5 text-foreground/80" />
+                                  ) : (
+                                    <XCircle className="h-3.5 w-3.5 text-foreground/80" />
+                                  )}
+                                  <span className={`text-xs font-medium ${
+                                    embeddingTest.status === 'error' ? 'text-foreground/70' : 'text-foreground/80'
+                                  }`}>
+                                    {embeddingTest.message}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Action Buttons */}
+                        <div className="space-y-2.5 pt-2">
+                          {/* Test Button - Full Width */}
                           <Button 
-                            onClick={handleSaveConfiguration}
-                            className="flex items-center gap-2"
-                            size="default"
+                            onClick={handleTest}
+                            variant="outline"
+                            disabled={!canTest()}
+                            className="w-full flex items-center justify-center gap-2"
+                            size="sm"
                           >
-                            <Save className="h-4 w-4" />
-                            Save Configuration
+                            {isTesting ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Zap className="h-4 w-4" />
+                            )}
+                            <span className="text-sm">{isTesting ? "Testing..." : "Test Configuration"}</span>
                           </Button>
+                          
+                          {/* Save and Delete Buttons - Side by Side */}
+                          <div className="grid grid-cols-2 gap-2.5">
+                            <Button 
+                              onClick={() => setShowDeleteDialog(true)}
+                              variant="outline"
+                              disabled={!hasAnyConfiguration || isDeleting || isSaving || isTesting}
+                              className="flex items-center justify-center gap-2 text-destructive hover:text-destructive hover:bg-destructive/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                              size="sm"
+                            >
+                              {isDeleting ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
+                              <span className="text-sm">{isDeleting ? "Deleting..." : "Delete"}</span>
+                            </Button>
+                            
+                            <Button 
+                              onClick={handleSave}
+                              disabled={!canSave()}
+                              className="flex items-center justify-center gap-2"
+                              size="sm"
+                            >
+                              {isSaving ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Save className="h-4 w-4" />
+                              )}
+                              <span className="text-sm">{isSaving ? "Saving..." : "Save"}</span>
+                            </Button>
+                          </div>
                         </div>
                       </>
                     )}
@@ -478,19 +725,60 @@ export function SettingsPanel({ isOpen, onClose, settings, onSettingsChange, onS
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center space-x-1 hover:opacity-80 transition-opacity"
+                    onMouseEnter={() => setLinkedinHovered(true)}
+                    onMouseLeave={() => setLinkedinHovered(false)}
                   >
                     <ShinyText 
                       text="Udit Kashyap" 
                       disabled={false} 
                       speed={3} 
-                      className="text-sm" 
+                      className="text-sm"
                     />
-                    <Linkedin className="h-3 w-3 text-primary" />
+                    <div className="[&_svg_path]:stroke-primary [&_svg_path]:fill-none">
+                      <Lottie
+                        animationData={linkedinAnimation}
+                        loop={linkedinHovered}
+                        autoplay={linkedinHovered}
+                        style={{ width: 16, height: 16 }}
+                        rendererSettings={{
+                          preserveAspectRatio: 'xMidYMid meet',
+                        }}
+                      />
+                    </div>
                   </a>
                 </div>
               </div>
             </div>
           </motion.div>
+
+          {/* Delete Configuration Confirmation Dialog */}
+          <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Remove API Configuration?</AlertDialogTitle>
+                <AlertDialogDescription className="space-y-2">
+                  <span className="block">
+                    This will remove all your saved API keys and configuration settings.
+                  </span>
+                  <span className="block font-medium text-foreground">
+                    {quotaRemaining > 0 
+                      ? `You'll fallback to the free tier with ${quotaRemaining} messages remaining.`
+                      : "You'll fallback to the free tier, but you've exhausted your quota. You'll need to wait for a reset or add a new API key to continue."
+                    }
+                  </span>
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={handleDelete}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90 focus-visible:ring-0 focus-visible:ring-offset-0 focus:outline-none"
+                >
+                  Remove Configuration
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </>
       )}
     </AnimatePresence>

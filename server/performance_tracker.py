@@ -5,6 +5,10 @@ from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager, contextmanager
 from functools import wraps
 
+# DISABLED: Performance tracking is currently disabled for production
+# Set ENABLE_PERF_TRACKING=True to re-enable
+ENABLE_PERF_TRACKING = False
+
 class PerformanceTracker:
     """Track performance metrics for document processing operations."""
     
@@ -15,6 +19,10 @@ class PerformanceTracker:
     @contextmanager
     def track_sync(self, operation_name: str):
         """Context manager for tracking synchronous operations."""
+        if not ENABLE_PERF_TRACKING:
+            yield
+            return
+            
         start_time = time.time()
         print(f"[PERF] Starting {operation_name}...")
         
@@ -28,6 +36,10 @@ class PerformanceTracker:
     @asynccontextmanager
     async def track_async(self, operation_name: str):
         """Context manager for tracking asynchronous operations."""
+        if not ENABLE_PERF_TRACKING:
+            yield
+            return
+            
         start_time = time.time()
         print(f"[PERF] Starting {operation_name}...")
         
@@ -52,6 +64,9 @@ class PerformanceTracker:
     
     def print_summary(self):
         """Print performance summary."""
+        if not ENABLE_PERF_TRACKING:
+            return
+            
         summary = self.get_summary()
         print(f"\n[PERF] Performance Summary:")
         print(f"  Total Time: {summary['total_time_ms']}ms")
@@ -68,6 +83,9 @@ def track_performance(operation_name: str):
         if asyncio.iscoroutinefunction(func):
             @wraps(func)
             async def async_wrapper(*args, **kwargs):
+                if not ENABLE_PERF_TRACKING:
+                    return await func(*args, **kwargs)
+                    
                 start_time = time.time()
                 print(f"[PERF] Starting {operation_name}...")
                 
@@ -82,6 +100,9 @@ def track_performance(operation_name: str):
         else:
             @wraps(func)
             def sync_wrapper(*args, **kwargs):
+                if not ENABLE_PERF_TRACKING:
+                    return func(*args, **kwargs)
+                    
                 start_time = time.time()
                 print(f"[PERF] Starting {operation_name}...")
                 

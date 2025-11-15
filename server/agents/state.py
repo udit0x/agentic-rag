@@ -64,6 +64,16 @@ class TemporalAnalysis(TypedDict):
     excluded_documents: Optional[List[str]]
     data_quality_note: Optional[str]
 
+class DocumentSummaryResult(TypedDict):
+    """Result from Document Summary Agent."""
+    summary_type: str  # "single" or "multi"
+    document_count: int
+    summaries: List[Dict[str, Any]]  # Individual document summaries
+    common_themes: Optional[List[str]]  # For multi-doc
+    comparative_analysis: Optional[str]  # For multi-doc
+    synthesis: Optional[str]  # For multi-doc
+    confidence_score: float
+
 class AgentTrace(TypedDict):
     """Individual agent execution trace."""
     agent_name: str
@@ -110,9 +120,12 @@ class AgentState(TypedDict):
     # Temporal Agent outputs
     temporal_analysis: Optional[TemporalAnalysis]
     
+    # Document Summary Agent outputs
+    summary_response: Optional[DocumentSummaryResult]
+    
     # Final outputs
     final_response: str
-    response_type: str  # "reasoning", "simulation", "temporal", "chat", "hybrid"
+    response_type: str  # "reasoning", "simulation", "temporal", "chat", "hybrid", "summary"
     sources: List[DocumentChunk]
     
     # Cost tracking and optimization

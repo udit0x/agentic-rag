@@ -4,6 +4,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Send, Plus, X, FileText } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useToast } from "@/hooks/use-toast";
+import { useUploadContext } from "@/contexts/upload-context";
+import { useQuotaStore } from "@/stores/quota-store";
 import { cn } from "@/lib/utils";
 import { DocumentSelectionModal } from "./document-selection-modal";
 
@@ -21,6 +24,7 @@ interface MessageInputProps {
   documents?: Document[];
   selectedDocumentIds?: string[];
   onDocumentSelectionChange?: (documentIds: string[]) => void;
+  onQuotaExhausted?: () => void; // Callback when quota is 0
 }
 
 interface MessageInputRef {
@@ -34,15 +38,30 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
   documents = [],
   selectedDocumentIds = [],
   onDocumentSelectionChange,
+  onQuotaExhausted,
 }, ref) => {
   const [message, setMessage] = useState("");
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isMobile = useIsMobile();
+  const { toast } = useToast();
+  const { hasActiveUploads } = useUploadContext();
+  
+  // Quota management
+  const { quotaRemaining, isUnlimited, hasPersonalKey, getQuotaStatus } = useQuotaStore();
+  const quotaStatus = getQuotaStatus();
+  const isQuotaExhausted = !isUnlimited && !hasPersonalKey && quotaRemaining <= 0;
+  
+  // Toast thresholds for quota warnings
+  const QUOTA_TOAST_THRESHOLDS = [30, 10, 5, 4, 3, 2, 1, 0];
+  const prevQuotaRef = useRef<number>(quotaRemaining);
   
   const MAX_CHARACTERS = 2000;
   const isNearLimit = message.length > MAX_CHARACTERS * 0.9; // Show warning at 90%
   const isOverLimit = message.length > MAX_CHARACTERS;
+
+  // Combine disabled states
+  const isInputDisabled = disabled || hasActiveUploads || isQuotaExhausted;
 
   useImperativeHandle(ref, () => ({
     focus: () => {
@@ -51,6 +70,21 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
   }));
 
   const handleSubmit = () => {
+    if (hasActiveUploads) {
+      toast({
+        title: "Upload in progress",
+        description: "Please wait until the current upload finishes before sending a message.",
+        variant: "default",
+      });
+      return;
+    }
+    
+    // Check quota before submitting
+    if (isQuotaExhausted) {
+      onQuotaExhausted?.();
+      return;
+    }
+    
     if (message.trim() && !disabled && !isOverLimit) {
       onSubmit(message.trim(), selectedDocumentIds);
       setMessage("");
@@ -84,7 +118,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
       const newHeight = Math.max(minHeight, Math.min(scrollHeight, maxHeight));
       textareaRef.current.style.height = `${newHeight}px`;
     }
-  }, [message]); // Remove isMobile dependency to prevent flicker
+  }, [message, isMobile]); // Remove isMobile dependency to prevent flicker
 
   // Handle mobile viewport changes separately
   useEffect(() => {
@@ -95,6 +129,36 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
     }
   }, [isMobile]);
 
+  // Show toast at quota thresholds
+  useEffect(() => {
+    // Skip if unlimited or has personal key
+    if (isUnlimited || hasPersonalKey) return;
+    
+    // Check if quota decreased and hit a threshold
+    if (quotaRemaining < prevQuotaRef.current && QUOTA_TOAST_THRESHOLDS.includes(quotaRemaining)) {
+      if (quotaRemaining === 0) {
+        toast({
+          title: "No messages remaining",
+          description: "Add your API key to continue chatting.",
+          variant: "destructive",
+        });
+      } else if (quotaRemaining <= 5) {
+        toast({
+          title: `${quotaRemaining} ${quotaRemaining === 1 ? 'message' : 'messages'} remaining`,
+          description: "You're running low on messages!",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: `${quotaRemaining} messages remaining`,
+          description: "Consider adding your API key for unlimited messages.",
+        });
+      }
+    }
+    
+    prevQuotaRef.current = quotaRemaining;
+  }, [quotaRemaining, isUnlimited, hasPersonalKey, toast]);
+
   // Handle document selection
   const handleDocumentSelectionChange = (documentIds: string[]) => {
     onDocumentSelectionChange?.(documentIds);
@@ -104,6 +168,19 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
   const handleRemoveDocument = (documentId: string) => {
     const newSelection = selectedDocumentIds.filter(id => id !== documentId);
     onDocumentSelectionChange?.(newSelection);
+  };
+
+  // Show toast when user tries to interact with disabled input due to upload
+  const handleInputInteraction = () => {
+    if (hasActiveUploads && !disabled) {
+      toast({
+        title: "Upload in progress",
+        description: "Please wait until the current upload finishes before sending a message.",
+        variant: "default",
+      });
+    } else if (isQuotaExhausted) {
+      onQuotaExhausted?.();
+    }
   };
 
   // Get selected documents for display
@@ -138,7 +215,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
                     e.stopPropagation();
                     handleRemoveDocument(document.id);
                   }}
-                  disabled={disabled}
+                  disabled={isInputDisabled}
                 >
                   <X className="h-3 w-3" />
                 </Button>
@@ -156,8 +233,14 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
           <Button
             variant="outline"
             size="icon"
-            onClick={() => setIsDocumentModalOpen(true)}
-            disabled={disabled || documents.length === 0}
+            onClick={() => {
+              if (hasActiveUploads && !disabled) {
+                handleInputInteraction();
+              } else {
+                setIsDocumentModalOpen(true);
+              }
+            }}
+            disabled={isInputDisabled || documents.length === 0}
             className={cn(
               "flex-shrink-0 transition-all border-dashed",
               selectedDocumentIds.length > 0 && "border-primary text-primary",
@@ -178,52 +261,61 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
             <span className="sr-only">Select documents</span>
           </Button>
 
-          <Textarea
-            ref={textareaRef}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              selectedDocumentIds.length > 0 
-                ? `Ask about ${selectedDocumentIds.length === 1 ? 'the selected document' : `${selectedDocumentIds.length} selected documents`}...`
-                : placeholder
-            }
-            disabled={disabled}
-            maxLength={MAX_CHARACTERS}
-            className={cn(
-              "resize-none flex-1 text-base transition-all overflow-y-auto",
-              "focus-visible:ring-2 focus-visible:ring-ring",
-              "[&::-webkit-scrollbar]:w-2",
-              "[&::-webkit-scrollbar-track]:bg-transparent",
-              "[&::-webkit-scrollbar-thumb]:bg-gray-400 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-0",
-              "[&::-webkit-scrollbar-thumb]:hover:bg-gray-500",
-              "dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 dark:[&::-webkit-scrollbar-thumb]:hover:bg-gray-500",
-              isOverLimit && "ring-2 ring-destructive focus-visible:ring-destructive",
-              isMobile ? [
-                "min-h-[2.75rem] max-h-[7.5rem]", // Mobile: 44px to 120px
-                "text-[16px] leading-5", // Ensure 16px+ to prevent zoom on iOS
-                "px-3 py-2.5", // Better touch targets
-                "rounded-xl", // More rounded on mobile
-                "touch-manipulation", // Optimize for touch
-              ] : [
-                "min-h-[3rem] max-h-48", // Desktop: 48px to 192px
-                "px-3 py-3",
-                "rounded-lg",
-                "text-base",
-              ],
-              disabled && "opacity-50 cursor-not-allowed"
-            )}
-            data-testid="input-message"
-            rows={1}
-            // Mobile-specific attributes
-            autoCapitalize={isMobile ? "sentences" : "off"}
-            autoComplete="off"
-            autoCorrect={isMobile ? "on" : "off"}
-            spellCheck={isMobile}
-          />
+          {/* Textarea with character counter overlay */}
+          <div className="flex-1 relative">
+            <Textarea
+              ref={textareaRef}
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onFocus={handleInputInteraction}
+              onClick={handleInputInteraction}
+              placeholder={
+                hasActiveUploads 
+                  ? "Upload in progress, please wait..."
+                  : isQuotaExhausted
+                    ? "Quota exhausted - Add API key to continue..."
+                    : selectedDocumentIds.length > 0 
+                      ? `Ask about ${selectedDocumentIds.length === 1 ? 'the selected document' : `${selectedDocumentIds.length} selected documents`}...`
+                      : placeholder
+              }
+              disabled={isInputDisabled}
+              maxLength={MAX_CHARACTERS}
+              className={cn(
+                "resize-none w-full text-base transition-all overflow-y-auto",
+                "focus-visible:ring-2 focus-visible:ring-ring",
+                "[&::-webkit-scrollbar]:w-2",
+                "[&::-webkit-scrollbar-track]:bg-transparent",
+                "[&::-webkit-scrollbar-thumb]:bg-gray-400 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-0",
+                "[&::-webkit-scrollbar-thumb]:hover:bg-gray-500",
+                "dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 dark:[&::-webkit-scrollbar-thumb]:hover:bg-gray-500",
+                isOverLimit && "ring-2 ring-destructive focus-visible:ring-destructive",
+                isMobile ? [
+                  "min-h-[2.75rem] max-h-[7.5rem]", // Mobile: 44px to 120px
+                  "text-[16px] leading-5", // Ensure 16px+ to prevent zoom on iOS
+                  "px-3 py-2.5", // Better touch targets
+                  "rounded-xl", // More rounded on mobile
+                  "touch-manipulation", // Optimize for touch
+                ] : [
+                  "min-h-[3rem] max-h-48", // Desktop: 48px to 192px
+                  "px-3 py-3",
+                  "rounded-lg",
+                  "text-base",
+                ],
+                isInputDisabled && "opacity-50 cursor-not-allowed"
+              )}
+              data-testid="input-message"
+              rows={1}
+              // Mobile-specific attributes
+              autoCapitalize={isMobile ? "sentences" : "off"}
+              autoComplete="off"
+              autoCorrect={isMobile ? "on" : "off"}
+              spellCheck={isMobile}
+            />
+          </div>
           <Button
             onClick={handleSubmit}
-            disabled={disabled || !message.trim() || isOverLimit}
+            disabled={isInputDisabled || !message.trim() || isOverLimit}
             size="icon"
             className={cn(
               "flex-shrink-0 transition-all",
@@ -246,15 +338,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
           </Button>
         </div>
         
-        {/* Character counter */}
-        {message.length > 0 && (
-          <div className={cn(
-            "text-xs text-right transition-colors",
-            isOverLimit ? "text-destructive font-medium" : 
-            isNearLimit ? "text-orange-500 font-medium" : 
-            "text-muted-foreground"
-          )}>
-            {message.length} / {MAX_CHARACTERS}
+        {/* Character limit warning - minimal warning below input */}
+        {message.length >= MAX_CHARACTERS && (
+          <div className="text-[10px] text-right text-red-600 dark:text-red-500 font-bold animate-in fade-in duration-200">
+            Character limit reached ({MAX_CHARACTERS})
           </div>
         )}
       </div>

@@ -1,15 +1,30 @@
-"""Query Refinement Agent for generating related questions using the 5-question technique."""
-
-from typing import List, Dict, Any, Optional, Tuple
+"""Production-grade Retrieval-Aware Query Planning Agent."""
+import logging
+from typing import List, Dict, Any, Optional, Tuple, Literal
 from datetime import datetime, timedelta
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
 import hashlib
 import json
+import re
 
 from server.providers import get_llm
 from server.storage import storage
+
+logger = logging.getLogger(__name__)
+
+
+class RefinedQuery(BaseModel):
+    """A single refined query with explicit retrieval purpose."""
+    type: Literal[
+        "constraint_add",      # Add scope: time, org, tool, metric, dataset, region
+        "synonym_expand",      # Alternate terms, domain slang, ontology words
+        "disambiguation",      # Resolve multiple possible meanings
+        "troubleshooting",     # Failure/edge cases, limitations, gotchas
+        "next_step"           # Best practices, architecture, optimization
+    ] = Field(description="The retrieval purpose of this refined query")
+    query: str = Field(description="The refined query text")
 
 
 class QueryRefinementCache(BaseModel):
@@ -17,92 +32,123 @@ class QueryRefinementCache(BaseModel):
     session_id: str
     original_query: str
     query_hash: str
-    refined_queries: List[str]
-    query_category: str
+    refined_queries: List[RefinedQuery]  # Now stores typed queries
+    intent: str
     created_at: datetime
     reuse_count: int = 0
     last_reused_at: Optional[datetime] = None
 
 
 class QueryRefinement(BaseModel):
-    """Query refinement output structure."""
+    """Production-grade query refinement with typed retrieval strategies."""
     original_query: str = Field(description="The original user query")
-    refined_queries: List[str] = Field(description="5 related questions for deeper exploration")
-    query_category: str = Field(description="Category of the query (temporal, factual, counterfactual)")
-    refinement_reasoning: str = Field(description="Why these specific questions were chosen")
+    intent: str = Field(description="Router-detected intent label")
+    refined: List[RefinedQuery] = Field(
+        description="Refined queries with explicit purpose/type"
+    )
+    reasoning: str = Field(
+        description="Why these refinements were chosen and how they help retrieval"
+    )
     was_cached: bool = Field(default=False, description="Whether this result was retrieved from cache")
     cache_similarity: float = Field(default=0.0, description="Similarity score with cached query")
     cost_savings: Dict[str, Any] = Field(default_factory=dict, description="Cost optimization metrics")
 
 
 class QueryRefinementAgent:
-    """Agent for generating related questions to improve query understanding."""
+    """Production-grade retrieval-aware query planning agent."""
     
     def __init__(self):
         self.name = "query_refinement"
-        self.query_cache: Dict[str, QueryRefinementCache] = {}  # session_id -> cache entries
+        self.query_cache: Dict[str, List[QueryRefinementCache]] = {}  # session_id -> list of cache entries
         self.similarity_threshold = 0.7  # Threshold for query reuse
         self.cache_expiry_hours = 24  # Cache expiry time
         self.max_cache_per_session = 10  # Max cached queries per session
         self._setup_prompt()
     
     def _setup_prompt(self):
-        """Initialize the query refinement prompt."""
-        self.refinement_prompt = ChatPromptTemplate.from_template("""
-You are an expert in query understanding and intent expansion.  
-Your goal is to generate 5 **contextually relevant** and **natural-sounding** alternate questions that reflect the same intent as the user’s original query.
+        """Initialize the production-grade refinement prompt."""
+        self.refinement_prompt = ChatPromptTemplate.from_template("""You are a Retrieval-Aware Query Planning Agent.
 
-**Original Query**: "{query}"
+**Goal:**
+Generate refined queries that maximize relevant retrieval quality in a RAG system.
 
-### TASK
-Create 5 semantically related questions that explore the topic from different useful angles.  
-These will help an AI retriever or user discover more comprehensive results.
+**Inputs:**
+- User Query: "{query}"
+- Detected Intent: "{intent}"
+- Conversation Context: {conversation_context}
+- Key Entities Found: {entities}
+- Retrieval Observations:
+  - Average similarity score: {avg_score}
+  - Top document categories: {categories}
+  - Common missing concepts: {missing_terms}
 
-### GUIDELINES
-- **Preserve intent:** Keep the same core meaning, only vary phrasing or focus.  
-- **Match difficulty:** Maintain the same complexity level as the original.  
-- **Stay useful:** Each variant should be something a real user might ask next.  
-- **Avoid noise:** Don’t add unrelated or overly academic questions.  
-- **Use natural tone:** Questions should sound like genuine user queries.
+**Your job:**
+Create up to {max_refinements} refined queries, each serving a different retrieval purpose, WITHOUT changing the core intent.
 
-### QUESTION TYPES
-1. **Immediate follow-up** – small extension of the original  
-2. **Practical application** – how it’s used or applied  
-3. **Common variation** – alternate phrasing or scope  
-4. **Problem-solving** – addressing challenges or errors  
-5. **Next step** – what to explore after understanding this
+**CRITICAL: Use Conversation Context**
+- If the query has pronouns (it, this, that, these) or incomplete references, USE the conversation context to resolve them
+- If the conversation shows what topic was discussed previously, incorporate that topic into refined queries
+- Make queries self-contained and specific by resolving ambiguous references
 
-### EXAMPLE (Basic)
-Original: "What is a palindrome and give me an example in Python?"
-Output:
-1. How do you check if a string is a palindrome in Python?  
-2. What are some other examples of palindromes besides words?  
-3. How can you ignore spaces and punctuation when checking palindromes?  
-4. What’s the difference between checking palindromes for strings vs numbers?  
-5. How do you reverse a string in Python to compare with the original?
+**REFINEMENT TYPES (exact type strings):**
+1) "constraint_add"   → add useful scope (time, org, tool, dataset, metric, geography)
+2) "synonym_expand"   → use synonyms / related domain terms / alternative names
+3) "disambiguation"   → clarify what exactly the user means if multiple interpretations are possible
+4) "troubleshooting"  → focus on errors, edge-cases, limitations, debugging steps (only if intent suggests it)
+5) "next_step"        → ask the logical follow-up that deepens understanding or best practices
 
-### RESPONSE FORMAT (JSON)
-**IMPORTANT: Return only valid JSON. No comments, no code blocks, no markdown.**
+**GUIDELINES:**
+- Preserve the original intent strictly. Do NOT change the task type (e.g., definition vs. implementation vs. troubleshooting).
+- Use conversation context to resolve pronouns and make queries self-contained
+- Use key entities whenever they help stay grounded.
+- Maximize semantic diversity:
+  - "constraint_add" should narrow to a meaningful slice (e.g., tool, time-window, specific scenario).
+  - "synonym_expand" should introduce different wording that real users or docs would use.
+  - "disambiguation" should explicitly mention the competing meanings if retrieval shows multiple categories.
+  - "troubleshooting" should exist ONLY if the intent is process/troubleshooting/verification or clearly implies possible failure modes.
+  - "next_step" should represent what an expert would ask immediately after answering the original question.
+- Keep queries short, natural, and realistic. Each must look like a human query, not a spec.
+- Avoid hallucinating facts, numbers, or specific standards. You may reference generic concepts (e.g., "market-based", "location-based") if they are common in the domain.
+- If a particular refinement type does not make sense for this query, omit it instead of forcing something irrelevant.
+
+**OUTPUT FORMAT (JSON ONLY, NO MARKDOWN, NO COMMENTS):**
 
 {{
   "original_query": "{query}",
-  "refined_queries": [
-    "Question 1 - immediate follow-up",
-    "Question 2 - practical application", 
-    "Question 3 - common variation",
-    "Question 4 - problem-solving",
-    "Question 5 - next step"
+  "intent": "{intent}",
+  "refined": [
+    {{
+      "type": "constraint_add",
+      "query": "..."
+    }},
+    {{
+      "type": "synonym_expand",
+      "query": "..."
+    }},
+    {{
+      "type": "disambiguation",
+      "query": "..."
+    }},
+    {{
+      "type": "troubleshooting",
+      "query": "..."
+    }},
+    {{
+      "type": "next_step",
+      "query": "..."
+    }}
   ],
-  "query_category": "factual|procedural|comparative|temporal|counterfactual",
-  "refinement_reasoning": "Brief explanation of how these variations help cover different dimensions of the same intent."
+  "reasoning": "Explain briefly how each refinement helps retrieval (precision, recall, disambiguation, error coverage, or deeper context). If any type was skipped, explain why."
 }}
 
-**DO NOT include any comments (//) or code blocks (```) in your JSON response.**
+**Rules:**
+- Return valid JSON only.
+- If you skip any refinement type, simply omit that object from the 'refined' array and mention it in 'reasoning'.
+- Generate EXACTLY {max_refinements} or fewer refinements based on what makes sense.
 """)
 
     def _generate_query_hash(self, query: str) -> str:
         """Generate a hash for the query to use as cache key."""
-        # Normalize query for better matching
         normalized = query.lower().strip()
         return hashlib.md5(normalized.encode()).hexdigest()[:16]
     
@@ -133,7 +179,6 @@ Output:
         cached_entries = self.query_cache[session_id]
         current_time = datetime.now()
         
-        # Check all cached entries for this session
         for entry in cached_entries:
             # Skip expired entries
             if (current_time - entry.created_at).total_seconds() > (self.cache_expiry_hours * 3600):
@@ -156,17 +201,15 @@ Output:
             session_id=session_id,
             original_query=refinement.original_query,
             query_hash=self._generate_query_hash(refinement.original_query),
-            refined_queries=refinement.refined_queries,
-            query_category=refinement.query_category,
+            refined_queries=refinement.refined,
+            intent=refinement.intent,
             created_at=datetime.now()
         )
         
-        # Add to cache
         self.query_cache[session_id].append(cache_entry)
         
         # Limit cache size per session
         if len(self.query_cache[session_id]) > self.max_cache_per_session:
-            # Remove oldest entry
             self.query_cache[session_id].pop(0)
     
     def _update_cache_reuse_stats(self, cache_entry: QueryRefinementCache) -> None:
@@ -195,44 +238,57 @@ Output:
                 del self.query_cache[session_id]
         
         return cleaned_count
-
     
     async def generate_related_questions(
-        self, 
-        query: str, 
+        self,
+        query: str,
         session_id: Optional[str] = None,
-        force_regenerate: bool = False
+        intent: str = "factual",
+        entities: Optional[List[str]] = None,
+        retrieval_stats: Optional[Dict[str, Any]] = None,
+        force_regenerate: bool = False,
+        max_refinements: int = 5,
+        conversation_context: Optional[str] = None
     ) -> QueryRefinement:
         """
-        Generate 5 related questions for the given query with smart caching.
+        Generate typed refinement queries for retrieval optimization.
         
         Args:
             query: The original user query
             session_id: Session ID for caching (if None, no caching)
+            intent: Router-detected intent label (e.g., "definition", "comparison", "temporal")
+            entities: Key entities extracted from query (tools, orgs, metrics, etc.)
+            retrieval_stats: Optional stats from preview retrieval
+                - avg_score: Average similarity score
+                - categories: Top document categories
+                - missing_terms: Common missing concepts
             force_regenerate: Force regeneration even if cached result exists
+            max_refinements: Maximum number of refinements (default: 5, HYBRID: 3)
+            conversation_context: Recent conversation history for context-aware refinements
             
         Returns:
-            QueryRefinement with related questions and metadata
+            QueryRefinement with typed refined queries
         """
         start_time = datetime.now()
         
-        # Check cache first (if session_id provided and not forcing regeneration)
+        # Check cache first
         if session_id and not force_regenerate:
             cached_result = self._find_similar_cached_query(query, session_id)
             if cached_result:
                 cache_entry, similarity = cached_result
                 
-                # Update cache statistics
                 self._update_cache_reuse_stats(cache_entry)
                 
-                print(f"[QUERY_REFINEMENT] Using cached result (similarity: {similarity:.2f})")
+                logger.info("Using cached refinement (similarity: %.2f)", similarity)
                 
-                # Return cached result with metadata
+                # Limit cached queries to requested number
+                limited_refined = cache_entry.refined_queries[:max_refinements]
+                
                 return QueryRefinement(
                     original_query=query,
-                    refined_queries=cache_entry.refined_queries,
-                    query_category=cache_entry.query_category,
-                    refinement_reasoning=f"Reused cached refinement (similarity: {similarity:.2f}, reuse_count: {cache_entry.reuse_count})",
+                    intent=cache_entry.intent,
+                    refined=limited_refined,
+                    reasoning=f"Reused cached refinement (similarity: {similarity:.2f}, reuse_count: {cache_entry.reuse_count})",
                     was_cached=True,
                     cache_similarity=similarity,
                     cost_savings={
@@ -243,19 +299,35 @@ Output:
                     }
                 )
         
+        # Extract retrieval stats
+        avg_score = retrieval_stats.get("avg_score", 0.0) if retrieval_stats else 0.0
+        categories = retrieval_stats.get("categories", []) if retrieval_stats else []
+        missing_terms = retrieval_stats.get("missing_terms", []) if retrieval_stats else []
+        
         # Generate new refinement
         try:
             llm = get_llm()
             if not llm:
-                return self._fallback_refinement(query)
+                return self._fallback_refinement(query, intent, max_refinements)
             
-            # First try with the structured parser
             parser = JsonOutputParser(pydantic_object=QueryRefinement)
             chain = self.refinement_prompt | llm | parser
             
-            result = await chain.ainvoke({"query": query})
+            result = await chain.ainvoke({
+                "query": query,
+                "intent": intent,
+                "conversation_context": conversation_context or "No previous conversation",
+                "entities": entities or [],
+                "avg_score": avg_score,
+                "categories": categories,
+                "missing_terms": missing_terms,
+                "max_refinements": max_refinements
+            })
             
-            # Create refinement object with cost tracking
+            # Limit results to requested number (in case LLM generates more)
+            if "refined" in result and len(result["refined"]) > max_refinements:
+                result["refined"] = result["refined"][:max_refinements]
+            
             refinement = QueryRefinement(
                 **result,
                 was_cached=False,
@@ -269,22 +341,21 @@ Output:
                 }
             )
             
-            # Cache the result for future use
+            # Cache the result
             if session_id:
                 self._cache_query_refinement(session_id, refinement)
-                print(f"[QUERY_REFINEMENT] Cached new refinement for session {session_id}")
+                logger.debug("Cached new refinement for session %s", session_id)
             
             return refinement
             
         except Exception as e:
             error_msg = str(e)
-            print(f"Query Refinement error: {error_msg}")
+            logger.error("Query Refinement error: %s", error_msg)
             
-            # Check if this is an API error - if so, don't generate fallback questions
+            # Check if this is an API error
             if self._is_api_error(error_msg):
-                print("[QUERY_REFINEMENT] API error detected - skipping question generation")
+                logger.warning("API error detected - skipping question generation")
                 
-                # Determine specific error type for better downstream handling
                 if "401" in error_msg and "api" in error_msg.lower():
                     error_type = "api_authentication_failed"
                     reasoning = f"API authentication failed - {error_type}"
@@ -295,12 +366,11 @@ Output:
                     error_type = "api_connection_error"
                     reasoning = f"API connection error - {error_type}"
                 
-                # Return minimal refinement that indicates API failure with specific error type
                 return QueryRefinement(
                     original_query=query,
-                    refined_queries=[query],  # Only return original query
-                    query_category="api_error",
-                    refinement_reasoning=reasoning,
+                    intent=intent,
+                    refined=[RefinedQuery(type="synonym_expand", query=query)],  # Only return original as synonym_expand
+                    reasoning=reasoning,
                     was_cached=False,
                     cache_similarity=0.0,
                     cost_savings={
@@ -312,15 +382,22 @@ Output:
                     }
                 )
             
-            # Try alternative approach with raw LLM response cleaning for non-API errors
+            # Try JSON cleanup for non-API errors
             try:
                 llm = get_llm()
                 if llm:
-                    print("[QUERY_REFINEMENT] Attempting JSON cleanup...")
-                    raw_response = await llm.ainvoke(self.refinement_prompt.format(query=query))
+                    logger.info("Attempting JSON cleanup...")
+                    raw_response = await llm.ainvoke(self.refinement_prompt.format(
+                        query=query,
+                        intent=intent,
+                        conversation_context=conversation_context or "No previous conversation",
+                        entities=entities or [],
+                        avg_score=avg_score,
+                        categories=categories,
+                        missing_terms=missing_terms,
+                        max_refinements=max_refinements
+                    ))
                     cleaned_json = self._clean_json_response(raw_response.content)
-                    
-                    import json
                     parsed_data = json.loads(cleaned_json)
                     
                     refinement = QueryRefinement(
@@ -337,58 +414,24 @@ Output:
                         }
                     )
                     
-                    # Cache the result
                     if session_id:
                         self._cache_query_refinement(session_id, refinement)
                     
                     return refinement
                     
             except Exception as cleanup_error:
-                print(f"[QUERY_REFINEMENT] JSON cleanup failed: {cleanup_error}")
-                
-                # Check again if cleanup error is also API-related
-                if self._is_api_error(str(cleanup_error)):
-                    print("[QUERY_REFINEMENT] API error in cleanup - skipping question generation")
-                    
-                    # Determine specific error type for cleanup errors too
-                    cleanup_error_msg = str(cleanup_error)
-                    if "401" in cleanup_error_msg and "api" in cleanup_error_msg.lower():
-                        error_type = "api_authentication_failed"
-                        reasoning = f"API authentication failed - {error_type}"
-                    elif "429" in cleanup_error_msg and ("quota" in cleanup_error_msg.lower() or "rate limit" in cleanup_error_msg.lower()):
-                        error_type = "api_quota_exceeded"
-                        reasoning = f"API quota exceeded - {error_type}"
-                    else:
-                        error_type = "api_connection_error"
-                        reasoning = f"API connection error - {error_type}"
-                    
-                    return QueryRefinement(
-                        original_query=query,
-                        refined_queries=[query],
-                        query_category="api_error", 
-                        refinement_reasoning=reasoning,
-                        was_cached=False,
-                        cache_similarity=0.0,
-                        cost_savings={
-                            "llm_calls_saved": 0,
-                            "cache_reuse_count": 0,
-                            "processing_time_ms": int((datetime.now() - start_time).total_seconds() * 1000),
-                            "cache_hit": False,
-                            "api_error": True
-                        }
-                    )
+                logger.error("JSON cleanup failed: %s", cleanup_error)
             
-            # Only use fallback for non-API errors (like parsing issues)
-            fallback_result = self._fallback_refinement(query)
+            # Fallback for non-API errors
+            fallback_result = self._fallback_refinement(query, intent, max_refinements)
             fallback_result.cost_savings = {
-                "llm_calls_saved": 1,  # Saved LLM call by using fallback
+                "llm_calls_saved": 1,
                 "cache_reuse_count": 0,
                 "processing_time_ms": int((datetime.now() - start_time).total_seconds() * 1000),
                 "cache_hit": False,
                 "used_fallback": True
             }
             
-            # Cache fallback result too
             if session_id:
                 self._cache_query_refinement(session_id, fallback_result)
             
@@ -396,16 +439,10 @@ Output:
     
     def _clean_json_response(self, response: str) -> str:
         """Clean LLM response to extract valid JSON."""
-        import re
-        
-        # Remove code blocks
         response = re.sub(r'```json\s*', '', response)
         response = re.sub(r'```\s*$', '', response)
-        
-        # Remove comments
         response = re.sub(r'//.*$', '', response, flags=re.MULTILINE)
         
-        # Extract JSON object
         json_match = re.search(r'\{.*\}', response, re.DOTALL)
         if json_match:
             return json_match.group(0)
@@ -413,105 +450,81 @@ Output:
         return response
     
     def _is_api_error(self, error_message: str) -> bool:
-        """Check if the error is related to API issues (quota, auth, connection)."""
+        """Check if the error is related to API issues."""
         error_lower = error_message.lower()
         
-        # API quota/rate limit errors
         if "429" in error_message and ("quota" in error_lower or "rate limit" in error_lower):
             return True
-            
-        # Authentication errors  
         if "401" in error_message and "api" in error_lower:
             return True
-            
-        # API connection errors
         if ("openai" in error_lower or "azure" in error_lower) and ("api" in error_lower or "connection" in error_lower):
             return True
-            
-        # Network/timeout errors
         if any(keyword in error_lower for keyword in ["timeout", "network", "connection", "unreachable"]):
             return True
             
         return False
     
-    def _fallback_refinement(self, query: str) -> QueryRefinement:
+    def _fallback_refinement(self, query: str, intent: str, max_refinements: int = 5) -> QueryRefinement:
         """
-        Fallback refinement when LLM is unavailable (non-API errors only).
-        This generates contextually appropriate questions based on query patterns.
-        Note: This is only called for parsing/technical errors, not API issues.
-        """
+        Fallback refinement using heuristics when LLM is unavailable.
         
+        Args:
+            query: The original user query
+            intent: Detected intent
+            max_refinements: Number of refinements to generate
+        """
         query_lower = query.lower()
         topic = self._extract_main_topic(query)
         
-        # Specific patterns for common query types
-        if "interview questions" in query_lower:
-            # Interview question requests
-            subject = topic if topic != "this topic" else "the subject"
-            fallback_questions = [
-                f"What are the most common {subject} interview questions?",
-                f"How do you prepare for {subject} technical interviews?",
-                f"What are advanced {subject} interview topics?",
-                f"What practical {subject} questions do interviewers ask?",
-                f"How do you demonstrate {subject} skills in interviews?"
-            ]
-        elif "best practices" in query_lower or "how to" in query_lower:
-            # Best practices or how-to questions
-            fallback_questions = [
-                f"What are the key principles of {topic}?",
-                f"What common mistakes should be avoided with {topic}?",
-                f"How do you implement {topic} effectively?",
-                f"What tools are recommended for {topic}?",
-                f"How do you troubleshoot {topic} issues?"
-            ]
-        elif any(word in query_lower for word in ["what is", "what are", "define", "explain"]):
-            # Definition/explanation questions
-            fallback_questions = [
-                f"How do you use {topic} in practice?",
-                f"Can you show me a simple example of {topic}?",
-                f"What are common use cases for {topic}?",
-                f"How do you get started with {topic}?",
-                f"What should I know next about {topic}?"
-            ]
-        elif "compare" in query_lower or "vs" in query_lower or "difference" in query_lower:
-            # Comparison questions
-            fallback_questions = [
-                f"What are the pros and cons of {topic}?",
-                f"When should you choose {topic} over alternatives?",
-                f"What are the key differences in {topic} approaches?",
-                f"How do you decide between {topic} options?",
-                f"What factors influence {topic} selection?"
-            ]
-        elif any(word in query_lower for word in ["features", "capabilities", "functions"]):
-            # Feature/capability questions
-            fallback_questions = [
-                f"What are the core features of {topic}?",
-                f"How do you use {topic} features effectively?",
-                f"What advanced capabilities does {topic} offer?",
-                f"How do you customize {topic} for your needs?",
-                f"What's new in the latest {topic} version?"
-            ]
-        else:
-            # General fallback for other question types
-            fallback_questions = [
-                f"How do you use {topic} effectively?",
-                f"What are examples of {topic} in action?",
-                f"What are the benefits of {topic}?",
-                f"How do you learn more about {topic}?",
-                f"What are alternatives to {topic}?"
-            ]
+        # Build fallback refinements based on intent
+        fallback_refined = []
+        
+        # 1. constraint_add - always useful
+        fallback_refined.append(RefinedQuery(
+            type="constraint_add",
+            query=f"{query} specific implementation"
+        ))
+        
+        # 2. synonym_expand - always useful
+        fallback_refined.append(RefinedQuery(
+            type="synonym_expand",
+            query=f"How to work with {topic}"
+        ))
+        
+        # 3. disambiguation - if query is ambiguous
+        if len(query.split()) < 5 or any(word in query_lower for word in ["what is", "define", "explain"]):
+            fallback_refined.append(RefinedQuery(
+                type="disambiguation",
+                query=f"What exactly is {topic} used for"
+            ))
+        
+        # 4. troubleshooting - if intent suggests issues
+        if intent in ["troubleshooting", "process", "verification"] or any(word in query_lower for word in ["error", "issue", "problem", "fix", "debug"]):
+            fallback_refined.append(RefinedQuery(
+                type="troubleshooting",
+                query=f"Common {topic} issues and solutions"
+            ))
+        
+        # 5. next_step - always useful
+        fallback_refined.append(RefinedQuery(
+            type="next_step",
+            query=f"{topic} best practices and recommendations"
+        ))
+        
+        # Limit to requested number
+        limited_refined = fallback_refined[:max_refinements]
         
         return QueryRefinement(
             original_query=query,
-            refined_queries=fallback_questions,
-            query_category="factual",
-            refinement_reasoning=f"Generated contextually appropriate questions for {topic} based on query pattern analysis (LLM parsing error fallback)",
+            intent=intent,
+            refined=limited_refined,
+            reasoning=f"Generated {len(limited_refined)} fallback refinements based on intent '{intent}' and pattern analysis (LLM unavailable)",
             was_cached=False,
             cache_similarity=0.0,
             cost_savings={
-                "llm_calls_saved": 1,  # Saved LLM call by using pattern-based fallback
+                "llm_calls_saved": 1,
                 "cache_reuse_count": 0,
-                "processing_time_ms": 0,  # Will be updated by caller
+                "processing_time_ms": 0,
                 "cache_hit": False,
                 "used_fallback": True
             }
@@ -519,7 +532,6 @@ Output:
     
     def _extract_main_topic(self, query: str) -> str:
         """Extract main topic from query using improved heuristics."""
-        # Remove question words and common phrases
         words = query.lower().split()
         stop_words = {
             'what', 'how', 'why', 'when', 'where', 'is', 'are', 'can', 'do', 'does', 
@@ -527,7 +539,6 @@ Output:
             'of', 'with', 'by', 'me', 'i', 'you', 'my', 'give', 'show', 'explain'
         }
         
-        # Remove punctuation and filter content words
         content_words = []
         for word in words:
             clean_word = word.strip('.,!?:;()[]{}')
@@ -535,11 +546,9 @@ Output:
                 content_words.append(clean_word)
         
         if content_words:
-            # Take first 2 content words for better topic extraction
             return ' '.join(content_words[:2])
         return "this topic"
-
-
+    
     # Cache management methods
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get cache statistics for monitoring."""
@@ -581,7 +590,7 @@ Output:
             "remaining_entries": sum(len(entries) for entries in self.query_cache.values())
         }
         
-        print(f"[QUERY_REFINEMENT] Cache cleanup: {stats}")
+        logger.info("Cache cleanup: %s", stats)
         return stats
 
 

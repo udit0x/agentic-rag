@@ -6,6 +6,12 @@ from datetime import datetime
 import uuid
 
 from server.database_interface import db_storage
+from server.auth_middleware import require_authenticated_user
+from server.hybrid_middleware import (
+    save_user_personal_key,
+    remove_user_personal_key,
+    get_user_key_status
+)
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -461,3 +467,331 @@ async def get_user_statistics():
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get user statistics: {str(e)}")
+
+# ==================== QUOTA MANAGEMENT ENDPOINTS ====================
+
+class QuotaStatusResponse(BaseModel):
+    """Response model for quota status."""
+    userId: str
+    email: str
+    remaining: int  # -1 for unlimited
+    isUnlimited: bool
+    hasPersonalKey: bool
+
+class SetApiKeyRequest(BaseModel):
+    """Request model for setting personal API key."""
+    apiKey: str
+
+class ResetQuotaRequest(BaseModel):
+    """Request model for resetting quota."""
+    quota: int = 50
+
+class UserPreferencesResponse(BaseModel):
+    """Response model for user preferences."""
+    theme: str
+    enableAnimations: bool
+    enableKeyboardShortcuts: bool
+    useGeneralKnowledge: bool
+    documentRelevanceThreshold: float
+    temperature: float
+    maxTokens: int
+
+class UpdatePreferencesRequest(BaseModel):
+    """Request model for updating user preferences."""
+    theme: Optional[str] = None
+    enableAnimations: Optional[bool] = None
+    enableKeyboardShortcuts: Optional[bool] = None
+    useGeneralKnowledge: Optional[bool] = None
+    documentRelevanceThreshold: Optional[float] = None
+    temperature: Optional[float] = None
+    maxTokens: Optional[int] = None
+
+class SetPersonalApiKeyRequest(BaseModel):
+    """Request model for setting personal API key."""
+    apiKey: str
+    provider: str = "openai"  # openai, azure, gemini
+    # Azure-specific fields (required when provider='azure')
+    azureEndpoint: Optional[str] = None
+    azureDeploymentName: Optional[str] = None
+
+class PersonalKeyStatusResponse(BaseModel):
+    """Response model for personal key status."""
+    hasPersonalKey: bool
+    provider: Optional[str]
+    quotaRemaining: int
+    isUnlimited: bool
+
+@router.get("/me/quota", response_model=QuotaStatusResponse)
+async def get_my_quota(
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
+    """
+    Get quota status for the authenticated user.
+    
+    Returns:
+    - remaining: -1 if unlimited, otherwise number of messages left
+    - isUnlimited: True for owner account
+    - hasPersonalKey: True if user has configured their own API key
+    """
+    try:
+        from server.database_postgresql import PostgreSQLConnection
+        db = PostgreSQLConnection()
+        await db.connect()
+        
+        user = await db.fetchone("SELECT email FROM users WHERE id = $1", authenticated_user_id)
+        status = await get_user_key_status(authenticated_user_id, db)
+        
+        return QuotaStatusResponse(
+            userId=authenticated_user_id,
+            email=user["email"] if user else "",
+            remaining=status["quota_remaining"] if not status["is_unlimited"] else -1,
+            isUnlimited=status["is_unlimited"],
+            hasPersonalKey=status["has_personal_key"]
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get quota status: {str(e)}")
+
+# Admin-only endpoints (to be protected by admin middleware later)
+@router.post("/{user_id}/quota/reset")
+async def reset_user_quota_admin(
+    user_id: str,
+    request: ResetQuotaRequest,
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
+    """
+    [ADMIN ONLY] Reset a user's quota to a specific value.
+    
+    TODO: Add admin role checking
+    """
+    try:
+        # TODO: Add admin check
+        # For now, only allow owner to reset quotas
+        admin_user = await db_storage.getUserByEmail("uditkashyap29@gmail.com")
+        if not admin_user or admin_user["id"] != authenticated_user_id:
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        updated_user = await db_storage.resetUserQuota(user_id, request.quota)
+        
+        return {
+            "message": f"Quota reset to {request.quota}",
+            "userId": user_id,
+            "remaining": updated_user.get("remainingQuota") or updated_user.get("remaining_quota", 50)
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reset quota: {str(e)}")
+
+@router.post("/{user_id}/quota/unlimited")
+async def set_unlimited_quota_admin(
+    user_id: str,
+    unlimited: bool = True,
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
+    """
+    [ADMIN ONLY] Set unlimited quota for a user.
+    
+    TODO: Add admin role checking
+    """
+    try:
+        # TODO: Add admin check
+        # For now, only allow owner to set unlimited quotas
+        admin_user = await db_storage.getUserByEmail("uditkashyap29@gmail.com")
+        if not admin_user or admin_user["id"] != authenticated_user_id:
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        updated_user = await db_storage.setUnlimitedQuota(user_id, unlimited)
+        
+        return {
+            "message": f"Unlimited quota {'enabled' if unlimited else 'disabled'}",
+            "userId": user_id,
+            "isUnlimited": updated_user.get("isUnlimited") or updated_user.get("is_unlimited", False)
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to set unlimited quota: {str(e)}")
+
+# ==================== USER PREFERENCES ENDPOINTS ====================
+
+@router.get("/me/preferences", response_model=UserPreferencesResponse)
+async def get_my_preferences(
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
+    """Get user preferences (theme, settings, etc.)."""
+    try:
+        user = await db_storage.getUser(authenticated_user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return UserPreferencesResponse(
+            theme=user.get("theme", "system"),
+            enableAnimations=user.get("enable_animations", True),
+            enableKeyboardShortcuts=user.get("enable_keyboard_shortcuts", True),
+            useGeneralKnowledge=user.get("use_general_knowledge", True),
+            documentRelevanceThreshold=float(user.get("document_relevance_threshold", 0.65)),
+            temperature=float(user.get("temperature", 0.7)),
+            maxTokens=int(user.get("max_tokens", 2000))
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get preferences: {str(e)}")
+
+@router.post("/me/preferences")
+async def update_my_preferences(
+    request: UpdatePreferencesRequest,
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
+    """Update user preferences."""
+    try:
+        update_data = {}
+        
+        if request.theme is not None:
+            update_data["theme"] = request.theme
+        if request.enableAnimations is not None:
+            update_data["enable_animations"] = request.enableAnimations
+        if request.enableKeyboardShortcuts is not None:
+            update_data["enable_keyboard_shortcuts"] = request.enableKeyboardShortcuts
+        if request.useGeneralKnowledge is not None:
+            update_data["use_general_knowledge"] = request.useGeneralKnowledge
+        if request.documentRelevanceThreshold is not None:
+            update_data["document_relevance_threshold"] = request.documentRelevanceThreshold
+        if request.temperature is not None:
+            update_data["temperature"] = request.temperature
+        if request.maxTokens is not None:
+            update_data["max_tokens"] = request.maxTokens
+        
+        if update_data:
+            await db_storage.updateUser(authenticated_user_id, update_data)
+        
+        return {"message": "Preferences updated successfully"}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update preferences: {str(e)}")
+
+# ==================== PERSONAL API KEY ENDPOINTS (HYBRID SYSTEM) ====================
+
+@router.get("/me/personal-key/status", response_model=PersonalKeyStatusResponse)
+async def get_my_personal_key_status(
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
+    """
+    Check if user has a personal API key configured.
+    Personal keys bypass the 50-message quota.
+    """
+    try:
+        from server.database_postgresql import PostgreSQLConnection
+        db = PostgreSQLConnection()
+        await db.connect()
+        
+        status = await get_user_key_status(authenticated_user_id, db)
+        
+        return PersonalKeyStatusResponse(
+            hasPersonalKey=status["has_personal_key"],
+            provider=status["provider"],
+            quotaRemaining=status["quota_remaining"],
+            isUnlimited=status["is_unlimited"]
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get key status: {str(e)}")
+
+@router.post("/me/personal-key")
+async def set_my_personal_key(
+    request: SetPersonalApiKeyRequest,
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
+    """
+    Save personal API key (encrypted).
+    
+    When you add your own API key:
+    - You bypass the 50-message quota limit
+    - Your key is encrypted before storage
+    - You pay for your own API usage
+    
+    Supported providers: openai, azure, gemini
+    
+    For Azure, you must also provide:
+    - azureEndpoint: Your Azure OpenAI endpoint URL
+    - azureDeploymentName: Your deployment name
+    """
+    try:
+        # Validate Azure-specific fields
+        if request.provider == "azure":
+            if not request.azureEndpoint or not request.azureDeploymentName:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Azure provider requires azureEndpoint and azureDeploymentName"
+                )
+        
+        from server.database_postgresql import PostgreSQLConnection
+        db = PostgreSQLConnection()
+        await db.connect()
+        
+        success = await save_user_personal_key(
+            authenticated_user_id,
+            request.apiKey,
+            request.provider,
+            db,
+            azure_endpoint=request.azureEndpoint,
+            azure_deployment_name=request.azureDeploymentName
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save API key")
+        
+        return {
+            "message": "Personal API key saved successfully",
+            "provider": request.provider,
+            "note": "You now have unlimited messages using your own API key"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to set personal key: {str(e)}")
+
+@router.delete("/me/personal-key")
+async def delete_my_personal_key(
+    authenticated_user_id: str = Depends(require_authenticated_user)
+):
+    """
+    Remove your personal API key.
+    After removal, you'll use the platform's API key with quota limits.
+    """
+    try:
+        from server.database_postgresql import PostgreSQLConnection
+        from server.config_manager import config_manager
+        
+        db = PostgreSQLConnection()
+        await db.connect()
+        
+        success = await remove_user_personal_key(authenticated_user_id, db)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to remove API key")
+        
+        # CRITICAL: Reload config_manager to clear cached configuration
+        await config_manager.reload_config()
+        
+        # Get updated quota status
+        status = await get_user_key_status(authenticated_user_id, db)
+        
+        return {
+            "message": "Personal API key removed successfully",
+            "note": f"You now have {status['quota_remaining']} messages remaining using the platform's API key"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to remove personal key: {str(e)}")

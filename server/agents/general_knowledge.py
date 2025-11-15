@@ -1,4 +1,5 @@
 """General Knowledge Agent for foundational AI responses."""
+import logging
 from typing import List, Dict, Any
 from datetime import datetime
 from langchain_core.prompts import ChatPromptTemplate
@@ -9,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from server.providers import get_llm
 from server.agents.state import QueryClassification, AgentTrace
+
+logger = logging.getLogger(__name__)
 
 # General knowledge prompt template
 GENERAL_KNOWLEDGE_PROMPT = """You are a knowledgeable AI assistant answering questions using your foundational knowledge. The user has asked a question that couldn't be answered using their uploaded documents, so you're providing information from your training data.
@@ -52,7 +55,7 @@ class GeneralKnowledgeAgent:
                 # Rebuild chain when LLM is available
                 self._build_chain()
             except Exception as e:
-                print(f"[GENERAL_KNOWLEDGE_AGENT] Error getting LLM: {e}")
+                logger.error("Error getting LLM: %s", e, exc_info=True)
                 return None
         return self.llm
     
@@ -119,7 +122,7 @@ Upload relevant documents, policies, guides, or other materials that might conta
             
         except Exception as e:
             error_msg = str(e)
-            print(f"General Knowledge Agent error: {error_msg}")
+            logger.error("General Knowledge Agent error: %s", error_msg, exc_info=True)
             
             # Detect API errors and return specific error message instead of fallback
             if "429" in error_msg and ("quota" in error_msg.lower() or "rate limit" in error_msg.lower()):

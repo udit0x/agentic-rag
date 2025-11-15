@@ -1,4 +1,5 @@
 """Document upload and management endpoints."""
+import logging
 from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
 from typing import List, Optional
@@ -12,6 +13,8 @@ from server.document_processor import process_document
 from server.performance_tracker import perf_tracker
 from server.config_manager import config_manager
 from server.auth_middleware import get_authenticated_user_id, require_authenticated_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -45,24 +48,23 @@ async def upload_document(
     - Automatically associates document with authenticated user
     - User ID from JWT token (cannot be spoofed)
     """
-    print(f"[DEBUG] Upload request received for file: {request.filename}")
-    print(f"[DEBUG] Content type: {request.contentType}")
-    print(f"[DEBUG] Content length: {len(request.content)} chars")
+    logger.info("Upload request for file: %s (type: %s, size: %d chars)", 
+                request.filename, request.contentType, len(request.content))
     
     try:
         # Process document
-        print("[DEBUG] Starting document processing...")
+        logger.debug("Starting document processing for %s", request.filename)
         with perf_tracker.track_sync("Document Processing"):
             if request.forceOcr:
-                print("[DEBUG] OCR processing forced via API parameter")
+                logger.info("OCR processing forced via API parameter for %s", request.filename)
             text_content, size, processing_metrics = await process_document(
                 request.content,
                 request.contentType,
                 request.filename,
                 force_ocr=request.forceOcr
             )
-        print(f"[DEBUG] Document processed successfully. Size: {size} bytes")
-        print(f"[DEBUG] Processing metrics: {processing_metrics}")
+        logger.info("Document processed successfully: %s (%d bytes)", request.filename, size)
+        logger.debug("Processing metrics: %s", processing_metrics)
         
         # Log processing details for monitoring
         extraction_mode = processing_metrics.get("extraction_mode", "Unknown")
@@ -70,19 +72,20 @@ async def upload_document(
         total_chars = processing_metrics.get("total_chars", 0)
         page_count = processing_metrics.get("page_count", 0)
         
-        print(f"[DEBUG] Processing summary - Mode: {extraction_mode}, Method: {ocr_method}, Pages: {page_count}, Chars: {total_chars}")
+        logger.info("Processing summary - Mode: %s, Method: %s, Pages: %d, Chars: %d", 
+                   extraction_mode, ocr_method, page_count, total_chars)
         
         if processing_metrics.get("errors"):
-            print(f"[DEBUG] Processing warnings/errors: {processing_metrics['errors']}")
+            logger.warning("Processing warnings/errors: %s", processing_metrics['errors'])
         
         # Check if document processing yielded meaningful content
         if not text_content or len(text_content.strip()) < 10:
-            print(f"[DEBUG] Warning: Document processing yielded minimal content ({len(text_content)} chars)")
+            logger.warning("Document processing yielded minimal content (%d chars)", len(text_content))
             # Continue with processing but log the issue
             processing_metrics.setdefault("warnings", []).append("Minimal text content extracted")
         
         # Create document record
-        print("[DEBUG] Creating document record...")
+        logger.debug("Creating document record for %s", request.filename)
         with perf_tracker.track_sync("Database - Create Document"):
             document = await storage.createDocument({
                 "filename": request.filename,
@@ -91,13 +94,14 @@ async def upload_document(
                 "content": text_content,
                 "userId": authenticated_user_id,  # ✅ SECURITY: Use authenticated user ID from JWT
             })
-        print(f"[DEBUG] Document created with ID: {document['id']} for authenticated user: {authenticated_user_id}")
+        logger.info("Document created: ID=%s, User=%s, File=%s", 
+                   document['id'], authenticated_user_id, request.filename)
         
         # Split into chunks
-        print("[DEBUG] Splitting text into chunks...")
+        logger.debug("Splitting text into chunks for %s", request.filename)
         with perf_tracker.track_sync("Text Chunking"):
             chunk_texts = azure_client.split_text(text_content)
-        print(f"[DEBUG] Created {len(chunk_texts)} chunks")
+        logger.info("Created %d chunks for %s", len(chunk_texts), request.filename)
         
         # Check chunk count limits
         await config_manager.initialize()
@@ -106,23 +110,23 @@ async def upload_document(
         
         if len(chunk_texts) > doc_limits.max_chunks:
             error_msg = f"Too many chunks: {len(chunk_texts):,} exceeds limit of {doc_limits.max_chunks:,}"
-            print(f"[DEBUG] REJECTED: {error_msg}")
+            logger.error("REJECTED: %s", error_msg)
             raise ValueError(error_msg)
         
         # Generate embeddings for all chunks (with fallback)
-        print("[DEBUG] Generating embeddings...")
+        logger.debug("Generating embeddings for %d chunks", len(chunk_texts))
         try:
             with perf_tracker.track_sync("Embedding Generation"):
                 embeddings = await azure_client.embed_documents(chunk_texts)
-            print("[DEBUG] Embeddings generated successfully")
+            logger.info("Embeddings generated successfully for %d chunks", len(embeddings))
         except Exception as e:
-            print(f"[DEBUG] Embeddings not available: {e}")
+            logger.warning("Embeddings not available: %s", str(e))
             # Create dummy embeddings for testing
             embeddings = [[0.0] * 1536 for _ in chunk_texts]  # Standard embedding size
-            print("[DEBUG] Using dummy embeddings for testing")
+            logger.debug("Using dummy embeddings for testing")
         
         # Create chunk records and prepare for upload
-        print("[DEBUG] Creating chunk records...")
+        logger.debug("Creating chunk records")
         with perf_tracker.track_sync("Database - Create Chunks"):
             chunks_data = []
             chunk_records_data = []
@@ -151,32 +155,34 @@ async def upload_document(
                     "filename": request.filename,
                     "chunkIndex": chunk_record["chunkIndex"],
                     "embedding": embedding,
+                    "userId": authenticated_user_id,  # ✅ SECURITY: Multi-tenant isolation
                 })
-        print(f"[DEBUG] Created {len(chunks_data)} chunk records")
+        logger.info("Created %d chunk records", len(chunks_data))
         
         # Upload to Azure Cognitive Search (with fallback)
-        print("[DEBUG] Uploading to Azure Cognitive Search...")
+        logger.debug("Uploading to Azure Cognitive Search")
         try:
             with perf_tracker.track_sync("Azure Search Upload"):
                 await azure_client.upload_chunks_to_search(chunks_data)
-            print("[DEBUG] Uploaded to Azure Cognitive Search successfully")
+            logger.info("Uploaded %d chunks to Azure Cognitive Search", len(chunks_data))
         except Exception as e:
-            print(f"[DEBUG] Azure Search not available: {e}")
+            logger.warning("Azure Search not available: %s", str(e))
             # Continue without search index for testing
-            print("[DEBUG] Continuing without search index for testing")
+            logger.debug("Continuing without search index for testing")
         
         # Update embedding IDs
-        print("[DEBUG] Updating embedding IDs...")
+        logger.debug("Updating embedding IDs")
         with perf_tracker.track_sync("Database - Update Embedding IDs"):
             # Prepare batch update data: (embedding_id, chunk_id) pairs
             embedding_updates = [(chunk_data["id"], chunk_data["id"]) for chunk_data in chunks_data]
             await storage.updateChunkEmbeddingIdsBatch(embedding_updates)
-        print("[DEBUG] Embedding IDs updated")
+        logger.info("Embedding IDs updated for %d chunks", len(embedding_updates))
         
         # Print performance summary
-        perf_tracker.print_summary()
+        #perf_tracker.print_summary()
         
-        print(f"[DEBUG] Upload completed successfully for {request.filename}")
+        logger.info("Upload completed successfully for %s (Document ID: %s)", 
+                   request.filename, document["id"])
         return UploadDocumentResponse(
             documentId=document["id"],
             filename=document["filename"],
@@ -185,12 +191,12 @@ async def upload_document(
         )
     
     except ValueError as e:
-        print(f"[DEBUG] ValueError during upload: {str(e)}")
+        logger.error("ValueError during upload of %s: %s", request.filename, str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"[DEBUG] Unexpected error during upload: {str(e)}")
+        logger.error("Unexpected error during upload of %s: %s", request.filename, str(e))
         import traceback
-        traceback.print_exc()
+        logger.debug("Traceback: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
 @router.get("", response_model=List[dict])
@@ -239,14 +245,14 @@ async def delete_document(
     # Delete from Azure Search first (by filename)
     try:
         await azure_client.delete_document_chunks_from_search(document["filename"])
-        print(f"[DEBUG] Deleted chunks from Azure Search for {document['filename']}")
+        logger.info("Deleted chunks from Azure Search for %s", document['filename'])
     except Exception as e:
-        print(f"[DEBUG] Failed to delete from Azure Search: {e}")
+        logger.warning("Failed to delete from Azure Search for %s: %s", document['filename'], str(e))
         # Continue with local deletion even if Azure Search fails
     
     # Delete from local storage
     await storage.deleteDocument(document_id)
-    print(f"[DEBUG] Deleted document {document_id} from local storage")
+    logger.info("Deleted document %s from local storage", document_id)
     
     return {"success": True}
 
@@ -262,11 +268,11 @@ async def get_document_content(
     - Validates document ownership before returning content
     - Returns 403 if attempting to access another user's document
     """
-    print(f"[DEBUG] Request for document content: {document_id}")
+    logger.debug("Request for document content: %s", document_id)
     
     document = await storage.getDocument(document_id)
     if not document:
-        print(f"[DEBUG] Document not found: {document_id}")
+        logger.warning("Document not found: %s", document_id)
         raise HTTPException(status_code=404, detail="Document not found")
     
     # ✅ SECURITY: Validate document ownership using authenticated user ID from JWT
@@ -276,7 +282,7 @@ async def get_document_content(
             detail=f"Access denied: Document {document_id} belongs to a different user"
         )
     
-    print(f"[DEBUG] Document found: {document['filename']}, content length: {len(document['content'])}")
+    logger.debug("Document found: %s (content length: %d)", document['filename'], len(document['content']))
     
     return {
         "id": document["id"],

@@ -11,12 +11,20 @@ Security: Sensitive fields (API keys, passwords) are encrypted when stored in da
 import os
 import json
 import asyncio
+import logging
 from typing import Dict, Any, Optional, Literal
 from dataclasses import dataclass, asdict
 from datetime import datetime
+from contextvars import ContextVar
 
 # Import encryption utilities
 from server.config_encryption import encrypt_sensitive_config, decrypt_sensitive_config
+
+logger = logging.getLogger(__name__)
+
+# Context variable for request-scoped configuration override
+# This allows personal API keys to override the system config for a single request
+_request_config_override: ContextVar[Optional['AppConfig']] = ContextVar('request_config_override', default=None)
 
 @dataclass
 class LLMConfig:
@@ -81,10 +89,9 @@ class DatabaseFirstConfigManager:
             from server.database_postgresql import PostgreSQLConnection
             self._db_connection = PostgreSQLConnection()
             await self._db_connection.connect()
-            print("[Config] Database connection established for configuration")
+            logger.info("Database connection established for configuration")
         except Exception as e:
-            print(f"[Config] Database connection failed: {e}")
-            print("[Config] Will use environment variables only")
+            logger.warning("Database connection failed: %s - will use environment variables", str(e))
             self._db_connection = None
         
         # Load configuration with priority order
@@ -99,18 +106,18 @@ class DatabaseFirstConfigManager:
         if self._db_connection:
             config = await self._load_from_database()
             if config:
-                print("[Config] Using database configuration (UI settings)")
+                logger.info("Using database configuration (UI settings)")
         
         # 2. Fallback to environment variables
         if not config:
             config = self._load_from_environment()
             if config:
-                print("[Config] Using environment configuration (fallback)")
+                logger.info("Using environment configuration (fallback)")
         
         # 3. Last resort: defaults
         if not config:
             config = self._load_defaults()
-            print("[Config] Using default configuration (requires setup)")
+            logger.warning("Using default configuration - setup required")
         
         self._current_config = config
     
@@ -132,7 +139,7 @@ class DatabaseFirstConfigManager:
             """, environment)
             
             if not config_row:
-                print(f"[Config] No active database configuration found for environment: {environment}")
+                logger.debug("No active database configuration found for environment: %s", environment)
                 return None
             
             # Parse config data (handle both string and dict)
@@ -193,14 +200,14 @@ class DatabaseFirstConfigManager:
             
             # Validate the configuration
             if self._is_valid_config(app_config):
-                print(f"[Config] Loaded valid database config version {config_row['version']}")
+                logger.info("Loaded valid database config version %s", config_row['version'])
                 return app_config
             else:
-                print("[Config] Database configuration is invalid (missing credentials)")
+                logger.warning("Database configuration is invalid (missing credentials)")
                 return None
                 
         except Exception as e:
-            print(f"[Config] Error loading database configuration: {e}")
+            logger.error("Error loading database configuration: %s", str(e))
             return None
     
     def _merge_with_env_credentials(self, config, config_type: str):
@@ -227,17 +234,23 @@ class DatabaseFirstConfigManager:
     def _load_from_environment(self) -> Optional[AppConfig]:
         """Load configuration from environment variables."""
         try:
-            # Check if we have the basic required environment variables
-            azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+            # Get endpoint and deployment names
             azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+            azure_key = os.getenv("AZURE_OPENAI_API_KEY")
             
-            if not azure_key or not azure_endpoint:
-                print("[Config] Missing required environment variables (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)")
+            if not azure_endpoint:
+                logger.debug("Missing AZURE_OPENAI_ENDPOINT")
                 return None
+            
+            if not azure_key:
+                logger.debug("Missing AZURE_OPENAI_API_KEY")
+                return None
+            
+            logger.debug("Using backend API key for initialization")
             
             # LLM Configuration
             llm_config = LLMConfig(
-                provider="azure",  # Default to Azure from environment
+                provider="azure",  # Backend uses Azure
                 api_key=azure_key,
                 model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o"),
                 endpoint=azure_endpoint,
@@ -246,10 +259,10 @@ class DatabaseFirstConfigManager:
                 max_tokens=int(os.getenv("LLM_MAX_TOKENS", "2000"))
             )
             
-            # Embeddings Configuration
+            # Embeddings Configuration (same key)
             embeddings_config = EmbeddingsConfig(
                 provider="azure",
-                api_key=azure_key,  # Reuse same Azure key
+                api_key=azure_key,  # Will be rotated by load balancer
                 model=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-large"),
                 endpoint=azure_endpoint,
                 deployment_name=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-large")
@@ -279,14 +292,14 @@ class DatabaseFirstConfigManager:
             )
             
             if self._is_valid_config(app_config):
-                print("[Config] Loaded valid environment configuration")
+                logger.info("Loaded valid environment configuration")
                 return app_config
             else:
-                print("[Config] Environment configuration is incomplete")
+                logger.warning("Environment configuration is incomplete")
                 return None
                 
         except Exception as e:
-            print(f"[Config] Error loading environment configuration: {e}")
+            logger.error("Error loading environment configuration: %s", str(e))
             return None
     
     def _load_defaults(self) -> AppConfig:
@@ -313,32 +326,58 @@ class DatabaseFirstConfigManager:
         )
     
     def _is_valid_config(self, config: AppConfig) -> bool:
-        """Validate configuration completeness."""
+        """Validate configuration completeness and correctness."""
         try:
             # Check LLM configuration
-            if not config.llm.api_key:
+            if not config.llm.api_key or config.llm.api_key.strip() == "":
+                logger.debug("Invalid config: LLM API key is empty")
                 return False
             
             if config.llm.provider == "azure":
                 if not config.llm.endpoint or not config.llm.deployment_name:
+                    logger.debug("Invalid config: Azure LLM missing endpoint or deployment")
+                    return False
+                
+                # Validate Azure endpoint format
+                if not config.llm.endpoint.startswith("https://") or len(config.llm.endpoint) < 20:
+                    logger.debug("Invalid config: Azure endpoint is malformed: %s", config.llm.endpoint)
+                    return False
+                
+                # Check for placeholder/test endpoints
+                if "dasdasd" in config.llm.endpoint.lower() or "test" in config.llm.endpoint.lower() or "example" in config.llm.endpoint.lower():
+                    logger.debug("Invalid config: Azure endpoint appears to be a placeholder: %s", config.llm.endpoint)
                     return False
             
             # Check embeddings configuration
-            if not config.embeddings.api_key:
+            if not config.embeddings.api_key or config.embeddings.api_key.strip() == "":
+                logger.debug("Invalid config: Embeddings API key is empty")
                 return False
             
             if config.embeddings.provider == "azure":
                 if not config.embeddings.endpoint or not config.embeddings.deployment_name:
+                    logger.debug("Invalid config: Azure embeddings missing endpoint or deployment")
+                    return False
+                
+                # Validate Azure endpoint format
+                if not config.embeddings.endpoint.startswith("https://") or len(config.embeddings.endpoint) < 20:
+                    logger.debug("Invalid config: Azure embeddings endpoint is malformed: %s", config.embeddings.endpoint)
+                    return False
+                
+                # Check for placeholder/test endpoints
+                if "dasdasd" in config.embeddings.endpoint.lower() or "test" in config.embeddings.endpoint.lower() or "example" in config.embeddings.endpoint.lower():
+                    logger.debug("Invalid config: Azure embeddings endpoint appears to be a placeholder: %s", config.embeddings.endpoint)
                     return False
             
+            logger.debug("Config validation passed")
             return True
-        except Exception:
+        except Exception as e:
+            logger.error("Config validation error: %s", str(e))
             return False
     
     async def save_ui_config(self, config_data: Dict[str, Any]) -> bool:
         """Save configuration from UI to database."""
         if not self._db_connection:
-            print("[Config] Cannot save UI config: No database connection")
+            logger.warning("Cannot save UI config: No database connection")
             return False
         
         try:
@@ -418,7 +457,7 @@ class DatabaseFirstConfigManager:
             datetime.now()
             )
             
-            print(f"[Config] Saved new UI configuration version {new_version}")
+            logger.info("Saved new UI configuration version %s", new_version)
             
             # Reload configuration
             await self._load_configuration()
@@ -426,14 +465,37 @@ class DatabaseFirstConfigManager:
             return True
             
         except Exception as e:
-            print(f"[Config] Error saving UI configuration: {e}")
+            logger.error("Error saving UI configuration: %s", str(e))
             return False
     
     def get_current_config(self) -> AppConfig:
-        """Get the currently active configuration."""
+        """Get the currently active configuration.
+        
+        Priority:
+        1. Request-scoped override (for personal API keys)
+        2. System-wide configuration
+        """
+        # Check for request-scoped override first (personal keys)
+        override_config = _request_config_override.get()
+        if override_config:
+            logger.debug("Using request-scoped config override (personal key)")
+            return override_config
+        
+        # Fall back to system config
         if not self._current_config:
             raise Exception("Configuration not initialized. Call initialize() first.")
         return self._current_config
+    
+    def set_request_config(self, config: AppConfig):
+        """Set request-scoped configuration override (for personal keys)."""
+        _request_config_override.set(config)
+        logger.debug("Set request-scoped config: provider=%s, source=%s", 
+                    config.llm.provider, config.source)
+    
+    def clear_request_config(self):
+        """Clear request-scoped configuration override."""
+        _request_config_override.set(None)
+        logger.debug("Cleared request-scoped config")
     
     def get_config_for_frontend(self) -> Dict[str, Any]:
         """Get configuration formatted for frontend display."""

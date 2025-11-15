@@ -3,11 +3,14 @@ Title Generation Agent for creating concise chat session titles.
 Generates 5-7 word titles from user queries, similar to ChatGPT's approach.
 """
 
+import logging
 import re
 from typing import Optional, Dict, Any
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from server.providers import get_llm
+
+logger = logging.getLogger(__name__)
 
 
 class TitleGeneratorAgent:
@@ -181,11 +184,11 @@ Title:""")
                         return title
                     
                     if enable_tracing:
-                        print(f"[TITLE_GENERATOR] LLM title failed validation: '{title}' (words: {len(title.split())})")
+                        logger.debug("LLM title failed validation: '%s' (words: %d)", title, len(title.split()))
                     
                 except Exception as e:
                     if enable_tracing:
-                        print(f"[TITLE_GENERATOR] LLM generation failed: {e}")
+                        logger.warning("LLM generation failed: %s", e, exc_info=True)
             
             # Fallback to text processing
             title = self._fallback_title_generation(query)
@@ -195,7 +198,7 @@ Title:""")
             
         except Exception as e:
             if enable_tracing:
-                print(f"[TITLE_GENERATOR] Title generation failed: {e}")
+                logger.error("Title generation failed: %s", e, exc_info=True)
             
             self.stats["failed_generations"] += 1
             

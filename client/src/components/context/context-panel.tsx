@@ -3,8 +3,9 @@ import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { FileText, ExternalLink, Zap, Clock, BarChart3, Search, Brain, AlertCircle } from "lucide-react";
+import { FileText, ExternalLink, Zap, Clock, BarChart3, Search, Brain, AlertCircle, GitBranch, Sparkles, Lightbulb, ChevronRight, ChevronLeft } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 
 interface ContextPanelProps {
@@ -15,6 +16,8 @@ interface ContextPanelProps {
   executionTimeMs?: number;
   responseType?: string;
   enableTracing?: boolean;
+  isVisible?: boolean;
+  onToggleVisibility?: () => void;
 }
 
 function getClassificationIcon(type: string) {
@@ -50,11 +53,13 @@ function getClassificationColor(type: string) {
 function getAgentIcon(agentName: string) {
   switch (agentName) {
     case "router":
-      return <Zap className="h-4 w-4" />;
+      return <GitBranch className="h-4 w-4" />;
     case "retriever":
       return <Search className="h-4 w-4" />;
+    case "query_refinement":
+      return <Sparkles className="h-4 w-4" />;
     case "reasoning":
-      return <Brain className="h-4 w-4" />;
+      return <Lightbulb className="h-4 w-4" />;
     case "simulation":
       return <BarChart3 className="h-4 w-4" />;
     case "temporal":
@@ -73,7 +78,9 @@ export function ContextPanel({
   agentTraces,
   executionTimeMs,
   responseType,
-  enableTracing = false
+  enableTracing = false,
+  isVisible = true,
+  onToggleVisibility
 }: ContextPanelProps) {
   const [accordionValue, setAccordionValue] = useState<string | undefined>();
   const hasTraces = enableTracing && agentTraces && agentTraces.length > 0;
@@ -102,26 +109,45 @@ export function ContextPanel({
     }
   }, [selectedSourceIndex, sources]);
 
-  if (!sources?.length && !hasTraces && !hasClassification) {
+  // If panel is hidden, show only the toggle button
+  if (!isVisible) {
     return (
-      <div className="flex flex-col items-center justify-center h-full p-6 text-center">
-        <div className="flex items-center justify-center h-16 w-16 rounded-full bg-muted mb-4">
-          <FileText className="h-8 w-8 text-muted-foreground" />
-        </div>
-        <h3 className="text-lg font-semibold text-foreground mb-2">No context yet</h3>
-        <p className="text-sm text-muted-foreground max-w-xs">
-          Ask a question to see relevant sources and agent activity
-        </p>
+      <div className="relative h-full">
+        <Button
+          variant="outline"
+          size="icon"
+          className="absolute left-0 top-4 z-10 rounded-r-md rounded-l-none shadow-md"
+          onClick={onToggleVisibility}
+          title="Show context panel"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </Button>
       </div>
     );
   }
 
+  // Show empty state when panel is visible but no content
+  const hasContent = sources?.length || hasTraces || hasClassification;
+
   return (
     <div className="flex flex-col h-full w-full max-w-full overflow-hidden">
       <div className="flex-shrink-0 p-4 border-b border-border overflow-hidden">
-        <h2 className="text-lg font-semibold text-foreground truncate max-w-full" data-testid="text-context-header">
-          Context & Analysis
-        </h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-lg font-semibold text-foreground truncate max-w-full" data-testid="text-context-header">
+            Context & Analysis
+          </h2>
+          {onToggleVisibility && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="flex-shrink-0 h-8 w-8"
+              onClick={onToggleVisibility}
+              title="Hide context panel"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
         <div className="flex items-center gap-2 mt-2 flex-wrap">
           {hasClassification && (
             <Badge className={getClassificationColor(classification.type)}>
@@ -138,7 +164,18 @@ export function ContextPanel({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 w-full">
+      {!hasContent ? (
+        <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+          <div className="flex items-center justify-center h-16 w-16 rounded-full bg-muted mb-4">
+            <FileText className="h-8 w-8 text-muted-foreground" />
+          </div>
+          <h3 className="text-lg font-semibold text-foreground mb-2">No context yet</h3>
+          <p className="text-sm text-muted-foreground max-w-xs">
+            Ask a question to see relevant sources and agent activity
+          </p>
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 w-full">
         <Tabs defaultValue="sources" className="h-full flex flex-col">
           <div className="flex-shrink-0 px-4 pt-4">
             <TabsList className="grid grid-cols-2 w-full max-w-full">
@@ -276,7 +313,7 @@ export function ContextPanel({
                     </p>
                     {enableTracing && (
                       <p className="text-xs text-muted-foreground/80 max-w-xs mx-auto">
-                        Agent activity is shown only for the most recent query. Switching between chat history tabs will clear this view.
+                        Agent activity is shown only for the most recent query. Switching between chat/history tabs will clear this view.
                       </p>
                     )}
                   </div>
@@ -375,7 +412,8 @@ export function ContextPanel({
             </ScrollArea>
           </TabsContent>
         </Tabs>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

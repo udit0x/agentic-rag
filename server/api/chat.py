@@ -1,4 +1,5 @@
 """Chat and query endpoints."""
+import logging
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -14,9 +15,13 @@ from server.storage import storage
 from server.azure_client import azure_client
 from server.rag_chain import create_rag_answer
 from server.agents.orchestrator import orchestrator
+from server.config_manager import config_manager, AppConfig, LLMConfig, EmbeddingsConfig
 from server.agents.query_refinement import query_refinement_agent
 from server.agents.title_generator import title_generator
 from server.auth_middleware import get_authenticated_user_id, require_authenticated_user
+from server.hybrid_middleware import get_api_key_for_request
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -28,6 +33,8 @@ class QueryRequest(BaseModel):
     debugMode: bool = False
     minScoreThreshold: float = 0.65  # Level 1: Add score threshold parameter
     documentIds: Optional[List[str]] = None  # Document filtering support
+    useUserKey: bool = False  # If true, user is using their own API key
+    userApiKey: Optional[str] = None  # User's personal API key (for verification)
 
 class SourceInfo(BaseModel):
     documentId: str
@@ -45,6 +52,8 @@ class QueryResponse(BaseModel):
     agentTraces: Optional[List[Dict[str, Any]]] = None
     executionTimeMs: Optional[int] = None
     responseType: str = "reasoning"
+    quotaRemaining: int = -1  # -1 means unlimited
+    isUnlimited: bool = False
 
 class ChatHistoryResponse(BaseModel):
     sessionId: str
@@ -83,20 +92,67 @@ async def stream_query_with_refinement(
     Security:
     - User ID extracted from Clerk JWT token (cannot be spoofed)
     - All sessions and data scoped to authenticated user
+    - Quota enforced before processing query
     """
     
-    print(f"[STREAM ENDPOINT] 🎯 Received streaming request from user: {authenticated_user_id}")
-    print(f"[STREAM ENDPOINT] 📝 Query: {request.query[:50]}...")
-    print(f"[STREAM ENDPOINT] 🔑 Session ID: {request.sessionId}")
+    logger.info("Streaming request from user %s: %s (session: %s)", 
+                authenticated_user_id, request.query[:50], request.sessionId)
+    
+    # ============================================
+    # QUOTA ENFORCEMENT - Check and get API key
+    # ============================================
+    from server.database_postgresql import PostgreSQLConnection
+    db = PostgreSQLConnection()
+    await db.connect()
+    
+    try:
+        # Get appropriate API key (personal or backend) and check quota
+        key_result = await get_api_key_for_request(authenticated_user_id, db)
+        
+        if not key_result["allowed"]:
+            # Return quota exhausted error as a stream event
+            async def quota_error_stream():
+                error_data = {
+                    "type": "quota_exhausted",
+                    "data": {
+                        "error": "Quota exhausted",
+                        "message": key_result.get("error", "You have reached your API usage limit."),
+                        "remaining": 0,
+                        "status": "quota_exhausted"
+                    }
+                }
+                yield f"data: {json.dumps(error_data)}\n\n"
+            
+            return StreamingResponse(
+                quota_error_stream(),
+                media_type="text/plain",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "Content-Type": "text/event-stream"
+                }
+            )
+        
+        logger.info("Using %s API key - quota remaining: %s", 
+                   key_result['source'], key_result.get('quota_remaining', 'unlimited'))
+        
+        # Get quota remaining for response
+        quota_remaining = key_result.get("quota_remaining", -1)  # -1 means unlimited
+    except HTTPException as e:
+        # Re-raise HTTP exceptions (auth failures, etc.)
+        raise
+    except Exception as e:
+        logger.error("Quota check failed: %s", str(e))
+        raise HTTPException(status_code=500, detail=f"Quota check failed: {str(e)}")
     
     async def generate_stream():
         """Generate streaming response with main processing immediately, refinement in parallel."""
         try:
             # Debug logging for document filtering
             if request.documentIds:
-                print(f"[STREAM_DEBUG] Received document filter: {request.documentIds}")
+                logger.debug("Document filter: %s", request.documentIds)
             else:
-                print("[STREAM_DEBUG] No document filter provided - searching all documents")
+                logger.debug("No document filter - searching all documents")
             
             # 🚀 OPTIMIZATION: Create or get session FIRST (before sending started event)
             # This allows us to include session ID in the started event for immediate frontend updates
@@ -111,11 +167,11 @@ async def stream_query_with_refinement(
                             status_code=403, 
                             detail=f"Access denied: Session {request.sessionId} belongs to a different user"
                         )
-                    print(f"[STREAM] Using existing session: {session['id']}")
+                    logger.debug("Using existing session: %s", session['id'])
                 except HTTPException:
                     raise  # Re-raise authorization errors
                 except Exception as e:
-                    print(f"[STREAM] Error retrieving session {request.sessionId}: {e}, creating new one")
+                    logger.warning("Error retrieving session %s: %s, creating new one", request.sessionId, str(e))
 
             # Create new session if we don't have one
             if not session:
@@ -126,7 +182,8 @@ async def stream_query_with_refinement(
                     "title": temporary_title,
                     "userId": authenticated_user_id  # ✅ SECURITY: Use authenticated user ID from JWT
                 })
-                print(f"[STREAM] Created new session: {session['id']} for authenticated user: {authenticated_user_id} with temporary title: {temporary_title}")
+                logger.info("Created new session %s for user %s with temporary title: %s", 
+                           session['id'], authenticated_user_id, temporary_title)
             
             # Create user message in database
             # Note: Frontend already has optimistic message displayed
@@ -149,13 +206,8 @@ async def stream_query_with_refinement(
             yield f"data: {json.dumps(started_data)}\n\n"
             
             # ============================================
-            # PHASE 3: Parallel execution with timeout
+            # PHASE 3: Configure orchestrator
             # ============================================
-            
-            # Start refinement with timeout
-            refinement_task = asyncio.create_task(
-                query_refinement_agent.generate_related_questions(request.query)
-            )
             
             # Configure orchestrator
             from server.agents.state import WorkflowConfig
@@ -169,83 +221,103 @@ async def stream_query_with_refinement(
             }
             orchestrator.config = config
             
-            # Start orchestrator
-            orchestrator_task = asyncio.create_task(
-                orchestrator.process_query(
-                    query=request.query,
-                    session_id=session["id"],
-                    user_id=authenticated_user_id,  # ✅ SECURITY: Use authenticated user ID
-                    document_ids=request.documentIds
-                )
-            )
-            
             # ============================================
-            # PHASE 4: Wait for refinement with timeout (GUARANTEED DELIVERY)
+            # INJECT PERSONAL KEY CONFIG (if using personal key)
             # ============================================
-            refinement_result = None
-            try:
-                # Wait max 8 seconds for refinement
-                refinement_result = await asyncio.wait_for(
-                    refinement_task, 
-                    timeout=8.0
-                )
-                
-                if refinement_result and refinement_result.query_category != "api_error":
-                    print(f"[STREAM] ✅ Refinement completed: {len(refinement_result.refined_queries)} questions")
-                    refinement_data = {
-                        "type": "refinement",
-                        "data": {
-                            "userMessageId": user_message["id"],
-                            "refined_queries": refinement_result.refined_queries,
-                            "query_category": refinement_result.query_category,
-                            "refinement_reasoning": refinement_result.refinement_reasoning,
-                            "status": "generated"
-                        }
-                    }
-                    yield f"data: {json.dumps(refinement_data)}\n\n"
-                else:
-                    # API error - send empty refinement
-                    print(f"[STREAM] ⚠️ Refinement API error, sending empty")
-                    refinement_data = {
-                        "type": "refinement",
-                        "data": {
-                            "userMessageId": user_message["id"],
-                            "refined_queries": [],
-                            "status": "skipped_api_error"
-                        }
-                    }
-                    yield f"data: {json.dumps(refinement_data)}\n\n"
+            if key_result['source'] == 'personal':
+                try:
+                    # Build personal key configuration
+                    provider = key_result['provider']
+                    api_key = key_result['api_key']
                     
-            except asyncio.TimeoutError:
-                # Timeout - send empty refinement
-                print(f"[STREAM] ⏱️ Refinement timeout, sending empty")
-                refinement_data = {
-                    "type": "refinement",
-                    "data": {
-                        "userMessageId": user_message["id"],
-                        "refined_queries": [],
-                        "status": "timeout"
-                    }
-                }
-                yield f"data: {json.dumps(refinement_data)}\n\n"
-                
-            except Exception as e:
-                # Any error - send empty refinement
-                print(f"[STREAM] ❌ Refinement failed: {e}, sending empty")
-                refinement_data = {
-                    "type": "refinement",
-                    "data": {
-                        "userMessageId": user_message["id"],
-                        "refined_queries": [],
-                        "status": "error"
-                    }
-                }
-                yield f"data: {json.dumps(refinement_data)}\n\n"
+                    # Create LLM config
+                    llm_config = LLMConfig(
+                        provider=provider,
+                        api_key=api_key,
+                        model="gpt-4o" if provider == "azure" else "gpt-4o",
+                        endpoint=key_result.get('azure_endpoint') if provider == 'azure' else None,
+                        deployment_name=key_result.get('azure_deployment') if provider == 'azure' else None,
+                        temperature=0.7,
+                        max_tokens=4096
+                    )
+                    
+                    # Create Embeddings config (use same key/provider)
+                    embeddings_config = EmbeddingsConfig(
+                        provider=provider,
+                        api_key=api_key,
+                        model="text-embedding-3-large" if provider != "azure" else "text-embedding-3-large",
+                        endpoint=key_result.get('azure_endpoint') if provider == 'azure' else None,
+                        deployment_name="text-embedding-3-large" if provider == 'azure' else None
+                    )
+                    
+                    # Create document limits config (use defaults for personal keys)
+                    from server.config_manager import DocumentLimitsConfig
+                    document_limits = DocumentLimitsConfig(
+                        max_file_size_mb=10.0,
+                        max_extracted_chars=500000,
+                        max_chunks=1000,
+                        warn_file_size_mb=5.0,
+                        warn_extracted_chars=250000
+                    )
+                    
+                    # Create request-scoped AppConfig
+                    from datetime import datetime
+                    personal_config = AppConfig(
+                        llm=llm_config,
+                        embeddings=embeddings_config,
+                        document_limits=document_limits,
+                        source="personal",
+                        version="user-personal-key",
+                        environment="production",
+                        useGeneralKnowledge=key_result.get('use_general_knowledge', True),
+                        documentRelevanceThreshold=key_result.get('document_relevance_threshold', 0.65),
+                        updated_at=datetime.now()
+                    )
+                    
+                    # Inject into config_manager for this request
+                    config_manager.set_request_config(personal_config)
+                    logger.info("Injected personal %s config for request", provider)
+                except Exception as e:
+                    logger.error("Failed to inject personal config: %s", str(e))
             
             # ============================================
-            # PHASE 5: Wait for orchestrator result
+            # PHASE 4: Stream orchestrator results with intermediate updates
             # ============================================
-            agent_result = await orchestrator_task
+            agent_result = None
+            refinement_sent = False
+            
+            # Use streaming to get intermediate results
+            async for chunk in orchestrator.stream_query(
+                query=request.query,
+                session_id=session["id"],
+                user_id=authenticated_user_id,
+                document_ids=request.documentIds
+            ):
+                # Check if this chunk contains query_refinement
+                if chunk.get("query_refinement") and not refinement_sent:
+                    try:
+                        query_refinement = chunk["query_refinement"]
+                        refined_queries = [rq["query"] for rq in query_refinement.get("refined", [])]
+                        
+                        if refined_queries:
+                            logger.info("Streaming refinement: %d questions", len(refined_queries))
+                            refinement_data = {
+                                "type": "refinement",
+                                "data": {
+                                    "userMessageId": user_message["id"],
+                                    "refined_queries": refined_queries,
+                                    "intent": query_refinement.get("intent", ""),
+                                    "reasoning": query_refinement.get("reasoning", ""),
+                                    "status": "generated"
+                                }
+                            }
+                            yield f"data: {json.dumps(refinement_data)}\n\n"
+                            refinement_sent = True
+                    except Exception as e:
+                        logger.error("Failed to stream refinements: %s", str(e))
+                
+                # Store the last complete state
+                agent_result = chunk
             
             # Check for agent-level errors and propagate them
             if agent_result.get("error_message"):
@@ -333,6 +405,8 @@ async def stream_query_with_refinement(
                     "agentTraces": agent_traces,
                     "executionTimeMs": agent_result.get("total_execution_time"),
                     "responseType": agent_result.get("response_type", "reasoning"),
+                    "quotaRemaining": quota_remaining,  # Include quota info from hybrid middleware
+                    "isUnlimited": key_result.get("is_unlimited", False),
                 }
             }
             
@@ -347,7 +421,7 @@ async def stream_query_with_refinement(
                 is_first_message = user_message_count == 1
                 
                 if is_first_message:
-                    print(f"[STREAM] First message detected - generating title")
+                    logger.info("First message detected - generating title")
                     # Generate final title with assistant response context (non-blocking)
                     final_title = await title_generator.generate_title(
                         query=request.query,
@@ -357,7 +431,7 @@ async def stream_query_with_refinement(
                     # Update session title if it's different and better
                     if final_title != session.get("title"):
                         await storage.updateChatSession(session["id"], {"title": final_title})
-                        print(f"[STREAM] Updated session title to: {final_title}")
+                        logger.info("Updated session title to: %s", final_title)
                         
                         # Stream title update event to notify frontend
                         title_update_data = {
@@ -370,9 +444,9 @@ async def stream_query_with_refinement(
                         }
                         yield f"data: {json.dumps(title_update_data)}\n\n"
                 else:
-                    print(f"[STREAM] Follow-up message ({user_message_count} total) - skipping title generation")
+                    logger.debug("Follow-up message (%d total) - skipping title generation", user_message_count)
             except Exception as e:
-                print(f"[STREAM] Failed to generate/check title: {e}")
+                logger.error("Failed to generate/check title: %s", str(e))
             
         except Exception as e:
             # Detect specific error types for better user feedback
@@ -394,7 +468,7 @@ async def stream_query_with_refinement(
                 error_type = "azure_api_error"
                 user_friendly_message = "🌐 **Azure API Error**\n\nUnable to connect to Azure OpenAI:\n- Check your Azure endpoint configuration\n- Verify your Azure API key is valid\n- Ensure your deployment is active"
             
-            print(f"[ERROR] Stream processing failed: {error_message}")
+            logger.error("Stream processing failed: %s (type: %s)", error_message, error_type)
             
             error_data = {
                 "type": "error",
@@ -406,6 +480,10 @@ async def stream_query_with_refinement(
                 }
             }
             yield f"data: {json.dumps(error_data)}\n\n"
+        finally:
+            # Clear request-scoped config override (personal key context)
+            config_manager.clear_request_config()
+            logger.debug("Cleared request-scoped config override")
     
     return StreamingResponse(
         generate_stream(),
@@ -425,18 +503,42 @@ async def query_documents(
     """
     Query documents using multi-agent orchestration.
     
-    1. Create or get chat session
-    2. Save user message
-    3. Execute multi-agent workflow (Router -> Retriever -> Reasoning/Simulation/Temporal)
-    4. Save assistant message
-    5. Return response with citations and agent traces
+    1. Check quota and decrement atomically
+    2. Create or get chat session
+    3. Save user message
+    4. Execute multi-agent workflow (Router -> Retriever -> Reasoning/Simulation/Temporal)
+    5. Save assistant message
+    6. Return response with citations and agent traces
     
     Security:
     - Requires authenticated user (JWT token validation)
+    - Enforces quota before processing
     - Filters all document retrievals to user's documents only
     - Validates session ownership before using existing sessions
     """
+    # ============================================
+    # QUOTA ENFORCEMENT - Check and get API key
+    # ============================================
+    from server.database_postgresql import PostgreSQLConnection
+    db = PostgreSQLConnection()
+    await db.connect()
+    
     try:
+        # Get appropriate API key (personal or backend) and check quota
+        key_result = await get_api_key_for_request(authenticated_user_id, db)
+        
+        if not key_result["allowed"]:
+            raise HTTPException(
+                status_code=429,
+                detail=key_result.get("error", "Quota exhausted. Add your personal API key to continue.")
+            )
+        
+        logger.info("Using %s API key - quota remaining: %s", 
+                   key_result['source'], key_result.get('quota_remaining', 'unlimited'))
+        
+        # Get quota remaining for response
+        quota_remaining = key_result.get("quota_remaining", -1)  # -1 means unlimited
+        
         # Create or get session
         if request.sessionId:
             session = await storage.getChatSession(request.sessionId)
@@ -469,6 +571,7 @@ async def query_documents(
                 "title": initial_title,
                 "userId": authenticated_user_id  # ✅ SECURITY: Associate session with authenticated user
             })
+            logger.info("Created new session %s for user %s", session['id'], authenticated_user_id)
         
         # Save user message
         user_message = await storage.createMessage({
@@ -537,7 +640,7 @@ async def query_documents(
             if final_title != session.get("title"):
                 await storage.updateChatSession(session["id"], {"title": final_title})
         except Exception as e:
-            print(f"[QUERY] Failed to generate final title: {e}")
+            logger.error("Failed to generate final title: %s", str(e))
         
         # Format agent traces for response (if tracing enabled)
         agent_traces = None
@@ -574,7 +677,9 @@ async def query_documents(
             classification=agent_result.get("classification"),
             agentTraces=agent_traces,
             executionTimeMs=agent_result.get("total_execution_time"),
-            responseType=agent_result.get("response_type", "reasoning")
+            responseType=agent_result.get("response_type", "reasoning"),
+            quotaRemaining=quota_remaining,  # From hybrid middleware
+            isUnlimited=key_result.get("is_unlimited", False)
         )
     
     except HTTPException:

@@ -72,7 +72,7 @@ async def list_chat_sessions(
     - User ID extracted from Clerk JWT token (cannot be spoofed)
     """
     try:
-        # ✅ SECURITY: Filter by authenticated user ID from JWT
+        #Filter by authenticated user ID from JWT
         all_sessions = await storage.getAllChatSessions(userId=authenticated_user_id, search=search)
         
         # Calculate pagination
@@ -84,7 +84,7 @@ async def list_chat_sessions(
         # Convert to response format
         session_responses = []
         for session in sessions_page:
-            # ✅ OPTIMIZED: message_count and last_message_at now included in session from JOIN
+            # message_count and last_message_at now included in session from JOIN
             # No need for separate getChatSessionMetadata call (eliminates N+1 query problem)
             
             session_responses.append(ChatSessionResponse(
@@ -125,7 +125,7 @@ async def create_chat_session(
     try:
         session_data = {
             "title": request.title or "New Chat",
-            "userId": authenticated_user_id,  # ✅ SECURITY: Use authenticated user ID from JWT
+            "userId": authenticated_user_id,  # Use authenticated user ID from JWT
             "metadata": request.metadata or {}
         }
         
@@ -163,7 +163,7 @@ async def get_chat_session(
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
         
-        # ✅ SECURITY: Validate session ownership
+        # Validate session ownership
         if session.get("userId") and session.get("userId") != authenticated_user_id:
             raise HTTPException(
                 status_code=403,
@@ -208,7 +208,7 @@ async def update_chat_session(
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
         
-        # ✅ SECURITY: Validate session ownership
+        # Validate session ownership
         if session.get("userId") and session.get("userId") != authenticated_user_id:
             raise HTTPException(
                 status_code=403,
@@ -264,7 +264,7 @@ async def delete_chat_session(
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
         
-        # ✅ SECURITY: Validate session ownership
+        # Validate session ownership
         if session.get("userId") and session.get("userId") != authenticated_user_id:
             raise HTTPException(
                 status_code=403,
@@ -300,7 +300,7 @@ async def get_session_messages(
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
         
-        # ✅ SECURITY: Validate session ownership
+        # Validate session ownership
         if session.get("userId") and session.get("userId") != authenticated_user_id:
             raise HTTPException(
                 status_code=403,
@@ -356,7 +356,7 @@ async def clear_session_messages(
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
         
-        # ✅ SECURITY: Validate session ownership
+        # Validate session ownership
         if session.get("userId") and session.get("userId") != authenticated_user_id:
             raise HTTPException(
                 status_code=403,
@@ -387,8 +387,7 @@ async def get_chat_statistics(
     - Always filters by authenticated user ID regardless of parameter
     """
     try:
-        # ✅ SECURITY: Ignore userId parameter, always use authenticated user's ID
-        # This prevents users from requesting statistics for other users
+        # Use authenticated user's ID
         stats = await storage.getChatStatistics(userId=authenticated_user_id)
         return stats
     

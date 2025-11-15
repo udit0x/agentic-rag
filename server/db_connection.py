@@ -2,8 +2,11 @@
 import os
 import sqlite3
 import asyncio
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 class SQLiteConnection:
     """Async SQLite connection wrapper."""

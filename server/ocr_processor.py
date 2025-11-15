@@ -3,10 +3,13 @@ import os
 import base64
 import io
 import asyncio
+import logging
 from typing import Tuple, Dict, Any, Optional
 from datetime import datetime
 import fitz  # pymupdf
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 class ProcessingMetrics:
     """Track document processing metrics."""
@@ -44,10 +47,9 @@ class OCRProcessor:
         self.azure_key = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_KEY")
         self.azure_available = bool(self.azure_endpoint and self.azure_key)
         
-        print(f"[OCR] Azure Document Intelligence available: {self.azure_available}")
+        logger.info("Azure Document Intelligence available: %s", self.azure_available)
         if self.azure_available:
-            print(f"[OCR] Endpoint configured: {bool(self.azure_endpoint)}")
-            print(f"[OCR] Key configured: {bool(self.azure_key)}")
+            logger.debug("Azure Document Intelligence endpoint configured")
     
     def is_text_content_sufficient(self, text: str, min_chars: int = 100) -> bool:
         """
@@ -105,21 +107,21 @@ class OCRProcessor:
             single_chars = sum(1 for word in words if len(word) == 1 and word.isalpha())
             if single_chars > len(words) * 0.3:  # More than 30% single characters
                 suspicious_patterns += 1
-                print(f"[OCR] Suspicious line (many single chars): '{line[:50]}...'")
+                logger.debug("Suspicious line (many single chars): '%s'", line[:50])
                 continue
             
             # Check for excessive special characters (garbled text)
             special_char_ratio = sum(1 for c in line if not c.isalnum() and c not in ' \t\n.,!?;:-()[]{}') / max(len(line), 1)
             if special_char_ratio > 0.2:  # More than 20% special characters
                 suspicious_patterns += 1
-                print(f"[OCR] Suspicious line (special chars): '{line[:50]}...'")
+                logger.debug("Suspicious line (special chars): '%s'", line[:50])
                 continue
             
             # Check for excessive numbers without context (like page numbers, dates without text)
             digit_ratio = sum(1 for c in line if c.isdigit()) / max(len(line), 1)
             if digit_ratio > 0.5 and len(words) < 3:  # Mostly numbers in short lines
                 suspicious_patterns += 1
-                print(f"[OCR] Suspicious line (mostly numbers): '{line[:50]}...'")
+                logger.debug("Suspicious line (mostly numbers): '%s'", line[:50])
                 continue
             
             # Track repetitive content (common in scanned courseware/academic materials)
@@ -162,22 +164,19 @@ class OCRProcessor:
         
         # For scanned academic/courseware content, be more strict
         if max_repetitions >= 2 or repetition_ratio > 0.25:
-            print(f"[OCR] High repetition detected - likely scanned courseware/academic content")
-            print(f"  Most repeated: '{most_repeated[0][:50]}...' ({max_repetitions} times)")
-            print(f"  Repetition ratio: {repetition_ratio:.2f}")
+            logger.debug("High repetition detected - likely scanned courseware/academic content")
+            logger.debug("Most repeated: '%s' (%d times)", most_repeated[0][:50], max_repetitions)
+            logger.debug("Repetition ratio: %.2f", repetition_ratio)
             
         passed_checks = sum(quality_checks.values())
         # Need to pass at least 6 out of 8 checks (more strict for repetitive content)
         is_sufficient = passed_checks >= 6
         
-        print(f"[OCR] Advanced text analysis:")
-        print(f"  Raw: {len(text)} chars, {len(lines)} lines")
-        print(f"  Meaningful: {char_count} chars, {len(meaningful_lines)} lines, {word_count} words")
-        print(f"  Avg word length: {avg_word_length:.1f}, Suspicious patterns: {suspicious_patterns}")
-        print(f"  Repetition ratio: {repetition_ratio:.2f}, Max repetitions: {max_repetitions}")
-        print(f"  Unique content ratio: {unique_content_ratio:.2f}")
-        print(f"  Quality checks: {quality_checks}")
-        print(f"  Decision: {'✅ Sufficient' if is_sufficient else '❌ Needs OCR'} ({passed_checks}/8 checks passed)")
+        logger.info(
+            "Text analysis: %d/%d chars meaningful, %d words, %.1f avg word len, %d suspicious, %.2f repetition, decision: %s (%d/8 checks)",
+            char_count, len(text), word_count, avg_word_length, suspicious_patterns, 
+            repetition_ratio, "sufficient" if is_sufficient else "needs OCR", passed_checks
+        )
         
         return is_sufficient
     
@@ -195,7 +194,7 @@ class OCRProcessor:
             from azure.ai.formrecognizer import DocumentAnalysisClient
             from azure.core.credentials import AzureKeyCredential
             
-            print("[OCR] Starting Azure Document Intelligence processing...")
+            logger.info("Starting Azure Document Intelligence OCR processing")
             
             client = DocumentAnalysisClient(
                 endpoint=self.azure_endpoint,
@@ -222,7 +221,7 @@ class OCRProcessor:
                 page_text = "\n".join(page_lines)
                 pages_text.append(page_text)
                 
-                print(f"[OCR] Azure - Page {page_idx + 1}: {len(page_lines)} lines, {len(page_text)} chars")
+                logger.debug("Azure OCR page %d: %d lines, %d chars", page_idx + 1, len(page_lines), len(page_text))
             
             full_text = "\n\n".join(pages_text)
             
@@ -233,14 +232,14 @@ class OCRProcessor:
                 "model": "prebuilt-read"
             }
             
-            print(f"[OCR] Azure Document Intelligence completed: {len(full_text)} chars from {len(result.pages)} pages")
+            logger.info("Azure Document Intelligence completed: %d chars from %d pages", len(full_text), len(result.pages))
             return full_text, metadata
             
         except ImportError as e:
-            print(f"[OCR] Azure Document Intelligence library not available: {e}")
+            logger.error("Azure Document Intelligence library not available: %s", str(e))
             raise Exception("azure-ai-formrecognizer not installed")
         except Exception as e:
-            print(f"[OCR] Azure Document Intelligence failed: {e}")
+            logger.error("Azure Document Intelligence failed: %s", str(e))
             raise Exception(f"Azure OCR failed: {str(e)}")
     
     async def run_tesseract_ocr(self, pdf_bytes: bytes) -> Tuple[str, Dict[str, Any]]:
@@ -256,7 +255,7 @@ class OCRProcessor:
         try:
             import pytesseract
             
-            print("[OCR] Starting Tesseract OCR processing...")
+            logger.info("Starting Tesseract OCR processing")
             
             # Open PDF and convert pages to images
             pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -265,7 +264,7 @@ class OCRProcessor:
             confidence_count = 0
             
             for page_num in range(len(pdf_doc)):
-                print(f"[OCR] Tesseract - Processing page {page_num + 1}/{len(pdf_doc)}")
+                logger.debug("Tesseract processing page %d/%d", page_num + 1, len(pdf_doc))
                 
                 page = pdf_doc.load_page(page_num)
                 
@@ -301,14 +300,15 @@ class OCRProcessor:
                         avg_confidence = sum(page_confidences) / len(page_confidences)
                         total_confidence += avg_confidence
                         confidence_count += 1
-                        print(f"[OCR] Tesseract - Page {page_num + 1}: {len(page_text)} chars, avg confidence: {avg_confidence:.1f}%")
+                        logger.debug("Tesseract page %d: %d chars, avg confidence %.1f%%", 
+                                    page_num + 1, len(page_text), avg_confidence)
                     else:
-                        print(f"[OCR] Tesseract - Page {page_num + 1}: No reliable text found")
+                        logger.debug("Tesseract page %d: No reliable text found", page_num + 1)
                     
                     pages_text.append(page_text)
                     
                 except Exception as page_error:
-                    print(f"[OCR] Tesseract - Error on page {page_num + 1}: {page_error}")
+                    logger.warning("Tesseract error on page %d: %s", page_num + 1, str(page_error))
                     pages_text.append("")  # Add empty page to maintain page count
             
             pdf_doc.close()
@@ -322,14 +322,15 @@ class OCRProcessor:
                 "config": "--psm 6 --oem 3 -l eng"
             }
             
-            print(f"[OCR] Tesseract completed: {len(full_text)} chars from {len(pages_text)} pages")
+            logger.info("Tesseract completed: %d chars from %d pages, avg confidence %.1f%%", 
+                       len(full_text), len(pages_text), metadata["average_confidence"])
             return full_text, metadata
             
         except ImportError as e:
-            print(f"[OCR] Tesseract library not available: {e}")
+            logger.error("Tesseract library not available: %s", str(e))
             raise Exception("pytesseract not installed")
         except Exception as e:
-            print(f"[OCR] Tesseract OCR failed: {e}")
+            logger.error("Tesseract OCR failed: %s", str(e))
             raise Exception(f"Tesseract OCR failed: {str(e)}")
     
     async def process_scanned_document(
@@ -355,9 +356,9 @@ class OCRProcessor:
             pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             metrics.page_count = len(pdf_doc)
             pdf_doc.close()
-            print(f"[OCR] Document '{filename}' has {metrics.page_count} pages")
+            logger.info("Starting OCR for '%s' (%d pages)", filename, metrics.page_count)
         except Exception as e:
-            print(f"[OCR] Could not determine page count: {e}")
+            logger.warning("Could not determine page count for '%s': %s", filename, str(e))
             metrics.page_count = 1
         
         # Try Azure Document Intelligence first
@@ -367,11 +368,12 @@ class OCRProcessor:
                 metrics.ocr_method = "azure_document_intelligence"
                 metrics.total_chars = len(text)
                 
-                print(f"[OCR] Successfully processed '{filename}' with Azure Document Intelligence")
+                logger.info("Successfully processed '%s' with Azure Document Intelligence (%d chars)", 
+                           filename, len(text))
                 return text, metrics
                 
             except Exception as e:
-                print(f"[OCR] Azure Document Intelligence failed for '{filename}': {e}")
+                logger.warning("Azure Document Intelligence failed for '%s': %s", filename, str(e))
                 metrics.errors.append(f"Azure failed: {str(e)}")
         
         # Fallback to Tesseract
@@ -380,11 +382,12 @@ class OCRProcessor:
             metrics.ocr_method = "tesseract"
             metrics.total_chars = len(text)
             
-            print(f"[OCR] Successfully processed '{filename}' with Tesseract fallback")
+            logger.info("Successfully processed '%s' with Tesseract fallback (%d chars)", 
+                       filename, len(text))
             return text, metrics
             
         except Exception as e:
-            print(f"[OCR] Tesseract also failed for '{filename}': {e}")
+            logger.error("Tesseract also failed for '%s': %s", filename, str(e))
             metrics.errors.append(f"Tesseract failed: {str(e)}")
             
             # If both methods fail, return empty text with error metrics
@@ -392,7 +395,7 @@ class OCRProcessor:
             metrics.total_chars = 0
             
             error_msg = f"OCR processing failed for '{filename}'. Both Azure Document Intelligence and Tesseract failed."
-            print(f"[OCR] {error_msg}")
+            logger.error(error_msg)
             
             return "", metrics
 

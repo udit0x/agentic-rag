@@ -36,7 +36,7 @@ router.get("/config", async (req, res) => {
       buildDate: new Date().toISOString(),
     };
 
-    console.log("[CONFIG] Configuration requested");
+    // console.log("[CONFIG] Configuration requested");
     res.json(config);
   } catch (error) {
     console.error("[CONFIG] Error fetching configuration:", error);
@@ -69,7 +69,7 @@ router.patch("/config", async (req, res) => {
     }).parse(req.body);
 
     // TODO: Implement configuration persistence
-    console.log("[CONFIG] Configuration update requested:", configUpdate);
+    // console.log("[CONFIG] Configuration update requested:", configUpdate);
     
     res.json({ 
       success: true, 
@@ -147,7 +147,7 @@ router.get("/analytics", async (req, res) => {
       },
     };
 
-    console.log("[CONFIG] Analytics summary requested");
+    // console.log("[CONFIG] Analytics summary requested");
     res.json(analytics);
   } catch (error) {
     console.error("[CONFIG] Error fetching analytics:", error);

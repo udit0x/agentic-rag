@@ -1,6 +1,7 @@
 """Enhanced document processing pipeline supporting multiple file types."""
 import base64
 import io
+import logging
 from typing import Tuple, Dict, Any
 import fitz  # pymupdf
 
@@ -11,6 +12,8 @@ try:
 except ImportError:
     from ocr_processor import ocr_processor
     from universal_document_processor import process_document as universal_process_document
+
+logger = logging.getLogger(__name__)
 
 async def process_document(
     content: str,
@@ -37,13 +40,11 @@ async def process_document(
     Returns:
         Tuple of (extracted_text, size_in_bytes, processing_metrics)
     """
-    print(f"[PROCESSOR] Processing document: {filename}")
-    print(f"[PROCESSOR] Content type: {content_type}")
-    print(f"[PROCESSOR] Force OCR: {force_ocr}")
+    logger.info("Processing document: %s (type: %s, force_ocr: %s)", filename, content_type, force_ocr)
     
     # Handle plain text files directly (legacy support)
     if content_type == "text/plain" or filename.endswith(".txt"):
-        print("[PROCESSOR] Handling as legacy plain text")
+        logger.debug("Handling as legacy plain text: %s", filename)
         text_content = content
         size = len(content.encode("utf-8"))
         processing_metrics = {
@@ -66,10 +67,10 @@ async def process_document(
             force_ocr=force_ocr
         )
     except Exception as e:
-        print(f"[PROCESSOR] Universal processor failed: {str(e)}")
+        logger.error("Universal processor failed for %s: %s", filename, str(e))
         # For backward compatibility, try legacy PDF processing if it's a PDF
         if content_type == "application/pdf":
-            print("[PROCESSOR] Falling back to legacy PDF processing")
+            logger.info("Falling back to legacy PDF processing for %s", filename)
             return await _legacy_pdf_processing(content, content_type, filename, force_ocr)
         else:
             # Re-raise for non-PDF files
@@ -88,7 +89,7 @@ async def _legacy_pdf_processing(
     This is the original PDF processing logic, kept for emergency fallback
     if the universal processor encounters issues.
     """
-    print("[LEGACY] Using legacy PDF processing")
+    logger.warning("Using legacy PDF processing fallback for %s", filename)
     
     processing_metrics = {
         "filename": filename,
@@ -137,15 +138,21 @@ async def _legacy_pdf_processing(
                     text_content = ocr_text
                     processing_metrics.update(ocr_metrics.finalize())
                 else:
-                    processing_metrics["errors"].append("OCR extraction yielded no meaningful content")
+                    error_msg = "OCR extraction yielded no meaningful content"
+                    processing_metrics["errors"].append(error_msg)
+                    logger.warning("OCR extraction failed for %s: no content", filename)
                     
             except Exception as ocr_error:
-                processing_metrics["errors"].append(f"OCR failed: {str(ocr_error)}")
+                error_msg = f"OCR failed: {str(ocr_error)}"
+                processing_metrics["errors"].append(error_msg)
+                logger.error("OCR processing failed for %s: %s", filename, str(ocr_error))
         
         return text_content, len(pdf_bytes), processing_metrics
         
     except Exception as e:
-        processing_metrics["errors"].append(f"Legacy PDF processing error: {str(e)}")
+        error_msg = f"Legacy PDF processing error: {str(e)}"
+        processing_metrics["errors"].append(error_msg)
+        logger.error("Legacy PDF processing failed for %s: %s", filename, str(e))
         import traceback
-        traceback.print_exc()
+        logger.debug("Traceback: %s", traceback.format_exc())
         raise

@@ -1,4 +1,5 @@
 """Multi-provider LLM and embeddings factory."""
+import logging
 from typing import Optional, Union
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
@@ -9,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from server.config_manager import config_manager, LLMConfig, EmbeddingsConfig
 
+logger = logging.getLogger(__name__)
+
 class LLMProviderFactory:
     """Factory for creating LLM instances based on configuration."""
     
@@ -16,13 +19,16 @@ class LLMProviderFactory:
     def create_llm(config: Optional[LLMConfig] = None) -> BaseChatModel:
         """Create LLM instance based on configuration."""
         if config is None:
+            logger.debug("No config provided, loading from config_manager")
             app_config = config_manager.get_current_config()
             config = app_config.llm if app_config else None
+        else:
+            logger.debug("Using provided LLM config: provider=%s", config.provider)
         
         if not config or not config.api_key:
             raise ValueError("LLM configuration is missing or incomplete")
         
-        print(f"[LLM_FACTORY] Creating {config.provider} LLM with model {config.model}")
+        logger.info("Creating %s LLM with model %s", config.provider, config.model)
         
         if config.provider == "openai":
             return ChatOpenAI(
@@ -34,7 +40,12 @@ class LLMProviderFactory:
         
         elif config.provider == "azure":
             if not config.endpoint or not config.deployment_name:
+                logger.error("Azure LLM config missing - endpoint: %s, deployment: %s", 
+                           config.endpoint, config.deployment_name)
                 raise ValueError("Azure LLM requires endpoint and deployment_name")
+            
+            logger.info("Creating Azure LLM - endpoint: %s, deployment: %s", 
+                       config.endpoint, config.deployment_name)
             
             return AzureChatOpenAI(
                 api_key=config.api_key,
@@ -60,7 +71,7 @@ class EmbeddingsProviderFactory:
         if not config or not config.api_key:
             raise ValueError("Embeddings configuration is missing or incomplete")
         
-        print(f"[EMBEDDINGS_FACTORY] Creating {config.provider} embeddings with model {config.model}")
+        logger.info("Creating %s embeddings with model %s", config.provider, config.model)
         
         if config.provider == "openai":
             return OpenAIEmbeddings(
@@ -111,14 +122,20 @@ def get_llm() -> BaseChatModel:
     llm_config = current_config.llm if current_config else None
     current_hash = _get_config_hash(llm_config)
     
-    # Only recreate if config actually changed
-    if _llm_instance is None or _cached_llm_config_hash != current_hash:
+    # CRITICAL: Always create new instance if config changed OR if source is personal
+    # Personal keys are per-user, so we can't cache globally
+    force_recreate = (current_config and current_config.source == "personal")
+    
+    # Only recreate if config actually changed or personal key detected
+    if _llm_instance is None or _cached_llm_config_hash != current_hash or force_recreate:
         _llm_instance = LLMProviderFactory.create_llm()
         _cached_llm_config_hash = current_hash
-        print(f"[PROVIDER] Created new LLM instance: {type(_llm_instance).__name__}")
+        if force_recreate:
+            logger.info("Created new LLM instance for personal key: %s", type(_llm_instance).__name__)
+        else:
+            logger.info("Created new LLM instance: %s", type(_llm_instance).__name__)
     else:
-        # Reusing cached instance
-        pass
+        logger.debug("Reusing cached LLM instance")
     
     return _llm_instance
 
@@ -135,10 +152,9 @@ def get_embeddings() -> Embeddings:
     if _embeddings_instance is None or _cached_embeddings_config_hash != current_hash:
         _embeddings_instance = EmbeddingsProviderFactory.create_embeddings()
         _cached_embeddings_config_hash = current_hash
-        print(f"[PROVIDER] Created new embeddings instance: {type(_embeddings_instance).__name__}")
+        logger.info("Created new embeddings instance: %s", type(_embeddings_instance).__name__)
     else:
-        # Reusing cached instance
-        pass
+        logger.debug("Reusing cached embeddings instance")
     
     return _embeddings_instance
 
@@ -149,7 +165,7 @@ def reset_providers():
     _embeddings_instance = None
     _cached_llm_config_hash = None
     _cached_embeddings_config_hash = None
-    print("[PROVIDER] Reset all provider instances")
+    logger.info("Reset all provider instances")
 
 def validate_current_config() -> tuple[bool, list[str]]:
     """Validate the current configuration and return status and errors."""

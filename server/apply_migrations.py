@@ -16,19 +16,19 @@ async def apply_migration():
     database_url = os.getenv('DATABASE_URL')
     
     if not database_url:
-        print("❌ DATABASE_URL not found in environment")
+        print("DATABASE_URL not found in environment")
         return
     
-    print(f"🔗 Connecting to database...")
+    print(f"Connecting to database...")
     
     try:
         # Connect to database
         conn = await asyncpg.connect(database_url)
-        print("✅ Connected successfully")
+        print("Connected successfully")
         
         # Read migration file
-        migration_file = '../migrations/postgresql/0002_add_performance_indexes.sql'
-        print(f"📄 Reading migration: {migration_file}")
+        migration_file = '../migrations/postgresql/0006_hybrid_user_system.sql'
+        print(f"Reading migration: {migration_file}")
         
         with open(migration_file, 'r') as f:
             sql = f.read()
@@ -36,36 +36,37 @@ async def apply_migration():
         # Split by semicolons and execute each statement
         statements = [s.strip() for s in sql.split(';') if s.strip() and not s.strip().startswith('--')]
         
-        print(f"🚀 Executing {len(statements)} statements...")
+        print(f"Executing {len(statements)} statements...")
         
         for i, statement in enumerate(statements, 1):
             if statement:
                 print(f"  [{i}/{len(statements)}] Executing: {statement[:60]}...")
                 try:
                     result = await conn.execute(statement)
-                    print(f"    ✅ {result}")
+                    print(f"    {result}")
                 except Exception as e:
-                    print(f"    ⚠️  {e}")
+                    print(f"    {e}")
         
-        print("\n✅ Migration completed successfully!")
+        print("\nMigration completed successfully!")
         
-        # Verify indexes were created
-        print("\n🔍 Verifying indexes...")
-        indexes = await conn.fetch("""
-            SELECT indexname, tablename, indexdef 
-            FROM pg_indexes 
-            WHERE indexname IN ('idx_documents_user_uploaded', 'idx_messages_session_sequence', 'idx_chat_sessions_user_created')
-            ORDER BY tablename, indexname
+        # Verify columns were created
+        print("\nVerifying new columns...")
+        columns = await conn.fetch("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = 'users' 
+            AND column_name IN ('encrypted_api_key', 'api_key_provider', 'theme', 'enable_animations', 'temperature', 'max_tokens', 'remaining_quota', 'is_unlimited')
+            ORDER BY column_name
         """)
         
-        for idx in indexes:
-            print(f"  ✅ {idx['tablename']}.{idx['indexname']}")
+        for col in columns:
+            print(f"  {col['column_name']} ({col['data_type']})")
         
         await conn.close()
-        print("\n🎉 All done! Restart your dev server to see performance improvements.")
+        print("\nAll done! Restart your dev server to see performance improvements.")
         
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         import traceback
         traceback.print_exc()
 

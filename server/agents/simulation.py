@@ -2,6 +2,7 @@
 import re
 import ast
 import operator
+import logging
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 from langchain_core.prompts import ChatPromptTemplate
@@ -13,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from server.providers import get_llm
 from server.agents.state import DocumentChunk, QueryClassification, SimulationParameters, SimulationResult, AgentTrace
+
+logger = logging.getLogger(__name__)
 
 class ParameterExtractionOutput(BaseModel):
     """Pydantic model for structured parameter extraction."""
@@ -181,7 +184,7 @@ class SimulationAgent:
                 # Rebuild chains when LLM is available
                 self._build_chains()
             except Exception as e:
-                print(f"[SIMULATION_AGENT] Error getting LLM: {e}")
+                logger.error("Error getting LLM: %s", e)
                 return None
         return self.llm
     
@@ -415,7 +418,7 @@ class SimulationAgent:
             
             # If query has no numbers and no quantitative keywords, skip simulation
             if not has_numbers_in_query and not has_quantitative_context:
-                print(f"[SIMULATION_AGENT] Skipping simulation - query lacks quantitative elements")
+                logger.info("Skipping simulation - query lacks quantitative elements")
                 # Return null result to signal this isn't a simulation scenario
                 return (
                     SimulationResult(
@@ -437,7 +440,7 @@ class SimulationAgent:
             # Step 1: Extract parameters from query and documents
             if self.extraction_chain:
                 # Use LLM for parameter extraction
-                print(f"[SIMULATION_AGENT] Using AI for parameter extraction")
+                logger.debug("Using AI for parameter extraction")
                 context = self._format_context(chunks)
                 extraction_result = await self.extraction_chain.ainvoke({
                     "query": query,
@@ -454,14 +457,14 @@ class SimulationAgent:
                 
             else:
                 # Fallback to rule-based extraction
-                print(f"[SIMULATION_AGENT] Using rule-based parameter extraction (LLM not available)")
+                logger.debug("Using rule-based parameter extraction (LLM not available)")
                 parameters = self._fallback_parameter_extraction(query, chunks)
                 operation = "increase"  # Default operation
             
             # Step 2: Calculate projections
             if self.simulation_chain and parameters.get("base_value") is not None:
                 # Use LLM for advanced calculations
-                print(f"[SIMULATION_AGENT] Using AI for simulation calculations")
+                logger.debug("Using AI for simulation calculations")
                 simulation_input = {
                     "base_value": parameters["base_value"],
                     "operation": operation,
@@ -481,13 +484,13 @@ class SimulationAgent:
                 )
             else:
                 # Fallback calculation
-                print(f"[SIMULATION_AGENT] Using manual calculation (LLM not available or no base value)")
+                logger.debug("Using manual calculation (LLM not available or no base value)")
                 simulation_result = self._calculate_projection(parameters, operation)
             
             return simulation_result, parameters
             
         except Exception as e:
-            print(f"Simulation Agent error: {e}")
+            logger.error("Simulation Agent error: %s", e)
             
             # Return error simulation
             fallback_params = self._fallback_parameter_extraction(query, chunks)

@@ -1,5 +1,6 @@
 """Conversation Memory Agent using LangChain memory components."""
 
+import logging
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime, timedelta
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
@@ -9,7 +10,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-# Import memory classes with LangChain 1.0+ compatibility
+logger = logging.getLogger(__name__)
 try:
     from langchain_community.memory import (
         ConversationBufferWindowMemory,
@@ -119,7 +120,7 @@ You are a helpful AI assistant with access to both conversation history and retr
                     memory.chat_memory.add_ai_message(content)
                     
         except Exception as e:
-            print(f"[MEMORY_AGENT] Error loading conversation history: {e}")
+            logger.error("Error loading conversation history: %s", e, exc_info=True)
     
     def add_message_to_memory(self, session_id: str, role: str, content: str) -> None:
         """Add a new message to session memory."""
@@ -132,7 +133,7 @@ You are a helpful AI assistant with access to both conversation history and retr
                 memory.chat_memory.add_ai_message(content)
                 
         except Exception as e:
-            print(f"[MEMORY_AGENT] Error adding message to memory: {e}")
+            logger.error("Error adding message to memory: %s", e, exc_info=True)
     
     def get_conversation_context(self, session_id: str) -> str:
         """Get formatted conversation context for prompts."""
@@ -157,7 +158,7 @@ You are a helpful AI assistant with access to both conversation history and retr
             return "\n".join(formatted_history)
             
         except Exception as e:
-            print(f"[MEMORY_AGENT] Error getting conversation context: {e}")
+            logger.error("Error getting conversation context: %s", e, exc_info=True)
             return "Error retrieving conversation context."
     
     async def generate_chat_response(
@@ -169,11 +170,11 @@ You are a helpful AI assistant with access to both conversation history and retr
     ) -> str:
         """Generate response using only conversation memory (CHAT routing)."""
         try:
-            print(f"[CONVERSATION_MEMORY] Received threshold_suggestion: '{threshold_suggestion}'")
+            logger.debug("Received threshold_suggestion: '%s'", threshold_suggestion)
             
             # If there's a threshold suggestion, return it instead of processing normally
             if threshold_suggestion:
-                print(f"[CONVERSATION_MEMORY] Returning threshold suggestion message")
+                logger.info("Returning threshold suggestion message")
                 return threshold_suggestion
                 
             # Ensure conversation history is loaded
@@ -203,7 +204,7 @@ You are a helpful AI assistant with access to both conversation history and retr
             return response
             
         except Exception as e:
-            print(f"[MEMORY_AGENT] Error generating chat response: {e}")
+            logger.error("Error generating chat response: %s", e, exc_info=True)
             return "I apologize, but I encountered an error while processing your request."
     
     async def generate_hybrid_response(
@@ -246,7 +247,7 @@ You are a helpful AI assistant with access to both conversation history and retr
             return response
             
         except Exception as e:
-            print(f"[MEMORY_AGENT] Error generating hybrid response: {e}")
+            logger.error("Error generating hybrid response: %s", e, exc_info=True)
             log_content_filter_violation(e, "conversation_memory_agent")
             return get_user_friendly_error_message(e)
     

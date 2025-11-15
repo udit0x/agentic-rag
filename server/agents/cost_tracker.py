@@ -330,7 +330,6 @@ class CostTracker:
                 del self.session_costs[session_id]
         
         removed_count = original_count - len(self.cost_entries)
-        print(f"[COST_TRACKER] Cleaned {removed_count} old cost entries")
         return removed_count
 
 

@@ -20,6 +20,7 @@ class MetaKnowledgeAgent:
             
             "core_capabilities": [
                 "🔍 **Document Analysis**: Upload and analyze PDF documents, reports, and text files",
+                "📝 **On-Demand Document Summaries**: Request comprehensive summaries for any document with key themes, main points, and entity extraction",
                 "💬 **Intelligent Q&A**: Ask questions about your uploaded documents and get accurate answers",
                 "🧠 **Context-Aware Conversations**: Maintains conversation history and understands follow-up questions",
                 "📊 **Multi-Modal Analysis**: Handles factual questions, counterfactual scenarios, and temporal analysis",
@@ -36,6 +37,7 @@ class MetaKnowledgeAgent:
             
             "key_features": [
                 "📂 **Document Management**: Upload, view, and delete your documents",
+                "📋 **On-Demand Summaries**: Request AI-generated summaries with executive overview, key themes, main points, and entity extraction",
                 "🎯 **Intelligent Intent Detection**: Automatically understands what type of answer you need",
                 "🔄 **Multi-Agent Workflow**: Uses specialized AI agents for different types of analysis",
                 "📱 **Responsive Design**: Works seamlessly on desktop and mobile devices",
@@ -46,6 +48,7 @@ class MetaKnowledgeAgent:
             "how_it_works": [
                 "**Upload Documents**: Add your PDF files or documents to the system",
                 "**Ask Questions**: Type any question about your documents in natural language",
+                "**Request Summaries**: Ask for a summary of any document to get key themes and insights",
                 "**AI Processing**: The system analyzes your question and retrieves relevant information",
                 "**Get Answers**: Receive detailed responses with source citations and references",
                 "**Continue Conversation**: Ask follow-up questions or explore different aspects"
@@ -54,6 +57,7 @@ class MetaKnowledgeAgent:
             "agent_system": {
                 "Intent Router": "Determines the best approach for each question",
                 "Document Retriever": "Finds relevant information from your uploaded documents",
+                "Document Summary": "Generates comprehensive summaries on-demand with key themes, insights, and entity extraction",
                 "Reasoning Agent": "Provides factual analysis and detailed explanations",
                 "Simulation Agent": "Handles what-if scenarios and counterfactual analysis",
                 "Temporal Agent": "Analyzes how information has changed over time",
@@ -72,6 +76,7 @@ class MetaKnowledgeAgent:
                 "Click the '↑' button to upload your first document",
                 "Wait for the document to be processed and indexed",
                 "Start asking questions about the content",
+                "Request a summary by asking 'Can you summarize this document?'",
                 "Use follow-up questions to dive deeper into topics",
                 "Check the context panel (desktop) to see sources and analysis details"
             ]
@@ -143,6 +148,7 @@ I'm an **Intelligent Document Q&A System** powered by AI. Here are my key capabi
 - **Follow-up Questions**: Context-aware conversations
 
 ### 💡 Smart Features:
+- **On-Demand AI Summaries**: Request comprehensive summaries for any document with key themes, main points, and entity extraction
 - Automatic source citations for every answer
 - Context-aware conversation memory
 - Multi-agent AI workflow for optimal responses
@@ -170,6 +176,7 @@ Behind the scenes, I use multiple specialized AI agents working together:
 
 ### 🧠 Intelligence Features:
 - **Smart Intent Detection**: I automatically understand what type of answer you need
+- **On-Demand Summaries**: Request AI-generated summaries with key themes and insights for any document
 - **Context Awareness**: I remember our conversation and understand follow-up questions
 - **Source Attribution**: Every answer includes references to specific document sections
 - **Adaptive Routing**: Different question types get routed to specialized agents for optimal results
@@ -193,6 +200,7 @@ Transform how you interact with your documents by providing:
 
 ### 🌟 What Makes Me Special:
 - **Multi-Agent AI**: Specialized agents handle different types of questions
+- **On-Demand Summaries**: Request comprehensive AI summaries with key themes and insights for any document
 - **Context Awareness**: I understand follow-up questions and conversation flow
 - **Source Attribution**: Every answer shows you exactly where the information comes from
 - **Flexible Analysis**: Handle everything from simple facts to complex scenarios
@@ -222,6 +230,7 @@ Ready to explore your documents with AI-powered intelligence? Let's get started!
 {use_case_list}
 
 ### 🔧 Advanced Capabilities:
+- **On-Demand AI Summaries**: Request comprehensive document summaries with key themes, main points, and entity extraction
 - **Intelligent Caching**: Reuses previous results when appropriate
 - **Error Handling**: Graceful handling of API issues and edge cases  
 - **Performance Optimization**: Fast response times with smart indexing
@@ -242,6 +251,7 @@ Welcome! Here's how to start using the system:
 {step_list}
 
 ### 💡 Pro Tips:
+- **Request Summaries**: Ask 'Can you summarize this document?' to get a comprehensive overview with key themes
 - **Be Specific**: More detailed questions get better answers
 - **Ask Follow-ups**: I remember our conversation context
 - **Check Sources**: Click on citations to see exactly where information comes from

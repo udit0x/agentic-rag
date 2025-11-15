@@ -403,109 +403,113 @@ export function DocumentLibrary({ documents: propDocuments = [], onRefresh, onDe
           </div>
 
           {/* Document List */}
-          <ScrollArea className="h-96">
-            <AnimatePresence>
-              {isLoading ? (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="flex flex-col items-center justify-center h-32 text-muted-foreground"
-                >
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mb-2"></div>
-                  <p>Loading documents...</p>
-                </motion.div>
-              ) : filteredDocuments.length === 0 ? (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="flex flex-col items-center justify-center h-32 text-muted-foreground"
-                >
-                  <Library className="h-8 w-8 mb-2" />
-                  <p>{searchTerm ? 'No documents match your search' : 'No documents uploaded yet'}</p>
-                </motion.div>
-              ) : (
-                <div className="space-y-2">
-                  {filteredDocuments.map((document, index) => (
+          <div className="border rounded-md">
+            <ScrollArea className="h-96">
+              <div className="p-2 space-y-2">
+                <AnimatePresence>
+                  {isLoading ? (
                     <motion.div
-                      key={document.id}
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -20 }}
-                      transition={{ delay: index * 0.05 }}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="flex flex-col items-center justify-center h-32 text-muted-foreground"
                     >
-                      <Card className={`document-card transition-all duration-200 ${
-                        deletingDocuments.has(document.id) 
-                          ? 'opacity-60 pointer-events-none' 
-                          : 'hover:shadow-md'
-                      }`}>
-                        <CardContent className="p-3 sm:p-4">
-                          <div className="flex items-center gap-2 sm:gap-3">
-                            <div className="flex-shrink-0">
-                              <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-primary/10 flex items-center justify-center transition-all duration-200 ${
-                                deletingDocuments.has(document.id) ? 'bg-destructive/10' : ''
-                              }`}>
-                                <File className={`h-4 w-4 sm:h-5 sm:w-5 transition-colors duration-200 ${
-                                  deletingDocuments.has(document.id) 
-                                    ? 'text-destructive/60' 
-                                    : 'text-primary'
-                                }`} />
-                              </div>
-                            </div>
-                            
-                            <div className="flex-1 min-w-0 document-content">
-                              <div className="flex items-center gap-1 sm:gap-2 mb-1">
-                                <h4 className="text-xs sm:text-sm font-medium truncate">
-                                  {document.filename}
-                                </h4>
-                                <Badge variant="outline" className="text-xs flex-shrink-0">
-                                  {getFileExtension(document.filename)}
-                                </Badge>
-                              </div>
-                              
-                              <div className="flex items-center gap-2 sm:gap-4 text-xs text-muted-foreground">
-                                <span className="flex items-center gap-1">
-                                  <Calendar className="h-3 w-3" />
-                                  <span className="hidden xs:inline">{new Date(document.uploadedAt).toLocaleDateString()}</span>
-                                  <span className="xs:hidden">{new Date(document.uploadedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-                                </span>
-                                <span className="flex-shrink-0">{formatFileSize(document.size)}</span>
-                              </div>
-                            </div>
-                            
-                            <div className="document-actions flex items-center gap-1 flex-shrink-0">
-                              <Dialog>
-                                <DialogTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 sm:h-8 sm:w-8 touch-manipulation hover:bg-primary/10 active:bg-primary/20"
-                                    onClick={() => setSelectedDocument(document)}
-                                  >
-                                    <Eye className="h-4 w-4" />
-                                  </Button>
-                                </DialogTrigger>
-                                {selectedDocument && (
-                                  <DocumentPreview
-                                    document={selectedDocument}
-                                    onClose={() => setSelectedDocument(null)}
-                                  />
-                                )}
-                              </Dialog>
-                              
-                              <AnimatedDeleteButton
-                                isDeleting={deletingDocuments.has(document.id)}
-                                onClick={() => handleDelete(document.id, document.filename)}
-                              />
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mb-2"></div>
+                      <p>Loading documents...</p>
                     </motion.div>
-                  ))}
-                </div>
-              )}
-            </AnimatePresence>
-          </ScrollArea>
+                  ) : filteredDocuments.length === 0 ? (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="flex flex-col items-center justify-center h-32 text-muted-foreground"
+                    >
+                      <Library className="h-8 w-8 mb-2" />
+                      <p>{searchTerm ? 'No documents match your search' : 'No documents uploaded yet'}</p>
+                    </motion.div>
+                  ) : (
+                    <>
+                      {filteredDocuments.map((document, index) => (
+                        <motion.div
+                          key={document.id}
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -20 }}
+                          transition={{ delay: index * 0.05 }}
+                        >
+                          <Card className={`document-card transition-all duration-200 ${
+                            deletingDocuments.has(document.id) 
+                              ? 'opacity-60 pointer-events-none' 
+                              : 'hover:shadow-md'
+                          }`}>
+                            <CardContent className="p-3 sm:p-4">
+                              <div className="flex items-center gap-2 sm:gap-3">
+                                <div className="flex-shrink-0">
+                                  <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-primary/10 flex items-center justify-center transition-all duration-200 ${
+                                    deletingDocuments.has(document.id) ? 'bg-destructive/10' : ''
+                                  }`}>
+                                    <File className={`h-4 w-4 sm:h-5 sm:w-5 transition-colors duration-200 ${
+                                      deletingDocuments.has(document.id) 
+                                        ? 'text-destructive/60' 
+                                        : 'text-primary'
+                                    }`} />
+                                  </div>
+                                </div>
+                                
+                                <div className="flex-1 min-w-0 document-content">
+                                  <div className="flex items-center gap-1 sm:gap-2 mb-1">
+                                    <h4 className="text-xs sm:text-sm font-medium truncate">
+                                      {document.filename}
+                                    </h4>
+                                    <Badge variant="outline" className="text-xs flex-shrink-0">
+                                      {getFileExtension(document.filename)}
+                                    </Badge>
+                                  </div>
+                                  
+                                  <div className="flex items-center gap-2 sm:gap-4 text-xs text-muted-foreground">
+                                    <span className="flex items-center gap-1">
+                                      <Calendar className="h-3 w-3" />
+                                      <span className="hidden xs:inline">{new Date(document.uploadedAt).toLocaleDateString()}</span>
+                                      <span className="xs:hidden">{new Date(document.uploadedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                                    </span>
+                                    <span className="flex-shrink-0">{formatFileSize(document.size)}</span>
+                                  </div>
+                                </div>
+                                
+                                <div className="document-actions flex items-center gap-1 flex-shrink-0">
+                                  <Dialog>
+                                    <DialogTrigger asChild>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8 sm:h-8 sm:w-8 touch-manipulation hover:bg-primary/10 active:bg-primary/20"
+                                        onClick={() => setSelectedDocument(document)}
+                                      >
+                                        <Eye className="h-4 w-4" />
+                                      </Button>
+                                    </DialogTrigger>
+                                    {selectedDocument && (
+                                      <DocumentPreview
+                                        document={selectedDocument}
+                                        onClose={() => setSelectedDocument(null)}
+                                      />
+                                    )}
+                                  </Dialog>
+                                  
+                                  <AnimatedDeleteButton
+                                    isDeleting={deletingDocuments.has(document.id)}
+                                    onClick={() => handleDelete(document.id, document.filename)}
+                                  />
+                                </div>
+                              </div>
+                            </CardContent>
+                          </Card>
+                        </motion.div>
+                      ))}
+                    </>
+                  )}
+                </AnimatePresence>
+              </div>
+            </ScrollArea>
+          </div>
           
           {/* Refresh Button */}
           <div className="flex justify-center pt-2 border-t">

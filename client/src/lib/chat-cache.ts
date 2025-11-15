@@ -140,10 +140,10 @@ export function applyEventToCache(
               serverId: ev.userMessageId
             };
             
-            console.log('[STARTED] Injected serverId to follow-up message:', {
-              messageId: messages[lastUserIndex].id,
-              serverId: ev.userMessageId
-            });
+            // console.log('[STARTED] Injected serverId to follow-up message:', {
+            //   messageId: messages[lastUserIndex].id,
+            //   serverId: ev.userMessageId
+            // });
           }
           
           return {
@@ -181,12 +181,12 @@ export function applyEventToCache(
           return current;
         }
         
-        console.log('[CACHE] Setting refined queries:', {
-          refinedForId,
-          messageServerId,
-          count: ev.refined.length,
-          queries: ev.refined
-        });
+        // console.log('[CACHE] Setting refined queries:', {
+        //   refinedForId,
+        //   messageServerId,
+        //   count: ev.refined.length,
+        //   queries: ev.refined
+        // });
         
         return {
           messages: current.messages,

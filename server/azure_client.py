@@ -2,6 +2,7 @@
 import os
 import hashlib
 import json
+import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from langchain_core.documents import Document
@@ -24,6 +25,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from server.config_manager import config_manager
 from server.providers import get_llm, get_embeddings, reset_providers
+
+# Configure module logger
+logger = logging.getLogger(__name__)
 
 # Simple in-memory cache for search results
 class SearchCache:
@@ -49,14 +53,14 @@ class SearchCache:
             
             # Check if expired
             if datetime.now() - timestamp < timedelta(minutes=self.ttl_minutes):
-                print(f"[SEARCH_CACHE] Cache HIT for query hash: {cache_key[:8]}...")
+                logger.debug("Cache hit for query hash: %s", cache_key[:8])
                 return cached_data
             else:
                 # Remove expired entry
                 del self.cache[cache_key]
-                print(f"[SEARCH_CACHE] Cache EXPIRED for query hash: {cache_key[:8]}...")
+                logger.debug("Cache expired for query hash: %s", cache_key[:8])
         
-        print(f"[SEARCH_CACHE] Cache MISS for query hash: {cache_key[:8]}...")
+        logger.debug("Cache miss for query hash: %s", cache_key[:8])
         return None
     
     def set(self, query: str, top_k: int, results: List[Dict[str, Any]]):
@@ -67,15 +71,15 @@ class SearchCache:
         if len(self.cache) >= self.max_size:
             oldest_key = min(self.cache.keys(), key=lambda k: self.cache[k][1])
             del self.cache[oldest_key]
-            print(f"[SEARCH_CACHE] Evicted oldest entry: {oldest_key[:8]}...")
+            logger.debug("Cache evicted oldest entry: %s", oldest_key[:8])
         
         self.cache[cache_key] = (results, datetime.now())
-        print(f"[SEARCH_CACHE] Cached {len(results)} results for query hash: {cache_key[:8]}...")
+        logger.debug("Cached %d results for query hash: %s", len(results), cache_key[:8])
     
     def clear(self):
         """Clear all cached results."""
         self.cache.clear()
-        print("[SEARCH_CACHE] Cache cleared")
+        logger.info("Search cache cleared")
 
 # Global cache instance
 _search_cache = SearchCache(ttl_minutes=5, max_size=50)  # 5 min TTL, 50 queries max
@@ -89,8 +93,12 @@ class MultiProviderRAGClient:
         self.search_key = os.getenv("AZURE_SEARCH_API_KEY")
         self.index_name = os.getenv("AZURE_SEARCH_INDEX_NAME", "rag-documents")
         
-        # Debug: Print Azure Search configuration
-        print(f"[RAG_CLIENT] Azure Search config: endpoint={bool(self.search_endpoint)}, key={bool(self.search_key)}, index={self.index_name}")
+        # Security: Never log credentials - only log if configured
+        logger.info(
+            "Azure Search configuration loaded - endpoint_configured=%s, index=%s",
+            bool(self.search_endpoint),
+            self.index_name
+        )
         
         # Flag to track if Azure Search is available and working
         self.azure_search_enabled = False
@@ -113,17 +121,16 @@ class MultiProviderRAGClient:
                     credential=AzureKeyCredential(self.search_key),
                     api_version="2023-11-01" 
                 )
-                print(f"[RAG_CLIENT] Azure Search clients initialized for index: {self.index_name}")
+                logger.info("Azure Search clients initialized for index: %s", self.index_name)
                 # Note: azure_search_enabled will be set to True only after successful upload
             except Exception as e:
-                print(f"Warning: Failed to initialize Azure Search client: {e}")
+                logger.warning("Failed to initialize Azure Search client: %s", str(e))
                 self.search_index_client = None
                 self.search_client = None
         else:
-            print(f"[RAG_CLIENT] Azure Search not configured: endpoint={self.search_endpoint is not None}, key={self.search_key is not None}")
+            logger.info("Azure Search not configured - vector search disabled")
         
         # Optimized text splitter with reduced overlap for better performance
-        # Reduced chunk_overlap from 500 to 200 to minimize redundancy
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1200,  # Slightly larger chunks for better content density
             chunk_overlap=300,  # Reduced overlap for less redundancy and faster processing
@@ -136,7 +143,7 @@ class MultiProviderRAGClient:
         try:
             return get_llm()
         except Exception as e:
-            print(f"[RAG_CLIENT] Error getting LLM: {e}")
+            logger.error("Failed to get LLM instance: %s", str(e))
             return None
     
     def get_embeddings(self):
@@ -144,27 +151,51 @@ class MultiProviderRAGClient:
         try:
             return get_embeddings()
         except Exception as e:
-            print(f"[RAG_CLIENT] Error getting embeddings: {e}")
+            logger.error("Failed to get embeddings instance: %s", str(e))
             return None
     
     def reload_providers(self):
         """Reload providers when configuration changes."""
         reset_providers()
-        print("[RAG_CLIENT] Reloaded all providers due to configuration change")
+        logger.info("Reloaded all providers due to configuration change")
     
     async def ensure_index_exists(self):
-        """Create search index if it doesn't exist."""
+        """Create search index if it doesn't exist or recreate if schema is incorrect."""
         if not self.search_index_client:
-            print("[RAG_CLIENT] Azure Search index client not available, cannot create index")
+            logger.warning("Azure Search index client not available, cannot create index")
             return False
             
         try:
             # Try to get existing index
             existing_index = self.search_index_client.get_index(self.index_name)
-            print(f"[RAG_CLIENT] Index '{self.index_name}' already exists")
-            return True
+            logger.info("Azure Search index '%s' already exists", self.index_name)
+            
+            # Verify the index has required fields
+            existing_field_names = {field.name for field in existing_index.fields}
+            required_fields = {"id", "content", "documentId", "filename", "chunkIndex", "contentVector", "userId"}
+            missing_fields = required_fields - existing_field_names
+            
+            if missing_fields:
+                logger.warning("Index '%s' is missing required fields: %s", self.index_name, missing_fields)
+                logger.info("Deleting and recreating index with correct schema...")
+                
+                try:
+                    # Delete the old index
+                    self.search_index_client.delete_index(self.index_name)
+                    logger.info("Deleted incompatible index '%s'", self.index_name)
+                    
+                    # Fall through to creation logic below
+                    raise Exception("Index deleted, needs recreation")
+                except Exception as delete_error:
+                    logger.error("Failed to delete incompatible index: %s", str(delete_error))
+                    # Try to continue with creation anyway
+                    pass
+            else:
+                logger.debug("Index schema validated - all required fields present")
+                return True
+                
         except Exception:
-            print(f"[RAG_CLIENT] Index '{self.index_name}' does not exist, creating it...")
+            logger.info("Index '%s' does not exist, creating it...", self.index_name)
             
             try:
                 # Create index with vector search configuration
@@ -187,6 +218,11 @@ class MultiProviderRAGClient:
                     ),
                     SearchField(
                         name="filename",
+                        type=SearchFieldDataType.String,
+                        filterable=True,
+                    ),
+                    SearchField(
+                        name="userId",
                         type=SearchFieldDataType.String,
                         filterable=True,
                     ),
@@ -223,11 +259,11 @@ class MultiProviderRAGClient:
                 )
                 
                 result = self.search_index_client.create_index(index)
-                print(f"[RAG_CLIENT] Successfully created index '{self.index_name}'")
+                logger.info("Successfully created Azure Search index '%s'", self.index_name)
                 return True
                 
             except Exception as create_error:
-                print(f"[RAG_CLIENT] Failed to create index: {create_error}")
+                logger.error("Failed to create index: %s", str(create_error))
                 return False
     
     async def embed_documents(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
@@ -250,7 +286,7 @@ class MultiProviderRAGClient:
             return await embeddings.aembed_documents(texts)
         
         # Large batch, process in chunks with concurrent processing
-        print(f"[EMBEDDINGS] Processing {len(texts)} texts in batches of {batch_size}")
+        logger.info("Processing %d texts in batches of %d", len(texts), batch_size)
         
         # Create batches
         batches = []
@@ -264,14 +300,13 @@ class MultiProviderRAGClient:
         
         async def process_batch_with_semaphore(batch_texts, batch_num, total_batches):
             async with semaphore:
-                print(f"[EMBEDDINGS] Processing batch {batch_num}/{total_batches} ({len(batch_texts)} texts)")
+                logger.debug("Processing embedding batch %d/%d (%d texts)", batch_num, total_batches, len(batch_texts))
                 try:
                     return await embeddings.aembed_documents(batch_texts)
                 except Exception as e:
-                    print(f"[EMBEDDINGS] Batch {batch_num} failed: {e}")
+                    logger.warning("Embedding batch %d failed: %s - retrying with smaller chunks", batch_num, str(e))
                     # Retry once with smaller batch if it fails
                     if len(batch_texts) > 50:
-                        print(f"[EMBEDDINGS] Retrying batch {batch_num} with smaller chunks")
                         mid = len(batch_texts) // 2
                         chunk1 = await embeddings.aembed_documents(batch_texts[:mid])
                         chunk2 = await embeddings.aembed_documents(batch_texts[mid:])
@@ -292,7 +327,7 @@ class MultiProviderRAGClient:
         for batch_embeddings in batch_results:
             all_embeddings.extend(batch_embeddings)
         
-        print(f"[EMBEDDINGS] Completed: {len(all_embeddings)} embeddings generated")
+        logger.info("Embedding completed: %d vectors generated", len(all_embeddings))
         return all_embeddings
     
     async def embed_query(self, text: str) -> List[float]:
@@ -307,20 +342,35 @@ class MultiProviderRAGClient:
         docs = self.text_splitter.create_documents([text])
         return [doc.page_content for doc in docs]
     
-    async def delete_document_chunks_from_search(self, filename: str):
-        """Delete all chunks for a document from Azure Cognitive Search by filename."""
+    async def delete_document_chunks_from_search(self, filename: str, user_id: str = None):
+        """
+        Delete all chunks for a document from Azure Cognitive Search by filename AND userId.
+        
+        CRITICAL: Must filter by BOTH filename AND userId to prevent cross-user data deletion!
+        
+        Args:
+            filename: Document filename
+            user_id: User ID who owns the document (REQUIRED for security)
+        """
         if not self.search_client:
-            print("[DEBUG] Azure Search not configured, skipping deletion")
+            logger.debug("Azure Search not configured, skipping document chunk deletion")
             return
             
         try:
             await self.ensure_index_exists()
             
-            # Search for existing chunks with this filename
-            print(f"[DEBUG] Searching for existing chunks with filename: {filename}")
+            # Build filter with BOTH filename AND userId
+            if user_id:
+                filter_query = f"filename eq '{filename}' and userId eq '{user_id}'"
+                logger.debug("Deleting chunks for filename=%s, user_id=%s", filename, user_id)
+            else:
+                # Fallback to filename only (for backward compatibility, but log warning)
+                filter_query = f"filename eq '{filename}'"
+                logger.warning("Deleting chunks by filename only (no user_id) - SECURITY RISK for file: %s", filename)
+            
             search_results = self.search_client.search(
                 search_text="*",
-                filter=f"filename eq '{filename}'",
+                filter=filter_query,
                 select=["id"],
                 search_mode="all"
             )
@@ -333,17 +383,17 @@ class MultiProviderRAGClient:
                 count += 1
             
             if docs_to_delete:
-                print(f"[DEBUG] Found {count} existing chunks to delete for {filename}")
+                logger.info("Deleting %d existing chunks for file: %s", count, filename)
                 # Delete existing chunks
                 delete_result = self.search_client.delete_documents(documents=docs_to_delete)
-                print(f"[DEBUG] Successfully deleted {count} existing chunks for {filename}")
+                logger.info("Successfully deleted %d chunks for file: %s", count, filename)
                 return delete_result
             else:
-                print(f"[DEBUG] No existing chunks found for {filename}")
+                logger.debug("No existing chunks found for file: %s", filename)
                 return None
                 
         except Exception as e:
-            print(f"[DEBUG] Failed to delete existing chunks for {filename}: {e}")
+            logger.error("Failed to delete chunks for file %s: %s", filename, str(e))
             # Don't raise exception - continue with upload
             return None
 
@@ -361,7 +411,7 @@ class MultiProviderRAGClient:
             batch_size: Number of chunks to upload per batch (default: 50)
         """
         if not self.search_client:
-            print("[DEBUG] Azure Search not configured, skipping upload")
+            logger.debug("Azure Search not configured, skipping chunk upload")
             return
             
         try:
@@ -372,12 +422,13 @@ class MultiProviderRAGClient:
             # Only check if we have chunks to upload and deletion check is not skipped
             if chunks and not skip_delete_check:
                 filename = chunks[0]["filename"]
-                print(f"[DEBUG] Checking for existing chunks for document: {filename}")
-                await self.delete_document_chunks_from_search(filename)
+                user_id = chunks[0].get("userId")  # Get userId from chunk
+                logger.debug("Checking for existing chunks for document: %s (user: %s)", filename, user_id)
+                await self.delete_document_chunks_from_search(filename, user_id)
             elif chunks and skip_delete_check:
-                print(f"[DEBUG] Skipping delete check for new document: {chunks[0]['filename']}")
+                logger.debug("Skipping delete check for new document: %s", chunks[0]['filename'])
             else:
-                print("[DEBUG] No chunks to upload")
+                logger.debug("No chunks to upload")
                 return []
             
             # Prepare documents for upload
@@ -388,6 +439,7 @@ class MultiProviderRAGClient:
                     "content": chunk["content"],
                     "documentId": chunk["documentId"],
                     "filename": chunk["filename"],
+                    "userId": chunk.get("userId", ""),  # Add userId for security filtering
                     "chunkIndex": chunk["chunkIndex"],
                     "contentVector": chunk["embedding"],
                 }
@@ -397,11 +449,11 @@ class MultiProviderRAGClient:
             if len(documents) <= batch_size:
                 # Small batch, upload all at once
                 result = self.search_client.upload_documents(documents=documents)
-                print(f"[DEBUG] Successfully uploaded {len(documents)} chunks to Azure Search")
+                logger.info("Uploaded %d chunks to Azure Search", len(documents))
                 return result
             else:
                 # Large batch, split into smaller uploads with concurrent processing
-                print(f"[DEBUG] Uploading {len(documents)} chunks in batches of {batch_size}")
+                logger.info("Uploading %d chunks in batches of %d", len(documents), batch_size)
                 
                 # Create batches
                 batches = []
@@ -415,7 +467,7 @@ class MultiProviderRAGClient:
                 
                 async def upload_batch_with_semaphore(batch_data, batch_num, total_batches):
                     async with semaphore:
-                        print(f"[DEBUG] Uploading batch {batch_num}/{total_batches} ({len(batch_data)} chunks)")
+                        logger.debug("Uploading batch %d/%d (%d chunks)", batch_num, total_batches, len(batch_data))
                         try:
                             # Run the synchronous upload in thread pool to avoid blocking
                             loop = asyncio.get_event_loop()
@@ -423,10 +475,9 @@ class MultiProviderRAGClient:
                                 None, 
                                 lambda: self.search_client.upload_documents(documents=batch_data)
                             )
-                            print(f"[DEBUG] Batch {batch_num} completed successfully")
                             return result
                         except Exception as batch_error:
-                            print(f"[DEBUG] Batch {batch_num} upload failed: {batch_error}")
+                            logger.error("Batch %d upload failed: %s", batch_num, str(batch_error))
                             return None
                 
                 # Execute all batch uploads concurrently
@@ -440,12 +491,11 @@ class MultiProviderRAGClient:
                 # Filter out failed uploads
                 successful_results = [r for r in results if r is not None and not isinstance(r, Exception)]
                 
-                print(f"[DEBUG] Successfully uploaded {len(documents)} chunks to Azure Search in {len(successful_results)}/{len(batches)} batches")
+                logger.info("Uploaded %d chunks to Azure Search in %d/%d successful batches", len(documents), len(successful_results), len(batches))
                 return successful_results
             
         except Exception as e:
-            print(f"[DEBUG] Azure Search upload failed: {e}")
-            print("[DEBUG] Continuing without search index for testing")
+            logger.error("Azure Search upload failed: %s", str(e))
             # Don't raise exception - continue without search for now
             return None
     
@@ -509,31 +559,31 @@ class MultiProviderRAGClient:
         
         if user_threshold >= 0.95:  # 95%+ = Perfect match expectation
             adapted = 0.75  # Map to realistic "excellent" threshold
-            print(f"[THRESHOLD] User expects perfect match (≥{user_threshold:.0%}) → Using vector reality threshold {adapted:.3f}")
+            logger.debug("User expects perfect match (≥%.0f%%) → using vector reality threshold %.3f", user_threshold * 100, adapted)
             
         elif user_threshold >= 0.90:  # 90-94% = Excellent match
             adapted = 0.72  # High quality threshold
-            print(f"[THRESHOLD] User expects excellent match ({user_threshold:.0%}) → Using vector reality threshold {adapted:.3f}")
+            logger.debug("User expects excellent match (%.0f%%) → using vector reality threshold %.3f", user_threshold * 100, adapted)
             
         elif user_threshold >= 0.85:  # 85-89% = Very good match
             adapted = 0.70  # Very good threshold
-            print(f"[THRESHOLD] User expects very good match ({user_threshold:.0%}) → Using vector reality threshold {adapted:.3f}")
+            logger.debug("User expects very good match (%.0f%%) → using vector reality threshold %.3f", user_threshold * 100, adapted)
             
         elif user_threshold >= 0.80:  # 80-84% = Good match
             adapted = 0.68  # Good threshold
-            print(f"[THRESHOLD] User expects good match ({user_threshold:.0%}) → Using vector reality threshold {adapted:.3f}")
+            logger.debug("User expects good match (%.0f%%) → using vector reality threshold %.3f", user_threshold * 100, adapted)
             
         elif user_threshold >= 0.75:  # 75-79% = Decent match
             adapted = 0.65  # Decent threshold
-            print(f"[THRESHOLD] User expects decent match ({user_threshold:.0%}) → Using vector reality threshold {adapted:.3f}")
+            logger.debug("User expects decent match (%.0f%%) → using vector reality threshold %.3f", user_threshold * 100, adapted)
             
         elif user_threshold >= 0.70:  # 70-74% = Moderate match
             adapted = 0.60  # Moderate threshold
-            print(f"[THRESHOLD] User expects moderate match ({user_threshold:.0%}) → Using vector reality threshold {adapted:.3f}")
+            logger.debug("User expects moderate match (%.0f%%) → using vector reality threshold %.3f", user_threshold * 100, adapted)
             
         else:  # <70% = Low expectation, use as-is but with minimum floor
             adapted = max(user_threshold, 0.50)  # Don't go below 50% (irrelevant content)
-            print(f"[THRESHOLD] User has low expectation ({user_threshold:.0%}) → Using threshold {adapted:.3f}")
+            logger.debug("User has low expectation (%.0f%%) → using threshold %.3f", user_threshold * 100, adapted)
         
         return adapted
     
@@ -543,7 +593,7 @@ class MultiProviderRAGClient:
         top_k: int = 5,
         min_score_threshold: float = None,
         document_ids: Optional[List[str]] = None,
-        user_id: Optional[str] = None  # ✅ SECURITY: Add user_id for isolation
+        user_id: Optional[str] = None  # Add user_id for isolation
     ) -> List[Dict[str, Any]]:
         """
         Perform semantic search using vector similarity with precision filtering and caching.
@@ -561,7 +611,7 @@ class MultiProviderRAGClient:
         # Check cache first
         cached_results = _search_cache.get(query, top_k)
         if cached_results is not None:
-            # ✅ SECURITY: Filter cached results by user_id
+            # Filter cached results by user_id
             if user_id:
                 cached_results = await self._filter_results_by_user(cached_results, user_id)
             
@@ -583,7 +633,7 @@ class MultiProviderRAGClient:
                 if result.get('score', 0) >= min_score_threshold:
                     filtered_results.append(result)
             
-            print(f"[DEBUG] Using cached results: {len(cached_results)} -> {len(filtered_results)} after threshold")
+            logger.debug("Using cached results: %d -> %d after threshold filtering", len(cached_results), len(filtered_results))
             return filtered_results
         
         # Get threshold from config if not specified
@@ -593,22 +643,22 @@ class MultiProviderRAGClient:
                 user_threshold = config.documentRelevanceThreshold if config else 0.65
                 # Smart adaptation: Convert user expectation to vector reality
                 min_score_threshold = self._adapt_user_threshold_to_vector_reality(user_threshold)
-                print(f"[DEBUG] Retrieved threshold from config: {user_threshold}, adapted to vector reality: {min_score_threshold}, config source: {config.source if config else 'none'}")
+                logger.debug("Retrieved threshold from config: user=%s, adapted=%s", user_threshold, min_score_threshold)
             except Exception as e:
-                print(f"[DEBUG] Error getting threshold from config: {e}")
+                logger.warning("Error getting threshold from config: %s", str(e))
                 min_score_threshold = 0.65
         else:
             # If threshold was passed explicitly, still adapt it
             original_threshold = min_score_threshold
             min_score_threshold = self._adapt_user_threshold_to_vector_reality(min_score_threshold)
-            print(f"[DEBUG] Threshold passed explicitly: {original_threshold}, adapted to vector reality: {min_score_threshold}")
+            logger.debug("Threshold adapted: original=%s, adapted=%s", original_threshold, min_score_threshold)
         
-        print(f"[DEBUG] Using adapted document relevance threshold: {min_score_threshold}")
+        logger.debug("Using document relevance threshold: %s", min_score_threshold)
         
         embeddings = self.get_embeddings()
         
         if not self.search_client or not embeddings:
-            print("[DEBUG] Azure Search disabled or not configured, using fallback search")
+            logger.info("Azure Search disabled or not configured, using fallback search")
             results = await self._fallback_search(query, top_k, min_score_threshold, user_id=user_id)
             # Cache fallback results too
             _search_cache.set(query, top_k, results)
@@ -616,7 +666,7 @@ class MultiProviderRAGClient:
             
         # Generate query embedding
         query_vector = await self.embed_query(query)
-        print(f"[DEBUG] Query vector generated - dimension: {len(query_vector)}")
+        logger.debug("Query vector generated - dimension: %d", len(query_vector))
         
         # First check if index has any documents
         try:
@@ -626,9 +676,9 @@ class MultiProviderRAGClient:
                 top=1
             )
             doc_count = len(list(doc_count_results))
-            print(f"[DEBUG] Index contains {doc_count} documents (checking first result)")
+            logger.debug("Index contains documents (sample check: %d)", doc_count)
         except Exception as count_error:
-            print(f"[DEBUG] Could not count documents: {count_error}")
+            logger.warning("Could not count documents: %s", str(count_error))
         
         # Perform vector search with proper VectorizedQuery
         try:
@@ -637,13 +687,13 @@ class MultiProviderRAGClient:
                 k_nearest_neighbors=top_k,
                 fields="contentVector"
             )
-            print(f"[DEBUG] Created vector query - k: {top_k}, field: contentVector")
+            logger.debug("Created vector query - k=%d, field=contentVector", top_k)
             
             # Get the index schema to see available fields
             try:
                 index_info = self.search_index_client.get_index(self.index_name)
                 available_fields = [field.name for field in index_info.fields]
-                print(f"[DEBUG] Available fields from index schema: {available_fields}")
+                logger.debug("Available index fields: %s", available_fields)
                 
                 # Build select list with only available fields
                 select_fields = []
@@ -660,11 +710,10 @@ class MultiProviderRAGClient:
                     # If no expected fields found, just select id or first available field
                     select_fields = ["id"] if "id" in available_fields else [available_fields[0]] if available_fields else []
                 
-                print(f"[DEBUG] Using select fields based on schema: {select_fields}")
+                logger.debug("Using select fields: %s", select_fields)
             
             except Exception as schema_error:
-                print(f"[DEBUG] Could not get index schema: {schema_error}")
-                print("[DEBUG] Azure Search index may not exist or be accessible")
+                logger.error("Could not get index schema: %s", str(schema_error))
                 # Fall back to in-memory search immediately
                 return await self._fallback_search(query, top_k, min_score_threshold)
             
@@ -672,7 +721,7 @@ class MultiProviderRAGClient:
             search_filter = None
             filter_parts = []
             
-            # ✅ SECURITY: Always filter by user's documents if user_id is provided
+            # Filter by user's documents if user_id is provided
             if user_id:
                 # Get all document IDs for this user
                 from server.storage import storage
@@ -680,24 +729,24 @@ class MultiProviderRAGClient:
                 user_doc_ids = [doc["id"] for doc in user_documents]
                 
                 if not user_doc_ids:
-                    print(f"[SECURITY] User {user_id} has no documents, returning empty results")
+                    logger.warning("User %s has no documents, returning empty results", user_id)
                     return []
                 
                 # Create filter for user's documents
                 user_filter_parts = [f"documentId eq '{doc_id}'" for doc_id in user_doc_ids]
                 filter_parts.append(f"({' or '.join(user_filter_parts)})")
-                print(f"[SECURITY] Filtering by user {user_id}'s {len(user_doc_ids)} documents")
+                logger.debug("Filtering by user %s documents (count: %d)", user_id, len(user_doc_ids))
             
             if document_ids and len(document_ids) > 0:
                 # Create an OData filter to include only specified documents
                 document_filter_parts = [f"documentId eq '{doc_id}'" for doc_id in document_ids]
                 filter_parts.append(f"({' or '.join(document_filter_parts)})")
-                print(f"[DEBUG] Applied document filter: {len(document_ids)} documents")
+                logger.debug("Applied document filter for %d documents", len(document_ids))
             
             # Combine filters with AND
             if filter_parts:
                 search_filter = " and ".join(filter_parts)
-                print(f"[DEBUG] Combined filter: {search_filter[:100]}...")  # Log first 100 chars
+                logger.debug("Combined filter applied (length: %d)", len(search_filter))
             
             results = self.search_client.search(
                 search_text=None,  # Use pure vector search instead of hybrid
@@ -707,15 +756,13 @@ class MultiProviderRAGClient:
                 top=top_k
             )
             
-            print(f"[DEBUG] Azure Search returned results successfully")
-            
             # Convert results to list to check count and debug
             results_list = list(results)
-            print(f"[DEBUG] Vector search returned {len(results_list)} results")
+            logger.debug("Vector search returned %d results", len(results_list))
             
             # If no vector results, try a simple text search as a diagnostic
             if len(results_list) == 0:
-                print(f"[DEBUG] No vector results found, trying simple text search for diagnostic...")
+                logger.debug("No vector results found, trying text search for diagnostic")
                 try:
                     text_results = self.search_client.search(
                         search_text=query,
@@ -723,19 +770,16 @@ class MultiProviderRAGClient:
                         top=3
                     )
                     text_results_list = list(text_results)
-                    print(f"[DEBUG] Simple text search returned {len(text_results_list)} results")
+                    logger.debug("Text search returned %d results", len(text_results_list))
                     if len(text_results_list) > 0:
-                        print(f"[DEBUG] Text search shows index has data, vector search issue likely")
-                        for i, result in enumerate(text_results_list[:2]):
-                            print(f"[DEBUG] Text result {i}: ID={result.get('id', 'unknown')[:8]}..., filename={result.get('filename', 'unknown')}")
+                        logger.debug("Text search shows index has data, vector search issue likely")
                 except Exception as text_error:
-                    print(f"[DEBUG] Text search also failed: {text_error}")
+                    logger.debug("Text search also failed: %s", str(text_error))
             
             # Use the vector results for processing
             results = results_list
         except Exception as e:
-            print(f"[DEBUG] Azure Search vector query failed: {e}")
-            print("[DEBUG] Falling back to in-memory search")
+            logger.error("Azure Search vector query failed: %s", str(e))
             return await self._fallback_search(query, top_k, min_score_threshold)
         
         # Format results with enhanced metadata grounding (Level 3)
@@ -751,11 +795,10 @@ class MultiProviderRAGClient:
             
             # Level 1: Apply minimum score threshold to discard noisy context
             if normalized_score < min_score_threshold:
-                print(f"[DEBUG] Discarding chunk due to low score ({normalized_score:.3f} < {min_score_threshold}): {result.get('filename', 'unknown')}")
+                logger.debug("Discarding low-score chunk (%.3f < %.3f) from: %s", normalized_score, min_score_threshold, result.get('filename', 'unknown'))
                 continue
             
             # Debug: Print both raw and normalized scores
-            #print(f"[DEBUG] Azure Search result - ID: {result.get('id', 'unknown')[:8]}..., Raw Score: {raw_score:.6f}, Normalized: {normalized_score:.3f}")
             
             # Level 3: Enhanced metadata grounding with source information
             chunk_index = result.get("chunkIndex", 0)
@@ -771,7 +814,7 @@ class MultiProviderRAGClient:
                 "source_metadata": source_metadata,  # Added for Level 3 grounding
             })
         
-        print(f"[DEBUG] Returning {len(formatted_results)} high-quality results (after threshold filter) with scores: {[r['score'] for r in formatted_results]}")
+        logger.info("Returning %d high-quality results after threshold filtering", len(formatted_results))
         
         # Cache the results before returning
         _search_cache.set(query, top_k, formatted_results)
@@ -799,19 +842,18 @@ class MultiProviderRAGClient:
         ]
         
         if len(filtered_results) < len(results):
-            print(f"[SECURITY] Filtered {len(results) - len(filtered_results)} unauthorized chunks for user {user_id}")
+            logger.info("Filtered %d unauthorized chunks for user %s", len(results) - len(filtered_results), user_id)
         
         return filtered_results
     
     async def _fallback_search(self, query: str, top_k: int, min_score_threshold: float = 0.65, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Fallback search using simple text matching."""
-        print(f"[DEBUG] FALLBACK SEARCH CALLED for query: '{query}', top_k: {top_k}")
-        print(f"[DEBUG] This should NOT be called if Azure Search is working!")
+        logger.warning("Fallback search activated for query (top_k=%d)", top_k)
         
         # Apply smart threshold adaptation to fallback search too
         original_threshold = min_score_threshold
         min_score_threshold = self._adapt_user_threshold_to_vector_reality(min_score_threshold)
-        print(f"[DEBUG] Fallback search - original threshold: {original_threshold}, adapted: {min_score_threshold}")
+        logger.debug("Fallback search threshold adapted: original=%s, adapted=%s", original_threshold, min_score_threshold)
         
         # Import here to avoid circular imports
         import sys
@@ -819,40 +861,33 @@ class MultiProviderRAGClient:
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from server.storage import storage
         
-        # ✅ SECURITY: Get only chunks from user's documents
+        # Get only chunks from user's documents
         if user_id:
             # Get all document IDs for this user
             user_documents = await storage.getAllDocuments(userId=user_id)
             user_doc_ids = {doc["id"] for doc in user_documents}
             
             if not user_doc_ids:
-                print(f"[SECURITY] User {user_id} has no documents, returning empty results")
+                logger.warning("User %s has no documents, returning empty fallback results", user_id)
                 return []
             
             # Get all chunks
             all_chunks = await storage.getAllChunks()
             # Filter to only user's documents
             all_chunks = [chunk for chunk in all_chunks if chunk.get("documentId") in user_doc_ids]
-            print(f"[SECURITY] Fallback search filtered to {len(all_chunks)} chunks from user {user_id}'s documents")
+            logger.info("Fallback search filtered to %d chunks from user %s documents", len(all_chunks), user_id)
         else:
             # Get all chunks from storage (no user filter - only for backward compatibility)
             all_chunks = await storage.getAllChunks()
-            print(f"[DEBUG] Retrieved {len(all_chunks)} chunks from storage (NO USER FILTER)")
-        
-        print(f"[DEBUG] Retrieved {len(all_chunks)} chunks from storage")
+            logger.warning("Fallback search with NO USER FILTER - retrieved %d total chunks", len(all_chunks))
         
         if not all_chunks:
-            print("[DEBUG] No chunks found in storage")
+            logger.warning("No chunks found in storage for fallback search")
             return []
-        
-        # Log first chunk for debugging
-        if all_chunks:
-            first_chunk = all_chunks[0]
-            print(f"[DEBUG] First chunk: ID={first_chunk.get('id', 'N/A')}, content length={len(first_chunk.get('content', ''))}")
         
         # Simple keyword-based scoring
         query_words = query.lower().split()
-        print(f"[DEBUG] Query words: {query_words}")
+        logger.debug("Fallback search query words: %s", query_words)
         scored_chunks = []
         
         for chunk in all_chunks:
@@ -878,12 +913,12 @@ class MultiProviderRAGClient:
                     "score": min(score * 10, 1.0),  # Normalize score
                 })
         
-        print(f"[DEBUG] Found {len(scored_chunks)} chunks with matches")
+        logger.debug("Found %d chunks with keyword matches", len(scored_chunks))
         
         # Sort by score and return top_k
         scored_chunks.sort(key=lambda x: x["score"], reverse=True)
         result = scored_chunks[:top_k]
-        print(f"[DEBUG] Returning {len(result)} top results")
+        logger.info("Fallback search returning %d top results", len(result))
         
         return result
 

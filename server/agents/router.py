@@ -1,4 +1,5 @@
 """Router Agent for query classification."""
+import logging
 import re
 from typing import Dict, Any, List
 from datetime import datetime
@@ -13,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from server.providers import get_llm
 from server.agents.state import QueryClassification, AgentTrace
 from server.config_manager import config_manager
+
+logger = logging.getLogger(__name__)
 
 class CleanJsonOutputParser(BaseOutputParser[dict]):
     """Custom JSON parser that handles markdown code blocks."""
@@ -36,8 +39,8 @@ class CleanJsonOutputParser(BaseOutputParser[dict]):
         try:
             return json.loads(text)
         except json.JSONDecodeError as e:
-            print(f"[ROUTER_AGENT] JSON parsing error: {e}")
-            print(f"[ROUTER_AGENT] Raw text: {repr(text)}")
+            logger.error("JSON parsing error: %s", e)
+            logger.debug("Raw text: %s", repr(text))
             raise e
     
     @property
@@ -108,13 +111,13 @@ class RouterAgent:
         """Get the current LLM instance."""
         if self.llm is None:
             try:
-                print(f"[ROUTER_AGENT] Initializing LLM...")
+                logger.info("Initializing LLM")
                 self.llm = get_llm()
-                print(f"[ROUTER_AGENT] LLM initialized successfully: {type(self.llm).__name__}")
+                logger.info("LLM initialized successfully: %s", type(self.llm).__name__)
                 # Rebuild chain when LLM is available
                 self._build_chain()
             except Exception as e:
-                print(f"[ROUTER_AGENT] Error getting LLM: {e}")
+                logger.error("Error getting LLM: %s", e)
                 return None
         return self.llm
     
@@ -133,7 +136,7 @@ class RouterAgent:
             config = config_manager.get_current_config()
             return config.useGeneralKnowledge if config else True
         except Exception as e:
-            print(f"[ROUTER_AGENT] Error getting useGeneralKnowledge config: {e}")
+            logger.warning("Error getting useGeneralKnowledge config: %s", e)
             return True  # Default to True
     
     def _extract_temporal_indicators(self, query: str) -> List[str]:
@@ -298,17 +301,17 @@ class RouterAgent:
             # Ensure LLM is available
             llm = self._get_llm()
             if not llm or not self.classification_chain:
-                print(f"[ROUTER_AGENT] LLM not available, using fallback. LLM: {llm is not None}, Chain: {self.classification_chain is not None}")
+                logger.debug("LLM not available, using fallback. LLM: %s, Chain: %s", llm is not None, self.classification_chain is not None)
                 # Fallback to rule-based classification
                 return self._fallback_classification(query)
             
-            print(f"[ROUTER_AGENT] Classifying query with LLM: {query[:50]}...")
+            logger.debug("Classifying query with LLM: %s", query[:50])
             # Use LLM for classification
             result = await self.classification_chain.ainvoke({
                 "query": query,
                 "use_general_knowledge": use_general_knowledge
             })
-            print(f"[ROUTER_AGENT] LLM classification result: {result}")
+            logger.debug("LLM classification result: %s", result)
             
             # Ensure use_general_knowledge is set correctly
             result["use_general_knowledge"] = use_general_knowledge
@@ -329,9 +332,9 @@ class RouterAgent:
             return QueryClassification(**result)
             
         except Exception as e:
-            print(f"[ROUTER_AGENT] Classification error: {e}")
-            print(f"[ROUTER_AGENT] Query: {query}")
-            print(f"[ROUTER_AGENT] Falling back to rule-based classification")
+            logger.error("Classification error: %s", e)
+            logger.debug("Query: %s", query)
+            logger.info("Falling back to rule-based classification")
             # Fallback to rule-based classification
             return self._fallback_classification(query)
     

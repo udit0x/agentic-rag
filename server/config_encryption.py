@@ -3,10 +3,13 @@ Encryption utilities for secure configuration storage.
 """
 import os
 import base64
+import logging
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 class ConfigEncryption:
     """Handles encryption/decryption of sensitive configuration data."""
@@ -25,7 +28,7 @@ class ConfigEncryption:
             password = os.getenv('CONFIG_PASSWORD', 'default-dev-password-change-in-production')
             salt = os.getenv('CONFIG_SALT', 'default-salt-change-in-production').encode()
             
-            print("[Security] Warning: Using default encryption password. Set CONFIG_MASTER_KEY or CONFIG_PASSWORD in production!")
+            logger.warning("Using default encryption password - set CONFIG_MASTER_KEY or CONFIG_PASSWORD in production!")
             
             # Derive key from password
             kdf = PBKDF2HMAC(
@@ -50,7 +53,7 @@ class ConfigEncryption:
             encrypted_bytes = self._fernet.encrypt(plaintext.encode())
             return base64.urlsafe_b64encode(encrypted_bytes).decode()
         except Exception as e:
-            print(f"[Security] Encryption error: {e}")
+            logger.error("Encryption failed: %s", str(e))
             return plaintext  # Fallback to plaintext (not ideal)
     
     def decrypt(self, encrypted_text: str) -> str:
@@ -63,7 +66,7 @@ class ConfigEncryption:
             decrypted_bytes = self._fernet.decrypt(encrypted_bytes)
             return decrypted_bytes.decode()
         except Exception as e:
-            print(f"[Security] Decryption error: {e}")
+            logger.error("Decryption failed: %s", str(e))
             return encrypted_text  # Fallback to encrypted text (assuming it's already plain)
     
     def is_encrypted(self, text: str) -> bool:
@@ -106,7 +109,7 @@ def encrypt_sensitive_config(config_data: dict) -> dict:
                 if isinstance(value, str) and (key.lower() in SENSITIVE_FIELDS or 'key' in key.lower()):
                     if value and not config_encryption.is_encrypted(value):
                         obj[key] = config_encryption.encrypt(value)
-                        print(f"[Security] Encrypted field: {current_path}")
+                        logger.debug("Encrypted field: %s", current_path)
                 elif isinstance(value, (dict, list)):
                     encrypt_nested(value, current_path)
         elif isinstance(obj, list):
@@ -128,7 +131,7 @@ def decrypt_sensitive_config(config_data: dict) -> dict:
                 if isinstance(value, str) and (key.lower() in SENSITIVE_FIELDS or 'key' in key.lower()):
                     if value and config_encryption.is_encrypted(value):
                         obj[key] = config_encryption.decrypt(value)
-                        print(f"[Security] Decrypted field: {current_path}")
+                        logger.debug("Decrypted field: %s", current_path)
                 elif isinstance(value, (dict, list)):
                     decrypt_nested(value, current_path)
         elif isinstance(obj, list):

@@ -152,7 +152,10 @@ export function DocumentUpload({
           Drag and drop documents here, or click to browse
         </p>
         <p className="text-xs text-muted-foreground mb-2">
-          Supported: PDF, Word, PowerPoint, Excel, CSV, JSON, TXT (max {formatSizeLimit(maxSize)})
+          Supported: PDF, Word, PowerPoint, TXT (max {formatSizeLimit(maxSize)})
+        </p>
+        <p className="text-xs text-blue-600 dark:text-blue-400 mb-2">
+          <strong>Beta:</strong> Excel, CSV, JSON
         </p>
         <div className="text-xs text-amber-600 dark:text-amber-400 mb-4 max-w-md">
           ⏱ <strong>Processing time:</strong> Excel/CSV files and multiple uploads may take 1-2 minutes to process completely

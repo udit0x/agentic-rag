@@ -51,10 +51,11 @@ app.use((req, res, next) => {
     path.startsWith('/api/chat-sessions') ||
     (path.startsWith('/api/chat') && !path.startsWith('/api/chat-sessions')) ||
     path.startsWith('/api/documents') ||
-    path.startsWith('/api/feedback');  // Add feedback routes
+    path.startsWith('/api/feedback') ||  // Add feedback routes
+    path === '/api/health';  // Add health check endpoint
   
   if (willBeProxied) {
-    console.log(`[MIDDLEWARE] Skipping JSON parsing for ${path} (will be proxied)`);
+    // console.log(`[MIDDLEWARE] Skipping JSON parsing for ${path} (will be proxied)`);
     return next();
   }
   
@@ -128,11 +129,11 @@ const pythonApiProxy = createProxyMiddleware({
     if (userId) {
       proxyReq.setHeader('x-user-id', userId);
     }
-    console.log(`[PROXY] ⬆️ Forwarding ${req.method} ${req.path} to FastAPI`);
+    // console.log(`[PROXY] Forwarding ${req.method} ${req.path} to FastAPI`);
   },
   
   onProxyRes: (proxyRes: any, req: any, res: any) => {
-    console.log(`[PROXY] ⬇️ Got response ${proxyRes.statusCode} from FastAPI for ${req.method} ${req.path}`);
+    // console.log(`[PROXY] Got response ${proxyRes.statusCode} from FastAPI for ${req.method} ${req.path}`);
   },
   
   onError: (err: any, req: any, res: any) => {
@@ -152,11 +153,16 @@ const pythonApiProxy = createProxyMiddleware({
 app.use((req, res, next) => {
   const path = req.path;
   
+  // Debug logging for health check
+  if (path === '/api/health') {
+    // console.log(`[PROXY DEBUG] Health check request: ${req.method} ${path}`);
+  }
+  
   // Debug logging for streaming endpoint
   if (path.includes('/query/stream')) {
-    console.log(`[PROXY DEBUG] Streaming request received: ${req.method} ${path}`);
-    console.log(`[PROXY DEBUG] Headers:`, req.headers);
-    console.log(`[PROXY DEBUG] Has x-user-id:`, !!(req.headers as any)['x-user-id']);
+    // console.log(`[PROXY DEBUG] Streaming request received: ${req.method} ${path}`);
+    // console.log(`[PROXY DEBUG] Headers:`, req.headers);
+    // console.log(`[PROXY DEBUG] Has x-user-id:`, !!(req.headers as any)['x-user-id']);
   }
   
   // Check if this path should be proxied to FastAPI
@@ -166,10 +172,11 @@ app.use((req, res, next) => {
     path.startsWith('/api/chat-sessions') ||  // Check this BEFORE /api/chat
     (path.startsWith('/api/chat') && !path.startsWith('/api/chat-sessions')) ||
     path.startsWith('/api/documents') ||
-    path.startsWith('/api/feedback');  // Add feedback routes to proxy
+    path.startsWith('/api/feedback') ||  // Add feedback routes to proxy
+    path === '/api/health';  // Add health check endpoint
   
   if (shouldProxy) {
-    console.log(`[PROXY] Proxying ${req.method} ${path} to FastAPI`);
+    // console.log(`[PROXY] Proxying ${req.method} ${path} to FastAPI`);
     return pythonApiProxy(req, res, next);
   }
   
@@ -217,7 +224,7 @@ app.use("/api/ts", configRouter);
   const port = parseInt(process.env.PORT || '5000', 10);
   server.listen(port, "0.0.0.0", () => {
     log(`serving on port ${port}`);
-    console.log(`\n  ➜  Local:   http://localhost:${port}/`);
-    console.log(`  ➜  Network: http://0.0.0.0:${port}/\n`);
+    // console.log(`\n  ➜  Local:   http://localhost:${port}/`);
+    // console.log(`  ➜  Network: http://0.0.0.0:${port}/\n`);
   });
 })();

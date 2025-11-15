@@ -11,6 +11,7 @@ import { MessageInput } from "@/components/chat/message-input";
 import { EmptyState } from "@/components/chat/empty-state";
 import { ContextPanel } from "@/components/context/context-panel";
 import { SettingsPanel } from "@/components/settings/settings-panel";
+import { QuotaExhaustedModal } from "@/components/chat/quota-exhausted-modal";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -22,6 +23,9 @@ import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useStableSession } from "@/hooks/use-stable-session";
 import { useAuthUserId } from "@/hooks/use-user-sync";
+import { useQuota, useSyncQuotaFromResponse } from "@/hooks/use-quota";
+import { useQuotaStore } from "@/stores/quota-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { apiRequest } from "@/lib/queryClient";
 import { apiRequest as enhancedApiRequest, API_ENDPOINTS } from "@/lib/api-config";
 import { queryClient } from "@/lib/queryClient";
@@ -36,6 +40,18 @@ export default function Chat() {
   const isMobile = useIsMobile();
   const { user } = useUser();
   const userId = useAuthUserId();
+  
+  // Quota management
+  const { quota, isLoading: isLoadingQuota, refreshQuota } = useQuota();
+  const syncQuotaFromResponse = useSyncQuotaFromResponse();
+  const { quotaRemaining, isUnlimited, decrementQuota } = useQuotaStore();
+  const [isQuotaModalOpen, setIsQuotaModalOpen] = useState(false);
+  
+  // Settings store integration - sync enableTracing to local state for backward compat
+  const { general, loadConfiguration: loadStoreConfiguration } = useSettingsStore();
+  useEffect(() => {
+    setEnableTracing(general.enableTracing);
+  }, [general.enableTracing]);
   
   // Stable session controller - single source of truth
   const { sessionId, setSession, getSessionId, migrate } = useStableSession();
@@ -129,6 +145,7 @@ export default function Chat() {
   const [loadingChatId, setLoadingChatId] = useState<string | undefined>();
   const [isAppInitialized, setIsAppInitialized] = useState(false);
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
+  const [isContextPanelVisible, setIsContextPanelVisible] = useState(true);
   const [uploadedDocuments, setUploadedDocuments] = useState<Array<{
     id: string;
     filename: string;
@@ -167,11 +184,48 @@ export default function Chat() {
   const activeSessionRef = useRef<string | undefined>(undefined); // ✅ Track active session for race condition prevention
   const { toast } = useToast();
 
+  // Load saved configuration on mount
+  useEffect(() => {
+    const loadConfiguration = async () => {
+      try {
+        const response: any = await enhancedApiRequest(API_ENDPOINTS.CONFIG_CURRENT);
+        if (response && response.config) {
+          const config = response.config;
+          
+          // Update settings with loaded configuration
+          setSettings(prev => ({
+            ...prev,
+            llmProvider: config.llmProvider || prev.llmProvider,
+            openaiApiKey: config.openaiApiKey || "",
+            openaiModel: config.openaiModel || prev.openaiModel,
+            azureApiKey: config.azureApiKey || "",
+            azureEndpoint: config.azureEndpoint || "",
+            azureDeploymentName: config.azureDeploymentName || "",
+            embeddingProvider: config.embeddingProvider || prev.embeddingProvider,
+            embeddingApiKey: config.embeddingApiKey || "",
+            embeddingEndpoint: config.embeddingEndpoint || "",
+            embeddingModel: config.embeddingModel || prev.embeddingModel,
+            useGeneralKnowledge: config.useGeneralKnowledge ?? prev.useGeneralKnowledge,
+            documentRelevanceThreshold: config.documentRelevanceThreshold ?? prev.documentRelevanceThreshold,
+          }));
+        }
+      } catch (error) {
+        console.error("Failed to load configuration:", error);
+        // Don't show error to user, just use defaults
+      }
+    };
+
+    loadConfiguration();
+  }, []); // Run once on mount
+
   // Select a message to display its traces in context panel (defined early for use in mutations)
   const selectMessageForContext = useCallback((messageId: string, sources?: Message["sources"], agentTraces?: any[]) => {
     setSelectedMessageId(messageId);
     setCurrentSources(sources);
     setSelectedSourceIndex(undefined);
+    
+    // Auto-open context panel when message is selected
+    setIsContextPanelVisible(true);
     
     // 🛡️ Guard against empty overwrites - only set if agentTraces is explicitly provided
     if (agentTraces !== undefined) {
@@ -200,7 +254,7 @@ export default function Chat() {
         return { messages: [] };
       }
       
-      // ✅ CRITICAL FIX: Preserve refined queries during refetch
+      // CRITICAL FIX: Preserve refined queries during refetch
       // Get the current cache BEFORE fetching to preserve client-side data
       const currentCache = queryClient.getQueryData<{ 
         messages: Message[]; 
@@ -212,7 +266,7 @@ export default function Chat() {
       const serverMessages = await fetchChatSessionHistory(sessionId);
       const mergedMessages = mergeServerHistoryIntoCache(currentCache?.messages || [], serverMessages);
       
-      // ✅ PRESERVE refined queries from cache (they're client-side only, not from server)
+      //  PRESERVE refined queries from cache (they're client-side only, not from server)
       return { 
         messages: mergedMessages,
         refinedQueriesFor: currentCache?.refinedQueriesFor, // Preserve from cache
@@ -220,11 +274,11 @@ export default function Chat() {
       };
     },
     enabled: !!sessionId,
-    staleTime: 30 * 1000, // ✅ Mark stale after 30 seconds for background revalidation
+    staleTime: 30 * 1000, // Mark stale after 30 seconds for background revalidation
     gcTime: 60 * 60 * 1000,
-    refetchOnWindowFocus: true, // ✅ Revalidate when tab regains focus
-    refetchOnReconnect: true, // ✅ Revalidate when network reconnects
-    // ❌ Removed placeholderData: keepPreviousData - it was preventing isLoading from being true
+    refetchOnWindowFocus: true, // Revalidate when tab regains focus
+    refetchOnReconnect: true, //  Revalidate when network reconnects
+    // Removed placeholderData: keepPreviousData - it was preventing isLoading from being true
   });
 
   // Handle loading state changes
@@ -362,19 +416,7 @@ export default function Chat() {
         setCurrentAgentTraces((data.agentTraces || []) as unknown as AgentTrace[]);
       }
 
-      // ❌ REMOVED: Don't invalidate queries - it clears refined queries
-      // The cache is already updated via applyEventToCache during streaming
-      // For non-streaming queries (rare), the cache update happens in queryMutation.onSuccess
-      // if (!isStreaming) {
-      //   setTimeout(() => {
-      //     queryClient.invalidateQueries({ queryKey: ["chat-history", data.sessionId] });
-      //     invalidateSession(data.sessionId);
-      //   }, 500);
-      // }
 
-      // ❌ REMOVED: Don't refetch sessions here - only refetch after title_update event
-      // This prevents redundant fetches before the title is even generated
-      // refetchChatSessions();
     },
     onError: (error: Error) => {
       toast({
@@ -400,27 +442,27 @@ export default function Chat() {
       throw new Error("Cannot stream without a session");
     }
     
-    console.log('[STREAM] Session ID:', streamSessionId);
+    // console.log('[STREAM] Session ID:', streamSessionId);
 
     let accumulatedContent = "";
     let hasReceivedRefinement = false;
     let refinementTimeout: NodeJS.Timeout | null = null;
 
     try {
-      console.log('[STREAM] Initiating fetch to:', API_ENDPOINTS.QUERY_STREAM);
-      console.log('[STREAM] Request body:', {
-        query,
-        sessionId: streamSessionId.startsWith('temp-session-') ? undefined : streamSessionId,
-        topK: 5,
-        enableTracing,
-        debugMode,
-        documentIds,
-      });
+      // console.log('[STREAM] Initiating fetch to:', API_ENDPOINTS.QUERY_STREAM);
+      // console.log('[STREAM] Request body:', {
+      //   query,
+      //   sessionId: streamSessionId.startsWith('temp-session-') ? undefined : streamSessionId,
+      //   topK: 5,
+      //   enableTracing,
+      //   debugMode,
+      //   documentIds,
+      // });
       
       const response = await fetch(API_ENDPOINTS.QUERY_STREAM, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include", // ✅ CRITICAL: Required to send JWT authentication cookie
+        credentials: "include", // CRITICAL: Required to send JWT authentication cookie
         body: JSON.stringify({
           query,
           sessionId: streamSessionId.startsWith('temp-session-') ? undefined : streamSessionId,
@@ -435,7 +477,7 @@ export default function Chat() {
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('[STREAM] ❌ HTTP error response body:', errorText);
+        console.error('[STREAM] HTTP error response body:', errorText);
         throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
 
@@ -447,7 +489,7 @@ export default function Chat() {
       // Set timeout for refinement (5 seconds max wait - reduced from 10s)
       refinementTimeout = setTimeout(() => {
         if (!hasReceivedRefinement) {
-          console.warn('[STREAM] ⏱️ Refinement timeout - proceeding without refined questions');
+          console.warn('[STREAM] Refinement timeout - proceeding without refined questions');
           hasReceivedRefinement = true;
         }
       }, 5000); // Reduced from 10000ms to 5000ms
@@ -513,11 +555,11 @@ export default function Chat() {
                 if (currentSession && data.data.userMessageId) {
                   const refinedQueries = data.data.refined_queries || [];
                   
-                  console.log('[STREAM] Refinement received:', {
-                    userMessageId: data.data.userMessageId,
-                    count: refinedQueries.length,
-                    status: data.data.status
-                  });
+                  // console.log('[STREAM] Refinement received:', {
+                  //   userMessageId: data.data.userMessageId,
+                  //   count: refinedQueries.length,
+                  //   status: data.data.status
+                  // });
 
                   // Only apply if we have valid queries
                   if (refinedQueries.length > 0) {
@@ -534,7 +576,7 @@ export default function Chat() {
                       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
                     }, 50);
                   } else {
-                    console.log('[STREAM] Refinement skipped:', data.data.status);
+                    // console.log('[STREAM] Refinement skipped:', data.data.status);
                   }
                 }
               } 
@@ -547,6 +589,9 @@ export default function Chat() {
                 const currentSession = getSessionId();
                 if (currentSession && data.data.messageId && data.data.userMessageId) {
                   const messageContent = accumulatedContent || data.data.answer || data.data.content || data.data.response || "[No content received]";
+                  
+                  // Sync quota from response
+                  syncQuotaFromResponse(data.data);
                   
                   applyEventToCache(queryClient, {
                     type: "completion",
@@ -572,7 +617,7 @@ export default function Chat() {
                   setCurrentExecutionTime(data.data.executionTimeMs);
                   setCurrentResponseType(data.data.responseType);
 
-                  // ✅ Hide typing indicator immediately on completion
+                  // Hide typing indicator immediately on completion
                   setShowTypingIndicator(false);
 
                   if (data.data.messageId) {
@@ -581,17 +626,17 @@ export default function Chat() {
                     setCurrentAgentTraces(data.data.agentTraces);
                   }
 
-                  // ✅ NO invalidation needed - cache already updated via applyEventToCache
+                  // NO invalidation needed - cache already updated via applyEventToCache
                   // Invalidating causes refetch which clears client-side refinedQueries
                   
-                  // ❌ REMOVED: Don't refetch sessions here - wait for title_update event
+                  // REMOVED: Don't refetch sessions here - wait for title_update event
                   // This prevents redundant fetches during streaming query completion
                   // refetchChatSessions();
                 }
               } 
               
               else if (data.type === "title_update") {
-                // ✅ ONLY refetch sessions when title is actually updated
+                //ONLY refetch sessions when title is actually updated
                 refetchChatSessions();
               } 
               
@@ -623,8 +668,8 @@ export default function Chat() {
         }
       }
     } catch (error) {
-      console.error('[STREAM] ❌ Streaming query failed with error:', error);
-      console.error('[STREAM] 📋 Error details:', {
+      console.error('[STREAM] Streaming query failed with error:', error);
+      console.error('[STREAM] Error details:', {
         message: error instanceof Error ? error.message : 'Unknown error',
         stack: error instanceof Error ? error.stack : undefined,
         type: typeof error,
@@ -647,12 +692,23 @@ export default function Chat() {
   const handleSubmit = async (content: string, documentIds: string[] = []) => {
     if (!content.trim()) return;
 
-    console.log("[SUBMIT] User submitted message:", {
-      messageLength: content.length,
-      hasDocumentIds: documentIds.length > 0,
-      currentSessionId: sessionId,
-      timestamp: new Date().toISOString()
-    });
+    // Check quota before allowing submission
+    if (!isUnlimited && quotaRemaining <= 0) {
+      setIsQuotaModalOpen(true);
+      return;
+    }
+
+    // console.log("[SUBMIT] User submitted message:", {
+    //   messageLength: content.length,
+    //   hasDocumentIds: documentIds.length > 0,
+    //   currentSessionId: sessionId,
+    //   timestamp: new Date().toISOString()
+    // });
+
+    // Optimistically decrement quota
+    if (!isUnlimited) {
+      decrementQuota();
+    }
 
     const optimisticId = `optimistic-${crypto.randomUUID()}`;
     // console.log("[SUBMIT] Generated optimistic ID:", optimisticId);
@@ -677,7 +733,7 @@ export default function Chat() {
     // Create new session for first message
     if (!sessionId) {
       const tempSessionId = `temp-session-${crypto.randomUUID()}`;
-      console.log("[SUBMIT] Creating new temp session:", tempSessionId);
+      // console.log("[SUBMIT] Creating new temp session:", tempSessionId);
       setSession(tempSessionId);
       
       queryClient.setQueryData(
@@ -699,7 +755,7 @@ export default function Chat() {
           //   refinedQueriesFor: old?.refinedQueriesFor
           // });
           
-          // ✅ Clear old refined queries when new message is sent (they're only for the latest question)
+          // Clear old refined queries when new message is sent (they're only for the latest question)
           const result = {
             messages: [...(old?.messages ?? []), optimisticMessage],
             refinedQueriesFor: undefined, // Clear old refined queries
@@ -724,7 +780,7 @@ export default function Chat() {
     try {
       await handleStreamingQuery(content, documentIds.length > 0 ? documentIds : undefined);
     } catch (error) {
-      // ✅ Rollback optimistic update on error
+      // Rollback optimistic update on error
       console.error("[SUBMIT] Streaming query failed, rolling back optimistic update:", error);
       
       const currentSession = getSessionId();
@@ -773,12 +829,11 @@ export default function Chat() {
     setSelectedSourceIndex(index);
     setCurrentSources(messageSources);
     
+    // Auto-open context panel when citation is clicked
+    setIsContextPanelVisible(true);
+    
     // Also select this message for the context panel to show its agent traces
     selectMessageForContext(messageId, messageSources, agentTraces);
-  };
-
-  const handleSamplePromptClick = (prompt: string) => {
-    handleSubmit(prompt);
   };
 
   const handleDeleteDocument = async (documentId: string) => {
@@ -791,41 +846,79 @@ export default function Chat() {
   };
 
   const handleSettingsChange = (key: string, value: any) => {
-    const newSettings = { ...settings, [key]: value };
-    setSettings(newSettings);
-    
-    // Apply settings immediately for relevant items
-    if (key === "enableTracing") {
-      setEnableTracing(value);
-    } else if (key === "debugMode") {
-      setDebugMode(value);
-    } else if (key === "useGeneralKnowledge") {
-      // Add telemetry logging for general knowledge toggle
-      toast({
-        title: `General knowledge ${value ? 'enabled' : 'disabled'}`,
-        description: `The AI ${value ? 'can now' : 'can no longer'} use its built-in knowledge when no relevant documents are found.`,
-      });
+    setSettings(prev => {
+      const newSettings = { ...prev, [key]: value };
       
-      // Auto-save the configuration when general knowledge is toggled
-      setTimeout(() => {
-        handleSaveConfigurationWithSettings(newSettings, false); // Don't show notification for auto-save
-      }, 100); // Small delay to ensure state is updated
-    } else if (key === "documentRelevanceThreshold") {
-      // Add telemetry logging for threshold changes
-      toast({
-        title: "Document threshold updated",
-        description: `Relevance threshold set to ${(value * 100).toFixed(0)}%. ${value < 0.5 ? 'More documents will be included.' : 'Only higher-quality documents will be used.'}`,
-      });
+      // Apply settings immediately for relevant items
+      if (key === "enableTracing") {
+        setEnableTracing(value);
+      } else if (key === "debugMode") {
+        setDebugMode(value);
+      } else if (key === "useGeneralKnowledge") {
+        // Add telemetry logging for general knowledge toggle
+        toast({
+          title: `General knowledge ${value ? 'enabled' : 'disabled'}`,
+          description: `The AI ${value ? 'can now' : 'can no longer'} use its built-in knowledge when no relevant documents are found.`,
+        });
+        
+        // Auto-save the configuration when general knowledge is toggled
+        setTimeout(() => {
+          handleSaveConfigurationWithSettings(newSettings, false); // Don't show notification for auto-save
+        }, 100); // Small delay to ensure state is updated
+      } else if (key === "documentRelevanceThreshold") {
+        // Add telemetry logging for threshold changes
+        toast({
+          title: "Document threshold updated",
+          description: `Relevance threshold set to ${(value * 100).toFixed(0)}%. ${value < 0.5 ? 'More documents will be included.' : 'Only higher-quality documents will be used.'}`,
+        });
+        
+        // Auto-save the configuration when threshold is changed
+        setTimeout(() => {
+          handleSaveConfigurationWithSettings(newSettings, false); // Don't show notification for auto-save
+        }, 500); // Longer delay for slider to allow user to adjust
+      }
       
-      // Auto-save the configuration when threshold is changed
-      setTimeout(() => {
-        handleSaveConfigurationWithSettings(newSettings, false); // Don't show notification for auto-save
-      }, 500); // Longer delay for slider to allow user to adjust
-    }
+      return newSettings;
+    });
   };
 
   const handleSaveConfiguration = async () => {
     return handleSaveConfigurationWithSettings(settings);
+  };
+
+  const handleDeleteConfiguration = async () => {
+    try {
+      // Delete the personal API key from the users table (restores quota system)
+      await enhancedApiRequest(API_ENDPOINTS.USER_PERSONAL_KEY, {
+        method: "DELETE",
+      });
+
+      // Clear all API configuration fields from settings
+      setSettings(prev => ({
+        ...prev,
+        openaiApiKey: "",
+        azureApiKey: "",
+        azureEndpoint: "",
+        azureDeploymentName: "",
+        embeddingApiKey: "",
+        embeddingEndpoint: "",
+      }));
+
+      // Refresh quota immediately to reflect changes in UI
+      await refreshQuota();
+
+      toast({
+        title: "Configuration removed",
+        description: "Your API keys have been removed. You'll use the free tier with quota limits.",
+      });
+    } catch (error) {
+      console.error("Failed to delete configuration:", error);
+      toast({
+        title: "Failed to remove configuration",
+        description: "There was an error removing your configuration. Please try again.",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleSaveConfigurationWithSettings = async (settingsToSave: typeof settings, showNotification: boolean = true) => {
@@ -838,8 +931,6 @@ export default function Chat() {
         azureApiKey: settingsToSave.azureApiKey,
         azureEndpoint: settingsToSave.azureEndpoint,
         azureDeploymentName: settingsToSave.azureDeploymentName,
-        geminiApiKey: settingsToSave.geminiApiKey,
-        geminiModel: settingsToSave.geminiModel,
         embeddingProvider: settingsToSave.embeddingProvider,
         embeddingApiKey: settingsToSave.embeddingApiKey,
         embeddingEndpoint: settingsToSave.embeddingEndpoint,
@@ -856,6 +947,39 @@ export default function Chat() {
           "Content-Type": "application/json",
         },
       });
+
+      // Also save the LLM API key as personal key to bypass quota system
+      // Determine which API key to save based on provider
+      let personalApiKey = "";
+      let personalProvider = settingsToSave.llmProvider;
+      
+      if (settingsToSave.llmProvider === "openai" && settingsToSave.openaiApiKey) {
+        personalApiKey = settingsToSave.openaiApiKey;
+      } else if (settingsToSave.llmProvider === "azure" && settingsToSave.azureApiKey) {
+        personalApiKey = settingsToSave.azureApiKey;
+      }
+
+      // If user provided an API key, save it as their personal key (bypasses quota)
+      if (personalApiKey) {
+        try {
+          await enhancedApiRequest(API_ENDPOINTS.USER_PERSONAL_KEY, {
+            method: "POST",
+            body: JSON.stringify({
+              apiKey: personalApiKey,
+              provider: personalProvider,
+            }),
+            headers: {
+              "Content-Type": "application/json",
+            },
+          });
+        } catch (keyError) {
+          console.error("Failed to save personal key:", keyError);
+          // Don't fail the whole operation if personal key save fails
+        }
+      }
+
+      // Refresh quota to update UI (shows "Your Key" badge)
+      await refreshQuota();
 
       // Only show notification if requested
       if (showNotification) {
@@ -897,7 +1021,7 @@ export default function Chat() {
       return;
     }
 
-    // ✅ Set active session immediately to prevent race conditions
+    // Set active session immediately to prevent race conditions
     activeSessionRef.current = chatId;
 
     setIsLoadingChatHistory(true);
@@ -911,7 +1035,7 @@ export default function Chat() {
         refinedQueries?: string[] 
       }>(["chat-history", sessionId]);
       
-      // ✅ Preserve refined queries even when clearing messages for UI
+      // Preserve refined queries even when clearing messages for UI
       queryClient.setQueryData(["chat-history", sessionId], { 
         messages: [],
         refinedQueriesFor: previousCache?.refinedQueriesFor,
@@ -926,7 +1050,7 @@ export default function Chat() {
     setCurrentExecutionTime(undefined);
     setCurrentResponseType(undefined);
 
-    // ✅ FIX 7: Use React Query as single source of truth
+    // FIX 7: Use React Query as single source of truth
     // Check React Query cache first (primary cache)
     const reactQueryCache = queryClient.getQueryData<{ messages: Message[] }>(["chat-history", chatId]);
     
@@ -959,9 +1083,9 @@ export default function Chat() {
         // Refresh in background
         queueMicrotask(() => {
           fetchChatSessionHistory(chatId, true).then(freshHistory => {
-            // ✅ Only update if this chat is still the active one (prevents race condition)
+            // Only update if this chat is still the active one (prevents race condition)
             if (activeSessionRef.current !== chatId) {
-              console.log('[RACE PROTECTION] Skipping stale update for', chatId);
+              // console.log('[RACE PROTECTION] Skipping stale update for', chatId);
               return;
             }
 
@@ -971,7 +1095,7 @@ export default function Chat() {
                freshHistory[freshHistory.length - 1]?.id !== cachedHistory[cachedHistory.length - 1]?.id);
             
             if (shouldUpdate) {
-              // ✅ Preserve refined queries during background refresh
+              // Preserve refined queries during background refresh
               const currentData = queryClient.getQueryData<{ 
                 messages: Message[]; 
                 refinedQueriesFor?: string; 
@@ -991,7 +1115,7 @@ export default function Chat() {
         });
       } else {
         // No cache available - set session and let React Query handle loading
-        console.log('[CHAT SELECT] No cache available, setting session and triggering fetch');
+        // console.log('[CHAT SELECT] No cache available, setting session and triggering fetch');
         setSession(chatId);
         // React Query's useQuery hook will automatically fetch when sessionId changes
         // The loading state will be handled by isLoadingHistory
@@ -1012,7 +1136,7 @@ export default function Chat() {
       return;
     }
 
-    // ✅ Clear active session ref for new chat
+    // Clear active session ref for new chat
     activeSessionRef.current = undefined;
 
     // Clear query cache for current session
@@ -1062,11 +1186,11 @@ export default function Chat() {
   const refinedQueriesFor = (chatHistory as { messages: Message[]; refinedQueriesFor?: string; refinedQueries?: string[] } | null)?.refinedQueriesFor;
   const refinedQueries = (chatHistory as { messages: Message[]; refinedQueriesFor?: string; refinedQueries?: string[] } | null)?.refinedQueries || [];
   const hasMessages = messages.length > 0;
-  // ✅ Include isLoadingHistory to prevent empty state flash during chat switching
+  // Include isLoadingHistory to prevent empty state flash during chat switching
   const shouldShowChatView = hasMessages || isStreaming || queryMutation.isPending || isLoadingHistory;
   const documents = (documentsData as any[] | undefined) || [];
 
-  // 🔍 DEBUG: Track re-renders and cache state changes
+  // DEBUG: Track re-renders and cache state changes
   useEffect(() => {
   //   console.log('[RENDER] Chat component re-rendered:', {
   //     sessionId,
@@ -1082,20 +1206,20 @@ export default function Chat() {
   //   });
   });
 
-  // 🔍 DEBUG: Track shouldShowChatView transitions (flicker detector)
+  // DEBUG: Track shouldShowChatView transitions (flicker detector)
   useEffect(() => {
-    console.log('[STATE] shouldShowChatView changed:', {
-      shouldShowChatView,
-      hasMessages,
-      messageCount: messages.length,
-      isStreaming,
-      isLoadingHistory,
-      isPending: queryMutation.isPending,
-      calculation: `${hasMessages} || ${isStreaming} || ${queryMutation.isPending} || ${isLoadingHistory} = ${shouldShowChatView}`
-    });
+    // console.log('[STATE] shouldShowChatView changed:', {
+    //   shouldShowChatView,
+    //   hasMessages,
+    //   messageCount: messages.length,
+    //   isStreaming,
+    //   isLoadingHistory,
+    //   isPending: queryMutation.isPending,
+    //   calculation: `${hasMessages} || ${isStreaming} || ${queryMutation.isPending} || ${isLoadingHistory} = ${shouldShowChatView}`
+    // });
   }, [shouldShowChatView, hasMessages, messages.length, isStreaming, isLoadingHistory, queryMutation.isPending]);
 
-  // 🔍 DEBUG: Track messages array changes (potential flicker source)
+  // DEBUG: Track messages array changes (potential flicker source)
   useEffect(() => {
     if (messages.length > 0) {
       // console.log(' [MESSAGES] Messages array updated:', {
@@ -1343,7 +1467,7 @@ export default function Chat() {
       const timer = setTimeout(() => setShowTypingIndicator(true), 50);
       return () => clearTimeout(timer);
     } else {
-      // ✅ Hide typing indicator immediately when streaming stops (no delay)
+      // Hide typing indicator immediately when streaming stops (no delay)
       setShowTypingIndicator(false);
     }
   }, [isStreaming]);
@@ -1557,7 +1681,6 @@ export default function Chat() {
                       return (
                         <div className="w-full">
                           <EmptyState 
-                            onSamplePromptClick={handleSamplePromptClick}
                             uploadedDocuments={documents}
                           />
                         </div>
@@ -1658,6 +1781,7 @@ export default function Chat() {
                   documents={documents}
                   selectedDocumentIds={selectedDocumentIds}
                   onDocumentSelectionChange={handleDocumentSelectionChange}
+                  onQuotaExhausted={() => setIsQuotaModalOpen(true)}
                 />
               </div>
             </motion.div>
@@ -1665,7 +1789,7 @@ export default function Chat() {
 
           {/* Context Panel - Hidden on mobile */}
           {!isMobile && (
-            <div className="w-96 border-l border-border bg-card">
+            <div className={`border-l border-border bg-card transition-all duration-300 ${isContextPanelVisible ? 'w-96' : 'w-0'}`}>
               <ContextPanel
                 sources={currentSources}
                 selectedSourceIndex={selectedSourceIndex}
@@ -1683,6 +1807,8 @@ export default function Chat() {
                 executionTimeMs={currentExecutionTime}
                 responseType={currentResponseType}
                 enableTracing={enableTracing}
+                isVisible={isContextPanelVisible}
+                onToggleVisibility={() => setIsContextPanelVisible(!isContextPanelVisible)}
               />
             </div>
           )}
@@ -1693,9 +1819,18 @@ export default function Chat() {
       <SettingsPanel
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        settings={settings}
-        onSettingsChange={handleSettingsChange}
-        onSaveConfiguration={handleSaveConfiguration}
+      />
+
+      {/* Quota Exhausted Modal */}
+      <QuotaExhaustedModal
+        isOpen={isQuotaModalOpen}
+        onClose={() => setIsQuotaModalOpen(false)}
+        onAddApiKey={() => {
+          setIsQuotaModalOpen(false);
+          setIsSettingsOpen(true);
+          // TODO: Auto-scroll to personal key section in settings
+        }}
+        quotaLimit={50}
       />
     </div>
   );

@@ -48,11 +48,21 @@ export function useUserSync() {
         }
 
         const result = await response.json();
-        console.log("[USER_SYNC] User synced successfully:", result);
+        // console.log("[USER_SYNC] User synced successfully:", result);
       } catch (error) {
         console.error("[USER_SYNC] Error syncing user:", error);
-        setSyncError(error instanceof Error ? error.message : "Failed to sync user");
-        // Don't block the user - they can still use the app
+        const errorMessage = error instanceof Error ? error.message : "Failed to sync user";
+        setSyncError(errorMessage);
+        
+        // If it's a connection error, it might be backend down
+        if (errorMessage.includes("fetch failed") || 
+            errorMessage.includes("504") || 
+            errorMessage.includes("502") ||
+            errorMessage.includes("ECONNREFUSED")) {
+          console.error("[USER_SYNC] Backend appears to be down - blocking access");
+          // The health check will handle blocking the user
+        }
+        // Don't block the user for other errors - they can still use the app
       } finally {
         setIsSyncing(false);
       }

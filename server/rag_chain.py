@@ -1,4 +1,5 @@
 """LangChain RAG chain implementation using LCEL with multi-provider support."""
+import logging
 from typing import List, Dict, Any
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -9,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from server.providers import get_llm
 from server.providers import get_llm
+
+logger = logging.getLogger(__name__)
 
 # RAG prompt template with Level 2 precision tuning (hallucination reduction)
 RAG_PROMPT = """You are a helpful AI assistant that answers questions based on provided document context.
@@ -44,7 +47,10 @@ def format_docs(docs: List[Dict[str, Any]]) -> str:
     Includes source metadata inline for concrete citations and reduced hallucination.
     """
     if not docs:
+        logger.debug("No documents to format")
         return "No relevant documents found."
+    
+    logger.debug("Formatting %d documents for RAG context", len(docs))
     
     # Sort by score (highest first) for quality prioritization
     sorted_docs = sorted(docs, key=lambda x: x.get('score', 0), reverse=True)
@@ -75,10 +81,15 @@ async def create_rag_answer(
 ) -> str:
     """Generate answer using LangChain LCEL chain."""
     
+    logger.debug("Creating RAG answer for query with %d retrieved documents", len(retrieved_docs))
+    
     # Get the current LLM instance
     llm = get_llm()
     if not llm:
+        logger.error("LLM not configured")
         raise ValueError("LLM not configured. Please configure LLM provider in settings.")
+    
+    logger.debug("Using LLM: %s", type(llm).__name__)
     
     # Create prompt template
     prompt = ChatPromptTemplate.from_template(RAG_PROMPT)
@@ -95,9 +106,12 @@ async def create_rag_answer(
     )
     
     # Invoke chain
+    logger.info("Invoking RAG chain for query: %s", query[:100])
     answer = await chain.ainvoke({
         "query": query,
         "docs": retrieved_docs
     })
+    
+    logger.info("RAG answer generated: %d chars", len(answer))
     
     return answer

@@ -14,7 +14,9 @@ const getApiBaseUrl = (): string => {
   }
   
   if (isDevelopment) {
-    return 'http://localhost:3000';
+    // In development, Vite dev server proxies API requests
+    // So we use empty string to make requests relative to current origin
+    return '';
   }
   
   // In production, API_BASE_URL must be explicitly set
@@ -38,6 +40,7 @@ export const API_ENDPOINTS = {
   GENERATE_TITLE: `${API_CONFIG.API_BASE_URL}/api/generate-title`,
   CONFIG_SAVE: `${API_CONFIG.API_BASE_URL}/api/config/save`,
   CONFIG_CURRENT: `${API_CONFIG.API_BASE_URL}/api/config/current`,
+  CONFIG_TEST: `${API_CONFIG.API_BASE_URL}/api/config/test`,
   CHAT_HISTORY: (sessionId: string) => `${API_CONFIG.API_BASE_URL}/api/chat/${sessionId}`,
   
   // Chat session management endpoints
@@ -51,6 +54,12 @@ export const API_ENDPOINTS = {
   DOCUMENT_UPLOAD: `${API_CONFIG.API_BASE_URL}/api/documents/upload`,
   DOCUMENT_DELETE: (id: string) => `${API_CONFIG.API_BASE_URL}/api/documents/${id}`,
   DOCUMENT_CONTENT: (id: string) => `${API_CONFIG.API_BASE_URL}/api/documents/${id}/content`,
+  
+  // User endpoints
+  USER_QUOTA: `${API_CONFIG.API_BASE_URL}/api/users/me/quota`,
+  USER_PREFERENCES: `${API_CONFIG.API_BASE_URL}/api/users/me/preferences`,
+  USER_PERSONAL_KEY_STATUS: `${API_CONFIG.API_BASE_URL}/api/users/me/personal-key/status`,
+  USER_PERSONAL_KEY: `${API_CONFIG.API_BASE_URL}/api/users/me/personal-key`,
   
   // Express TypeScript endpoints
   HEALTH: `${API_CONFIG.API_BASE_URL}/api/ts-health`,

@@ -6,11 +6,13 @@ import { ChevronUp, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUploadContext } from "@/contexts/upload-context";
 import { UploadProcessingVisualizer } from "@/components/upload/upload-processing-visualizer";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 export function PersistentUploadProgress() {
   const { uploads, removeUpload, clearCompleted, hasActiveUploads, isUploadScreenOpen } = useUploadContext();
   const [isExpanded, setIsExpanded] = useState(true);
   const [autoHideTimeouts, setAutoHideTimeouts] = useState<Map<string, NodeJS.Timeout>>(new Map());
+  const isMobile = useIsMobile();
   
   // Auto-hide completed uploads after 3 seconds
   useEffect(() => {
@@ -45,8 +47,11 @@ export function PersistentUploadProgress() {
   // Show persistent progress only when:
   // 1. Upload screen is closed AND there are uploads, OR
   // 2. There are completed uploads that haven't been auto-hidden yet
-  const shouldShow = (!isUploadScreenOpen && uploads.length > 0) || 
-                    uploads.some(u => u.status === "completed" && u.completedAt);
+  // 3. NOT on mobile (mobile users should only see uploads in the upload screen)
+  const shouldShow = !isMobile && (
+    (!isUploadScreenOpen && uploads.length > 0) || 
+    uploads.some(u => u.status === "completed" && u.completedAt)
+  );
   
   if (!shouldShow) {
     return null;

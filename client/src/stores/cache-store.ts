@@ -333,14 +333,14 @@ export const useCacheStore = create<CacheState>()(
         const cached = chatSessions.get(sessionId);
         
         if (!cached) {
-          //console.log(`💬 No cached chat history for session: ${sessionId}`);
+          //console.log(`No cached chat history for session: ${sessionId}`);
           return null;
         }
         
         // If server timestamp provided, check if server has newer data
         if (serverTimestamp !== undefined && cached.latestMessageTimestamp !== undefined) {
           if (serverTimestamp > cached.latestMessageTimestamp) {
-            console.log(`🔄 Server has newer data for session ${sessionId} (server: ${new Date(serverTimestamp).toISOString()}, cached: ${new Date(cached.latestMessageTimestamp).toISOString()})`);
+            // console.log(`Server has newer data for session ${sessionId} (server: ${new Date(serverTimestamp).toISOString()}, cached: ${new Date(cached.latestMessageTimestamp).toISOString()})`);
             // Return null to force a fresh fetch
             const newSessions = new Map(chatSessions);
             newSessions.delete(sessionId);
@@ -352,7 +352,7 @@ export const useCacheStore = create<CacheState>()(
         // Check if cache is expired (30 minutes)
         const now = Date.now();
         if (now - cached.cachedAt > DEFAULT_TTL.CHAT_SESSION) {
-          console.log(`⏰ Chat session cache expired for: ${sessionId}`);
+          // console.log(`Chat session cache expired for: ${sessionId}`);
           const newSessions = new Map(chatSessions);
           newSessions.delete(sessionId);
           set({ chatSessions: newSessions }, false, `expiredChatSession:${sessionId}`);
@@ -365,7 +365,7 @@ export const useCacheStore = create<CacheState>()(
         newSessions.set(sessionId, cached);
         set({ chatSessions: newSessions }, false, `accessChatSession:${sessionId}`);
         
-        //console.log(`📋 Using cached chat history for session: ${sessionId} (${cached.messages.length} messages)`);
+        //console.log(`Using cached chat history for session: ${sessionId} (${cached.messages.length} messages)`);
         return cached.messages;
       },
 
@@ -404,7 +404,7 @@ export const useCacheStore = create<CacheState>()(
             latestMessageTimestamp,
           });
           set({ chatSessions: newSessions }, false, `preloadChatSession:${sessionId}`);
-          console.log(`🚀 Preloaded chat session: ${sessionId} (${messages.length} messages)`);
+          // console.log(`Preloaded chat session: ${sessionId} (${messages.length} messages)`);
         }
       },
 

@@ -5,12 +5,12 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 export async function registerRoutes(app: Express): Promise<Server> {
   // Add debug middleware to log all requests
   app.use('/api', (req, res, next) => {
-    console.log(`[DEBUG] Incoming request: ${req.method} ${req.url}`);
-    console.log(`[DEBUG] Original URL: ${req.originalUrl}`);
-    if (req.method === 'POST') {
-      console.log(`[DEBUG] POST request body size: ${req.get('content-length') || 'unknown'}`);
-      console.log(`[DEBUG] Content-Type: ${req.get('content-type') || 'unknown'}`);
-    }
+    // console.log(`[DEBUG] Incoming request: ${req.method} ${req.url}`);
+    // console.log(`[DEBUG] Original URL: ${req.originalUrl}`);
+    // if (req.method === 'POST') {
+    //   // console.log(`[DEBUG] POST request body size: ${req.get('content-length') || 'unknown'}`);
+    //   // console.log(`[DEBUG] Content-Type: ${req.get('content-type') || 'unknown'}`);
+    // }
     next();
   });
 

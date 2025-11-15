@@ -1,6 +1,9 @@
 """
 Centralized error handling for agent exceptions, particularly content filter violations.
 """
+import logging
+
+logger = logging.getLogger(__name__)
 
 def is_content_filter_error(error: Exception) -> bool:
     """Check if the error is related to Azure OpenAI content filtering."""
@@ -82,5 +85,6 @@ def log_content_filter_violation(error: Exception, context: str = "") -> None:
     """
     if is_content_filter_error(error):
         error_type = "JAILBREAK" if is_jailbreak_attempt(error) else "CONTENT_FILTER"
-        print(f"[SECURITY_ALERT] {error_type} violation detected{f' in {context}' if context else ''}")
-        print(f"[SECURITY_ALERT] Error details: {str(error)[:200]}")
+        context_msg = f" in {context}" if context else ""
+        logger.warning("SECURITY_ALERT: %s violation detected%s", error_type, context_msg)
+        logger.warning("SECURITY_ALERT: Error details: %s", str(error)[:200])

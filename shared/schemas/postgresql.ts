@@ -41,6 +41,13 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   isActive: boolean("is_active").default(true),
+  // Quota management fields
+  isUnlimited: boolean("is_unlimited").default(false),
+  remainingQuota: integer("remaining_quota").default(50),
+  apiKeyHash: text("api_key_hash"), // SHA-256 hash of user's personal API key (verification-only)
+  // Enhanced personal API key storage (encrypted, can be used automatically)
+  encryptedApiKey: text("encrypted_api_key"), // Fernet-encrypted personal API key
+  apiKeyProvider: varchar("api_key_provider", { length: 20 }), // 'openai', 'azure', 'gemini'
 });
 
 // Enhanced chat sessions

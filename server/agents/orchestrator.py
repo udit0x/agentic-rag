@@ -1,4 +1,5 @@
 """LangGraph orchestrator for multi-agent workflow."""
+import logging
 from typing import Dict, Any, List
 from datetime import datetime
 import asyncio
@@ -18,8 +19,11 @@ from server.agents.general_knowledge import general_knowledge_agent
 from server.agents.query_refinement import query_refinement_agent
 from server.agents.conversation_memory import conversation_memory_agent
 from server.agents.meta_knowledge import meta_knowledge_agent
+from server.agents.document_summary import document_summary_agent
+from server.agents.document_retrieval import retrieve_full_documents
 from server.agents.cost_tracker import cost_tracker
-
+from server.storage import storage
+logger = logging.getLogger(__name__)
 class MultiAgentOrchestrator:
     """LangGraph-based orchestrator for multi-agent RAG workflow."""
     
@@ -43,30 +47,35 @@ class MultiAgentOrchestrator:
         workflow.add_node("temporal", self._temporal_node)      # Placeholder for Phase 4
         workflow.add_node("general_knowledge", self._general_knowledge_node)  # General knowledge agent
         workflow.add_node("meta_knowledge", self._meta_knowledge_node)  # Meta knowledge agent
+        workflow.add_node("document_summary", self._document_summary_node)  # Document summary agent
         
         # Define the workflow edges
         workflow.set_entry_point("intent_router")
         
         # Intent router determines initial routing
+        # This is the FIRST decision point - Router = Brain
         workflow.add_conditional_edges(
             "intent_router",
             self._intent_route_decision,
             {
-                "chat": "conversation_memory",     # CHAT - use memory only
-                "rag": "router",                   # RAG - normal workflow
-                "hybrid": "router",                # HYBRID - router then memory
-                "meta": "meta_knowledge",          # META - application info
+                "chat": "conversation_memory",     # CHAT - use memory only, NO retrieval
+                "rag": "router",                   # RAG - needs retrieval, continue to classification
+                "hybrid": "router",                # HYBRID - needs retrieval + memory integration
+                "meta": "meta_knowledge",          # META - application info, NO retrieval
+                "summary": "document_summary",     # SUMMARY - document understanding, NO chunk retrieval
                 "stop": END                        # API error detected, stop workflow
             }
         )
         
         # Router determines the path based on classification (for RAG/HYBRID)
+        # After classification, check if we need query refinement
         workflow.add_conditional_edges(
             "router",
-            self._error_check_route,
+            self._post_router_decision,
             {
-                "continue": "query_refinement",  # No errors, continue to refinement
-                "stop": END                      # API error detected, stop workflow
+                "refinement": "query_refinement",  # needs_retrieval=True, generate questions
+                "retrieval": "retriever",           # needs_retrieval=False but router ran, skip to retrieval
+                "stop": END                         # API error detected, stop workflow
             }
         )
         
@@ -101,6 +110,7 @@ class MultiAgentOrchestrator:
         workflow.add_edge("general_knowledge", END)
         workflow.add_edge("conversation_memory", END)
         workflow.add_edge("meta_knowledge", END)
+        workflow.add_edge("document_summary", END)  # Document summary ends workflow
         
         return workflow
     
@@ -184,13 +194,11 @@ class MultiAgentOrchestrator:
             route_type = intent_classification.get("route_type", "CHAT")
             session_id = state.get("session_id")
             
-            print(f"[ORCHESTRATOR] Intent classification type: {type(intent_classification)}")
-            print(f"[ORCHESTRATOR] Intent classification content: {intent_classification}")
+            logger.debug("Intent classification type: %s", type(intent_classification))
             
             # Check for threshold suggestion
             threshold_suggestion = intent_classification.get("threshold_suggestion_message", "")
-            
-            print(f"[ORCHESTRATOR] Extracted threshold suggestion: '{threshold_suggestion}'")
+            logger.debug("Extracted threshold suggestion: '%s'", threshold_suggestion)
             
             if route_type == "CHAT":
                 # Pure conversation memory response
@@ -333,22 +341,49 @@ class MultiAgentOrchestrator:
             return state
     
     async def _query_refinement_node(self, state: AgentState) -> AgentState:
-        """Query refinement node - generates 5 related questions."""
+        """
+        Query refinement node - generates related questions.
+        
+        For HYBRID mode: generates 2-3 questions (limited)
+        For RAG mode: generates 5 questions (full)
+        """
         start_time = datetime.now()
         
         try:
+            # Determine if this is HYBRID mode
+            intent_classification = state.get("intent_classification", {})
+            route_type = intent_classification.get("route_type", "RAG")
+            
+            # HYBRID mode: limit to 2-3 questions
+            # RAG mode: full 5 questions
+            num_questions = 3 if route_type == "HYBRID" else 5
+            
+            logger.info("Query refinement mode: %s (generating up to %d refinements)", route_type, num_questions)
+            
+            # Get intent and classification for refinement
+            intent_classification = state.get("intent_classification", {})
+            classification = state.get("classification", {})
+            
+            # Extract intent label
+            route_type_label = intent_classification.get("route_type", "RAG")
+            intent_label = classification.get("type", "factual")  # factual, temporal, counterfactual, etc.
+            
             refinement = await query_refinement_agent.generate_related_questions(
-                state["query"],
+                query=state["query"],
                 session_id=state.get("session_id"),
-                force_regenerate=False  # Allow caching by default
+                intent=intent_label,  # Pass detected intent
+                entities=None,  # TODO: Add entity extraction in future
+                retrieval_stats=None,  # TODO: Add preview retrieval stats in future
+                force_regenerate=False,
+                max_refinements=num_questions,
+                conversation_context=state.get("conversation_context")  # Pass conversation history
             )
             
-            # Check if refinement failed due to API error
-            if refinement.query_category == "api_error":
-                print("[ORCHESTRATOR] Query refinement detected API error - stopping workflow")
+            # Check if refinement indicates API error
+            if any(rq.query == state["query"] and "api" in refinement.reasoning.lower() for rq in refinement.refined):
+                logger.warning("Query refinement detected API error - stopping workflow")
                 
-                # Parse the actual error type from the reasoning field
-                reasoning = refinement.refinement_reasoning or ""
+                reasoning = refinement.reasoning or ""
                 
                 if "api_authentication_failed" in reasoning:
                     state["error_message"] = "API authentication failed during query refinement"
@@ -360,7 +395,6 @@ class MultiAgentOrchestrator:
                     state["error_message"] = "API connection error during query refinement"
                     state["error_type"] = "api_connection_error"
                 else:
-                    # Fallback if parsing fails
                     state["error_message"] = "API service unavailable during query refinement"
                     state["error_type"] = "api_connection_error" 
                 
@@ -370,7 +404,7 @@ class MultiAgentOrchestrator:
                         "start_time": start_time,
                         "end_time": datetime.now(),
                         "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000),
-                        "input_data": {"query": state["query"]},
+                        "input_data": {"query": state["query"], "mode": route_type, "num_questions": num_questions},
                         "output_data": {},
                         "error": "API service unavailable - unable to generate related questions"
                     }
@@ -378,12 +412,12 @@ class MultiAgentOrchestrator:
                 
                 return state
             
-            # Store successful refinement in state 
+            # Store successful refinement in state (NEW: typed refinements)
             state["query_refinement"] = {
                 "original_query": refinement.original_query,
-                "refined_queries": refinement.refined_queries,
-                "query_category": refinement.query_category,
-                "refinement_reasoning": refinement.refinement_reasoning
+                "intent": refinement.intent,
+                "refined": [{"type": rq.type, "query": rq.query} for rq in refinement.refined],
+                "reasoning": refinement.reasoning
             }
             
             # Track costs
@@ -399,10 +433,15 @@ class MultiAgentOrchestrator:
                     "start_time": start_time,
                     "end_time": datetime.now(),
                     "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000),
-                    "input_data": {"query": state["query"]},
+                    "input_data": {
+                        "query": state["query"],
+                        "mode": route_type,
+                        "intent": intent_label,
+                        "max_refinements": num_questions
+                    },
                     "output_data": {
-                        "refined_queries": refinement.refined_queries,
-                        "category": refinement.query_category
+                        "refined": [{"type": rq.type, "query": rq.query} for rq in refinement.refined],
+                        "intent": refinement.intent
                     },
                     "error": None
                 }
@@ -410,7 +449,10 @@ class MultiAgentOrchestrator:
                 
                 state["intermediate_steps"].append({
                     "step": "query_refinement",
-                    "refined_queries": refinement.refined_queries,
+                    "mode": route_type,
+                    "intent": intent_label,
+                    "max_refinements": num_questions,
+                    "refined": [{"type": rq.type, "query": rq.query} for rq in refinement.refined],
                     "timestamp": datetime.now().isoformat()
                 })
             
@@ -460,10 +502,27 @@ class MultiAgentOrchestrator:
             intent_classification = state.get("intent_classification", {})
             force_lower_threshold = intent_classification.get("force_rag_bypass", False)
             
-            # Get refined queries if available
+            # Get refined queries if available (NEW: typed refinements)
             refined_queries = None
             if state.get("query_refinement"):
-                refined_queries = state["query_refinement"].get("refined_queries", [])
+                # Extract queries from typed refinements
+                refined_objs = state["query_refinement"].get("refined", [])
+                if refined_objs:
+                    refined_queries = [rq["query"] for rq in refined_objs]
+            
+            # 📚 AUTO-SELECT SINGLE DOCUMENT: If no documents are selected, check if library has exactly one document
+            document_ids = state.get("document_ids")
+            user_id = state.get("user_id")
+            
+            if not document_ids or len(document_ids) == 0:
+                # No documents selected - check library
+                all_docs = await storage.getAllDocuments(userId=user_id)
+                total_docs = len(all_docs) if all_docs else 0
+                
+                if total_docs == 1:
+                    # Auto-select the single document for enhanced chunk retrieval
+                    document_ids = [all_docs[0]["id"]]
+                    logger.info("Auto-selected single document: %s (ID: %s)", all_docs[0]['filename'], document_ids[0])
             
             chunks, metadata = await retriever_agent.retrieve_documents(
                 state["query"],
@@ -474,8 +533,8 @@ class MultiAgentOrchestrator:
                 session_id=state.get("session_id"),
                 force_retrieval=False,  # Allow caching by default
                 force_lower_threshold=force_lower_threshold,
-                document_ids=state.get("document_ids"),  # Pass document filtering
-                user_id=state.get("user_id")  # ✅ SECURITY: Pass user_id for isolation
+                document_ids=document_ids,  # Pass document filtering (may be auto-selected)
+                user_id=user_id  # ✅ SECURITY: Pass user_id for isolation
             )
             
             state["retrieved_chunks"] = chunks
@@ -607,7 +666,7 @@ class MultiAgentOrchestrator:
             
             # Check if simulation is applicable (has quantitative elements)
             if simulation_result.get("current_value") is None and simulation_result.get("projected_value") is None:
-                print(f"[ORCHESTRATOR] Simulation not applicable - falling back to reasoning agent")
+                logger.info("Simulation not applicable - falling back to reasoning agent")
                 # Fallback to reasoning agent for non-quantitative queries
                 return await self._reasoning_node(state)
             
@@ -840,6 +899,217 @@ class MultiAgentOrchestrator:
             
             return state
 
+    async def _document_summary_node(self, state: AgentState) -> AgentState:
+        """Document summary agent node - generates comprehensive document summaries."""
+        start_time = datetime.now()
+        
+        try:
+            document_ids = state.get("document_ids", [])
+            user_id = state.get("user_id")
+            
+            # VALIDATION: Check if user has selected documents
+            if not document_ids or len(document_ids) == 0:
+                # No documents selected - check total documents in library
+                logger.info("No documents selected, checking library...")
+                
+                try:
+                    # Get all documents for this user
+                    all_docs = await storage.getAllDocuments(userId=user_id)
+                    total_docs = len(all_docs) if all_docs else 0
+                    
+                    logger.info("Found %d documents in library", total_docs)
+                    
+                    if total_docs == 0:
+                        state["final_response"] = """📄 **No Documents Available**
+
+You don't have any documents uploaded yet. Please upload documents first, then I can summarize them for you.
+
+**To get started:**
+1. Upload one or more documents (PDF, text files, etc.)
+2. Select the document(s) you want to summarize
+3. Ask me to "summarize" or "give an overview"
+"""
+                        state["response_type"] = "info"
+                        return state
+                    
+                    elif total_docs <= 3:
+                        # Auto-select all documents (1-3 docs)
+                        document_ids = [doc["id"] for doc in all_docs]
+                        logger.info("Auto-selecting all %d document(s) for summary", total_docs)
+                    else:
+                        # Too many documents - ask user to select
+                        state["final_response"] = f"""📚 **Please Select Documents to Summarize**
+
+You have **{total_docs} documents** in your library. To generate a summary, please:
+
+**Option 1:** Select 1-3 specific documents you want to summarize
+**Option 2:** Ask me to summarize a specific document by name
+
+**Why select documents?**
+- Better quality summaries with focused analysis
+- Comparative analysis works best with 2-3 related documents
+- Faster processing time
+
+**Example queries:**
+- "Summarize the quarterly report"
+- "Give me an overview of the project proposal"
+- After selecting documents: "Summarize these documents"
+
+*Please select the documents you'd like me to analyze.*
+"""
+                        state["response_type"] = "info"
+                        return state
+                        
+                except Exception as e:
+                    logger.error("Error checking document library: %s", e)
+                    state["final_response"] = "Please select the document(s) you want to summarize."
+                    state["response_type"] = "info"
+                    return state
+            
+            # VALIDATION: Enforce SINGLE document summary only
+            if len(document_ids) > 1:
+                state["final_response"] = f"""⚠️ **Multiple Documents Selected**
+
+You've selected **{len(document_ids)} documents**, but I can only summarize **one document at a time**.
+
+**Please select just 1 document** for a comprehensive AI-driven summary.
+
+**Why single document only?**
+- ✅ **Faster processing** (~5-10 seconds)
+- ✅ **Higher quality** detailed analysis
+- ✅ **Lower cost** per summary
+- ✅ **Better accuracy** with semantic slicing
+
+**Tip:** If you want to understand multiple documents, summarize them one at a time and compare the results yourself.
+
+*Please select only 1 document and try again.*
+"""
+                state["response_type"] = "info"
+                return state
+            
+            
+            # Retrieve full document content (not chunks)
+            documents = await retrieve_full_documents(
+                document_ids,
+                user_id=user_id,
+                enable_tracing=self.config["enable_tracing"]
+            )
+            
+            if not documents:
+                state["error_message"] = "Failed to retrieve documents for summary"
+                state["final_response"] = "I couldn't retrieve the selected document. Please try again."
+                state["response_type"] = "error"
+                return state
+            
+            # Generate single document summary
+            doc = documents[0]
+            summary = await document_summary_agent.summarize_single_document(
+                doc["id"],
+                doc["content"],
+                doc["filename"],
+                enable_tracing=self.config["enable_tracing"],
+                user_id=state.get("user_id")  # Pass user_id for Azure Search filtering
+            )
+            
+            # Format single document summary response
+            response = self._format_single_document_summary(summary)
+            
+            state["summary_response"] = {
+                "summary_type": "single",
+                "document_count": 1,
+                "summaries": [summary.model_dump()],
+                "common_themes": None,
+                "comparative_analysis": None,
+                "synthesis": None,
+                "confidence_score": summary.confidence_score
+            }
+            
+            state["final_response"] = response
+            state["response_type"] = "summary"
+            state["sources"] = []  # No chunk sources for summaries
+            
+            # Add trace if enabled
+            if self.config["enable_tracing"]:
+                trace = document_summary_agent.create_trace(
+                    document_ids,
+                    state["summary_response"],
+                    start_time
+                )
+                state["agent_traces"].append(trace)
+            
+            return state
+            
+        except Exception as e:
+            error_msg = f"Document summary agent failed: {str(e)}"
+            state["error_message"] = error_msg
+            state["final_response"] = "I encountered an error while generating the document summary. Please try again."
+            state["response_type"] = "error"
+            
+            if self.config["enable_tracing"]:
+                trace = document_summary_agent.create_trace(
+                    state.get("document_ids", []),
+                    None,
+                    start_time,
+                    error=error_msg
+                )
+                state["agent_traces"].append(trace)
+            
+            return state
+
+    def _format_single_document_summary(self, summary) -> str:
+        """Format single document summary into readable response."""
+        response = f"""## 📄 Document Summary: **{summary.document_name}**
+
+**Document Type:** {summary.document_type}  
+**Word Count:** ~{summary.word_count:,} words  
+**Confidence:** {summary.confidence_score:.0%}
+
+---
+
+### 📝 Executive Summary
+{summary.executive_summary}
+
+---
+
+### 🎯 Key Themes
+"""
+        for i, theme in enumerate(summary.key_themes, 1):
+            response += f"{i}. **{theme}**\n"
+        
+        response += "\n---\n\n### 💡 Main Points\n"
+        for i, point in enumerate(summary.main_points, 1):
+            response += f"{i}. {point}\n"
+        
+        if summary.key_sections:
+            response += "\n---\n\n### 📑 Document Structure\n"
+            response += f"{summary.structure_analysis}\n\n"
+            response += "**Key Sections:**\n"
+            for section in summary.key_sections:
+                response += f"• {section}\n"
+        else:
+            response += f"\n---\n\n### 📑 Document Structure\n{summary.structure_analysis}\n"
+        
+        # Add entities if available
+        if summary.important_entities:
+            has_entities = any(summary.important_entities.values())
+            if has_entities:
+                response += "\n---\n\n### 🔍 Important Entities\n"
+                
+                if summary.important_entities.get("people"):
+                    response += f"**People:** {', '.join(summary.important_entities['people'][:10])}\n"
+                if summary.important_entities.get("organizations"):
+                    response += f"**Organizations:** {', '.join(summary.important_entities['organizations'][:10])}\n"
+                if summary.important_entities.get("products"):
+                    response += f"**Products/Services:** {', '.join(summary.important_entities['products'][:10])}\n"
+                if summary.important_entities.get("dates"):
+                    response += f"**Key Dates:** {', '.join(summary.important_entities['dates'][:10])}\n"
+                if summary.important_entities.get("locations"):
+                    response += f"**Locations:** {', '.join(summary.important_entities['locations'][:10])}\n"
+        
+        response += f"\n---\n\n*This summary was generated with {summary.confidence_score:.0%} confidence based on the full document content.*"
+        
+        return response
+
     def _format_simulation_response(self, simulation_result: dict, parameters: dict) -> str:
         """Format simulation results into a readable response."""
         current = simulation_result["current_value"]
@@ -1032,13 +1302,13 @@ Based on the scenario described in your query, here's the quantitative impact:
         error_type = state.get("error_type")
         
         if error_message and error_type in ["api_quota_exceeded", "api_authentication_failed", "api_connection_error"]:
-            print(f"[ORCHESTRATOR] API error detected in intent router: {error_type}")
+            logger.warning("API error detected in intent router: %s", error_type)
             return "stop"
         
         # Check intent classification
         intent_classification = state.get("intent_classification")
         if not intent_classification:
-            print("[ORCHESTRATOR] No intent classification, defaulting to RAG")
+            logger.debug("No intent classification, defaulting to RAG")
             return "rag"
         
         # Handle both Pydantic model and dict access
@@ -1047,7 +1317,7 @@ Based on the scenario described in your query, here's the quantitative impact:
         else:
             route_type = intent_classification.get("route_type", "RAG")
         
-        print(f"[ORCHESTRATOR] Intent routing decision: {route_type}")
+        logger.debug("Intent routing decision: %s", route_type)
         
         if route_type == "CHAT":
             return "chat"
@@ -1055,6 +1325,8 @@ Based on the scenario described in your query, here's the quantitative impact:
             return "hybrid"
         elif route_type == "META":
             return "meta"
+        elif route_type == "SUMMARY":
+            return "summary"
         else:  # RAG or unknown
             return "rag"
 
@@ -1065,11 +1337,46 @@ Based on the scenario described in your query, here's the quantitative impact:
         
         # If there's an API error, stop the workflow immediately
         if error_message and error_type in ["api_quota_exceeded", "api_authentication_failed", "api_connection_error"]:
-            print(f"[ORCHESTRATOR] API error detected: {error_type} - stopping workflow")
+            logger.warning("API error detected: %s - stopping workflow", error_type)
             return "stop"
         
         # No API errors, continue with normal flow
         return "continue"
+    
+    def _post_router_decision(self, state: AgentState) -> str:
+        """
+        Determine routing after classification based on needs_retrieval.
+        
+        CORRECT PIPELINE:
+        Router = Brain → decides if retrieval is needed
+        Refinement = Strategy → only runs if retrieval is needed
+        Retriever = Muscles → executes the search
+        """
+        # First check for API errors
+        error_message = state.get("error_message")
+        error_type = state.get("error_type")
+        
+        if error_message and error_type in ["api_quota_exceeded", "api_authentication_failed", "api_connection_error"]:
+            logger.error("API error detected in post_router_decision: %s", error_message)
+            return "stop"
+        
+        # Check intent classification for needs_retrieval flag
+        intent_classification = state.get("intent_classification", {})
+        needs_retrieval = intent_classification.get("needs_retrieval", True)
+        
+        if needs_retrieval:
+            logger.info("Routing to query refinement (needs_retrieval=True)")
+            return "refinement"
+        else:
+            logger.info("Skipping query refinement (needs_retrieval=False) - Router decision")
+            # Set empty refined queries to indicate no refinement was needed (NEW: typed format)
+            state["query_refinement"] = {
+                "original_query": state["query"],
+                "intent": state.get("classification", {}).get("type", "factual"),
+                "refined": [],  # Empty typed refinements
+                "reasoning": "Query refinement skipped - retrieval not needed (intent router decision)"
+            }
+            return "retrieval"
     
     def _route_decision(self, state: AgentState) -> str:
         """Determine routing after classification."""
@@ -1086,7 +1393,7 @@ Based on the scenario described in your query, here's the quantitative impact:
         error_type = state.get("error_type")
         
         if error_message and error_type in ["api_quota_exceeded", "api_authentication_failed", "api_connection_error"]:
-            print(f"[ORCHESTRATOR] API error detected in retriever: {error_type} - stopping workflow")
+            logger.warning("API error detected in retriever: %s - stopping workflow", error_type)
             return "stop"
         
         # No API errors, continue with normal routing logic
@@ -1109,26 +1416,26 @@ Based on the scenario described in your query, here's the quantitative impact:
             route_type = intent_classification.get("route_type", "RAG") if intent_classification else "RAG"
         
         if route_type == "HYBRID" and retrieved_chunks:
-            print("[ORCHESTRATOR] HYBRID routing - combining retrieval with memory")
+            logger.info("HYBRID routing - combining retrieval with memory")
             return "hybrid"
         
         # If no documents found and general knowledge is enabled, route to general knowledge
         if not retrieved_chunks and use_general_knowledge:
-            print("[ORCHESTRATOR] No documents found, routing to general knowledge")
+            logger.info("No documents found, routing to general knowledge")
             return "general"
         
         # Otherwise route based on original classification
         if query_type == "factual":
-            print("[ORCHESTRATOR] Routing to reasoning agent")
+            logger.debug("Routing to reasoning agent")
             return "reasoning"
         elif query_type == "counterfactual":
-            print("[ORCHESTRATOR] Routing to simulation agent")
+            logger.debug("Routing to simulation agent")
             return "simulation"  # Phase 3
         elif query_type == "temporal":
-            print("[ORCHESTRATOR] Routing to temporal agent")
+            logger.debug("Routing to temporal agent")
             return "temporal"    # Phase 4
         else:
-            print(f"[ORCHESTRATOR] Unknown query type {query_type}, defaulting to reasoning")
+            logger.warning("Unknown query type %s, defaulting to reasoning", query_type)
             return "reasoning"   # Default fallback
     
     async def process_query(
@@ -1168,6 +1475,7 @@ Based on the scenario described in your query, here's the quantitative impact:
             "simulation_parameters": None,
             "simulation_result": None,
             "temporal_analysis": None,
+            "summary_response": None,  # Document summary response
             "final_response": "",
             "response_type": "reasoning",
             "sources": [],
@@ -1199,7 +1507,7 @@ Based on the scenario described in your query, here's the quantitative impact:
                     final_state["final_response"] = f"⚠️ **Processing Error**\n\nI encountered an error while processing your question: {final_state['error_message']}\n\nPlease try again or check your configuration."
                 
                 final_state["response_type"] = "error"
-                print(f"[ORCHESTRATOR] Workflow stopped early due to {error_type}")
+                logger.warning("Workflow stopped early due to %s", error_type)
             
             # Calculate total execution time
             if self.config["enable_tracing"]:
@@ -1213,7 +1521,7 @@ Based on the scenario described in your query, here's the quantitative impact:
                         cost_summary = cost_tracker.get_session_cost_breakdown(session_id)
                         final_state["cost_summary"] = cost_summary
                     except Exception as cost_error:
-                        print(f"[ORCHESTRATOR] Error getting cost summary: {cost_error}")
+                        logger.error("Error getting cost summary: %s", cost_error)
                 
                 if self.config["debug_mode"]:
                     final_state["debug_info"] = {
@@ -1253,6 +1561,83 @@ Based on the scenario described in your query, here's the quantitative impact:
                 final_state["total_execution_time"] = total_ms
             
             return final_state
+    
+    async def stream_query(
+        self,
+        query: str,
+        session_id: str = None,
+        user_id: str = None,
+        document_ids: List[str] = None
+    ):
+        """
+        Stream query processing with intermediate state updates.
+        
+        Yields intermediate states as nodes complete, allowing real-time UI updates
+        for refinements, classifications, etc.
+        
+        Args:
+            query: User's question
+            session_id: Optional session identifier
+            user_id: Optional user identifier
+            document_ids: Optional list of document IDs to filter search
+            
+        Yields:
+            Intermediate AgentState updates as workflow progresses
+        """
+        start_time = datetime.now()
+        
+        # Initialize state
+        initial_state: AgentState = {
+            "query": query,
+            "session_id": session_id,
+            "user_id": user_id,
+            "document_ids": document_ids,
+            "intent_classification": None,
+            "classification": None,
+            "retrieved_chunks": [],
+            "retrieval_metadata": None,
+            "conversation_context": None,
+            "memory_response": None,
+            "reasoning_response": None,
+            "simulation_parameters": None,
+            "simulation_result": None,
+            "temporal_analysis": None,
+            "summary_response": None,
+            "final_response": "",
+            "response_type": "reasoning",
+            "sources": [],
+            "cost_summary": None,
+            "agent_traces": [],
+            "total_execution_time": None,
+            "error_message": None,
+            "error_type": None,
+            "debug_info": None,
+            "intermediate_steps": []
+        }
+        
+        try:
+            # Stream workflow execution
+            async for event in self.app.astream(initial_state, stream_mode="updates"):
+                # Event contains {node_name: updated_state}
+                for node_name, updated_state in event.items():
+                    # Yield the updated state after each node
+                    yield updated_state
+            
+        except Exception as e:
+            logger.error("Stream query error: %s", e, exc_info=True)
+            # Yield error state
+            error_state = initial_state.copy()
+            error_state["error_message"] = str(e)
+            error_state["error_type"] = "general_error"
+            error_state["final_response"] = "I encountered an error while processing your question. Please try again."
+            error_state["response_type"] = "error"
+            
+            if self.config["enable_tracing"]:
+                end_time = datetime.now()
+                total_ms = int((end_time - start_time).total_seconds() * 1000)
+                error_state["total_execution_time"] = total_ms
+            
+            yield error_state
 
 # Global orchestrator instance
 orchestrator = MultiAgentOrchestrator()

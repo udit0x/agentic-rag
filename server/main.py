@@ -4,13 +4,21 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Configure logging FIRST before any other imports
+from server.logging_config import configure_logging
+configure_logging()
+
+# Now we can use logging
+import logging
+logger = logging.getLogger(__name__)
+
 # Load environment variables from .env file
 env_path = Path(__file__).parent.parent / ".env"
 if env_path.exists():
     load_dotenv(env_path)
-    print(f"[MAIN] Loaded environment from {env_path}")
+    logger.info("Loaded environment from %s", env_path)
 else:
-    print(f"[MAIN] No .env file found at {env_path}")
+    logger.warning("No .env file found at %s", env_path)
 
 # Add parent directory to Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -23,21 +31,21 @@ from server.api.chat import router as chat_router
 from server.api.config import router as config_router
 from server.api.chat_history import router as chat_history_router
 from server.api.users import router as users_router
-from api.feedback import router as feedback_router
+from server.api.feedback import router as feedback_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
-    print("[Server] Starting RAG Orchestrator API...")
+    logger.info("Starting RAG Orchestrator API...")
     
     # Initialize database connection at startup
     try:
         from server.database_interface import db_storage
         await db_storage.initialize()
-        print("[Database] Initialization completed")
+        logger.info("Database initialization completed")
     except Exception as e:
-        print(f"[Database] Initialization failed: {e}")
+        logger.error("Database initialization failed: %s", str(e))
         # Don't crash the app, but log the error
     
     # Initialize configuration manager
@@ -45,16 +53,16 @@ async def lifespan(app: FastAPI):
         from server.config_manager import config_manager
         await config_manager.initialize()
         current_config = config_manager.get_current_config()
-        print(f"[Config] Loaded configuration from {current_config.source} (version {current_config.version})")
+        logger.info("Loaded configuration from %s (version %s)", current_config.source, current_config.version)
         if not config_manager.is_configured():
-            print("[Config] Warning: Configuration incomplete - setup required")
+            logger.warning("Configuration incomplete - setup required")
     except Exception as e:
-        print(f"[Config] Configuration initialization failed: {e}")
+        logger.error("Configuration initialization failed: %s", str(e))
     
     yield
     
     # Shutdown
-    print("[Server] Shutting down RAG Orchestrator API...")
+    logger.info("Shutting down RAG Orchestrator API...")
     try:
         from server.config_manager import config_manager
         await config_manager.close()
@@ -94,8 +102,7 @@ else:
             os.getenv("EXPRESS_BACKEND_URL", "https://yourapi.azurewebsites.net"),
         ]
 
-print(f"[CORS] Environment: {ENV}")
-print(f"[CORS] Allowed origins: {cors_origins}")
+logger.info("CORS configured - env=%s, origins=%s", ENV, cors_origins)
 
 app.add_middleware(
     CORSMiddleware,
