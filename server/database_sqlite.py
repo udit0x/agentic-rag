@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 import sys
+from server.datetime_utils import utc_now, utc_now_iso, to_iso
 
 # Add the project root to Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -40,7 +41,7 @@ class DatabaseStorage:
         await self.ensure_initialized()
         
         doc_id = str(uuid.uuid4())
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         
         await self.db.execute(
             """INSERT INTO documents (id, filename, content_type, size, content, uploaded_at, user_id)
@@ -111,7 +112,7 @@ class DatabaseStorage:
         await self.ensure_initialized()
         
         chunk_id = str(uuid.uuid4())
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         
         await self.db.execute(
             """INSERT INTO document_chunks (id, document_id, chunk_index, content, metadata, embedding_id, created_at)
@@ -194,7 +195,7 @@ class DatabaseStorage:
         
         for data in chunks_data:
             chunk_id = str(uuid.uuid4())
-            now = datetime.now().isoformat()
+            now = utc_now_iso()
             
             chunk_records.append({
                 "id": chunk_id,
@@ -244,7 +245,7 @@ class DatabaseStorage:
         await self.ensure_initialized()
         
         session_id = str(uuid.uuid4())
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         
         await self.db.execute(
             """INSERT INTO chat_sessions (id, title, user_id, metadata, message_count, last_message_at, created_at, updated_at)
@@ -337,7 +338,7 @@ class DatabaseStorage:
         await self.ensure_initialized()
         
         set_clauses = ["updated_at = ?"]
-        params = [datetime.now().isoformat()]
+        params = [utc_now_iso()]
         
         if "title" in data:
             set_clauses.append("title = ?")
@@ -426,7 +427,7 @@ class DatabaseStorage:
         await self.ensure_initialized()
         
         message_id = str(uuid.uuid4())
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         
         # Get next sequence number for this session
         last_message_result = await self.db.fetchone(
@@ -551,7 +552,7 @@ class DatabaseStorage:
                    last_message_at = NULL, 
                    updated_at = ? 
                WHERE id = ?""",
-            (datetime.now().isoformat(), session_id)
+            (utc_now_iso(), session_id)
         )
 
     async def getChatStatistics(self, userId: Optional[str] = None) -> dict:
@@ -599,7 +600,7 @@ class DatabaseStorage:
         await self.ensure_initialized()
         
         user_id = str(uuid.uuid4())
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         
         await self.db.execute(
             """INSERT INTO users (id, email, name, picture, locale, preferences, last_login_at, created_at, updated_at, is_active)
@@ -747,7 +748,7 @@ class DatabaseStorage:
         await self.ensure_initialized()
         
         set_clauses = ["updated_at = ?"]
-        params = [datetime.now().isoformat()]
+        params = [utc_now_iso()]
         
         if "name" in data:
             set_clauses.append("name = ?")
@@ -777,7 +778,7 @@ class DatabaseStorage:
         
         await self.db.execute(
             "UPDATE users SET is_active = 0, updated_at = ? WHERE id = ?",
-            (datetime.now().isoformat(), user_id)
+            (utc_now_iso(), user_id)
         )
 
     async def activateUser(self, user_id: str) -> None:
@@ -786,14 +787,14 @@ class DatabaseStorage:
         
         await self.db.execute(
             "UPDATE users SET is_active = 1, updated_at = ? WHERE id = ?",
-            (datetime.now().isoformat(), user_id)
+            (utc_now_iso(), user_id)
         )
 
     async def updateUserLastLogin(self, user_id: str) -> None:
         """Update user's last login timestamp."""
         await self.ensure_initialized()
         
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         await self.db.execute(
             "UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?",
             (now, now, user_id)
@@ -806,11 +807,11 @@ class DatabaseStorage:
         
         session_id = str(uuid.uuid4())
         session_token = str(uuid.uuid4())
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         
         # Session expires in 30 days
         expires_at = datetime.fromtimestamp(
-            datetime.now().timestamp() + (30 * 24 * 60 * 60)
+            utc_now().timestamp() + (30 * 24 * 60 * 60)
         ).isoformat()
         
         await self.db.execute(
@@ -876,7 +877,7 @@ class DatabaseStorage:
         
         await self.db.execute(
             "UPDATE user_sessions SET is_active = 0, updated_at = ? WHERE session_token = ?",
-            (datetime.now().isoformat(), session_token)
+            (utc_now_iso(), session_token)
         )
 
     async def invalidateAllUserSessions(self, user_id: str) -> None:
@@ -885,7 +886,7 @@ class DatabaseStorage:
         
         await self.db.execute(
             "UPDATE user_sessions SET is_active = 0, updated_at = ? WHERE user_id = ?",
-            (datetime.now().isoformat(), user_id)
+            (utc_now_iso(), user_id)
         )
 
     async def getUserStatistics(self) -> dict:
@@ -931,7 +932,7 @@ class DatabaseStorage:
     ) -> str:
         """Create a new message feedback entry."""
         feedback_id = str(uuid.uuid4())
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         
         await self.db.execute("""
             INSERT INTO message_feedback (
@@ -967,7 +968,7 @@ class DatabaseStorage:
         metadata: Optional[dict] = None
     ) -> str:
         """Update an existing message feedback entry."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         
         await self.db.execute("""
             UPDATE message_feedback

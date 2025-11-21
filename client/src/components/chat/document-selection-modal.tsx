@@ -106,8 +106,23 @@ export function DocumentSelectionModal({
       setTempSelectedIds(selectedDocumentIds);
       setSearchQuery("");
       setSelectedFileTypes([]);
+      setIsInitialRender(true);
     }
   }, [isOpen, selectedDocumentIds]);
+
+  // 🔒 CRITICAL: Lock body scroll when modal is open
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    
+    // Cleanup on unmount
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [isOpen]);
 
   // Filter documents based on search query and file types
   const filteredDocuments = useMemo(() => {
@@ -132,6 +147,15 @@ export function DocumentSelectionModal({
 
     return filtered;
   }, [documents, searchQuery, selectedFileTypes]);
+
+  // Track if this is initial render to prevent animation flicker
+  const [isInitialRender, setIsInitialRender] = useState(true);
+  
+  useEffect(() => {
+    if (isOpen && isInitialRender) {
+      setIsInitialRender(false);
+    }
+  }, [isOpen, isInitialRender]);
 
   // Handle file type filter toggle
   const handleFileTypeToggle = (fileType: string) => {
@@ -226,35 +250,40 @@ export function DocumentSelectionModal({
     <Dialog open={isOpen} onOpenChange={handleCancel}>
       <DialogContent 
         className={cn(
-          "max-w-3xl w-[95vw] h-[85vh] flex flex-col",
-          isMobile && "max-w-[95vw] h-[90vh] rounded-lg",
+          "max-w-3xl w-[95vw] flex flex-col gap-0 p-0",
+          isMobile 
+            ? "h-[100dvh] w-[100vw] max-w-[100vw] rounded-none m-0 top-0 left-0 translate-x-0 translate-y-0" 
+            : "h-[85vh]",
           className
         )}
         onPointerDownOutside={(e) => e.preventDefault()}
       >
-        <DialogHeader className="flex-shrink-0 pb-4">
-          <DialogTitle className="flex items-center gap-2">
-            <Filter className="h-5 w-5" />
-            Select Documents
+        <DialogHeader className="flex-shrink-0 pb-3 sm:pb-4 px-4 sm:px-6 pt-4 sm:pt-6 border-b">
+          <DialogTitle className="flex items-center gap-2 text-base sm:text-lg">
+            <Filter className="h-4 w-4 sm:h-5 sm:w-5" />
+            {isMobile ? "Select Docs" : "Select Documents"}
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-xs sm:text-sm">
             {mode === "single" 
-              ? "Choose one document to focus your search on."
-              : "Choose documents to focus your search on. Leave empty to search all documents."
+              ? (isMobile ? "Choose one document." : "Choose one document to focus your search on.")
+              : (isMobile 
+                  ? "Choose docs to focus search. Leave empty to search all."
+                  : "Choose documents to focus your search on. Leave empty to search all documents."
+                )
             }
           </DialogDescription>
         </DialogHeader>
 
         {/* Search and filters */}
-        <div className="flex-shrink-0 space-y-4">
+        <div className="flex-shrink-0 space-y-3 sm:space-y-4 px-4 sm:px-6 pt-3 sm:pt-4">
           {/* Search input */}
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 sm:h-4 sm:w-4 text-muted-foreground" />
             <Input
-              placeholder="Search documents by name..."
+              placeholder={isMobile ? "Search..." : "Search documents by name..."}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
+              className="pl-8 sm:pl-9 h-9 sm:h-10 text-sm"
             />
           </div>
 
@@ -262,19 +291,21 @@ export function DocumentSelectionModal({
           {availableFileTypes.length > 1 && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-muted-foreground">File Types:</span>
+                <span className="text-xs sm:text-sm font-medium text-muted-foreground">
+                  {isMobile ? "Types:" : "File Types:"}
+                </span>
                 {(searchQuery || selectedFileTypes.length > 0) && (
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={clearAllFilters}
-                    className="text-xs h-6 px-2"
+                    className="text-[10px] sm:text-xs h-6 px-2"
                   >
-                    Clear filters
+                    Clear
                   </Button>
                 )}
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-1.5 sm:gap-2">
                 {availableFileTypes.map((fileType) => {
                   const isSelected = selectedFileTypes.includes(fileType);
                   const typeCount = documents.filter(doc => getFileExtension(doc.filename) === fileType).length;
@@ -285,13 +316,13 @@ export function DocumentSelectionModal({
                       variant={isSelected ? "default" : "outline"}
                       size="sm"
                       onClick={() => handleFileTypeToggle(fileType)}
-                      className="h-7 px-3 text-xs gap-1"
+                      className="h-6 sm:h-7 px-2 sm:px-3 text-[10px] sm:text-xs gap-1"
                     >
                       {getFileTypeIcon(fileType)}
                       {fileType}
                       <Badge 
                         variant={isSelected ? "secondary" : "outline"} 
-                        className="ml-1 text-xs px-1 py-0 h-4 min-w-4"
+                        className="ml-1 text-[10px] px-1 py-0 h-3.5 sm:h-4 min-w-3.5 sm:min-w-4"
                       >
                         {typeCount}
                       </Badge>
@@ -303,14 +334,14 @@ export function DocumentSelectionModal({
           )}
 
           {/* Document count and controls */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <Badge variant="secondary">
-                  {filteredDocuments.length} of {documents.length} document{documents.length !== 1 ? 's' : ''}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 sm:gap-4 flex-wrap">
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <Badge variant="secondary" className="text-[10px] sm:text-xs h-5 sm:h-6">
+                  {filteredDocuments.length} of {documents.length}
                 </Badge>
                 {tempSelectedIds.length > 0 && (
-                  <Badge variant="default">
+                  <Badge variant="default" className="text-[10px] sm:text-xs h-5 sm:h-6">
                     {tempSelectedIds.length} selected
                   </Badge>
                 )}
@@ -323,65 +354,79 @@ export function DocumentSelectionModal({
                 variant="ghost"
                 size="sm"
                 onClick={handleSelectAll}
-                className="text-xs"
+                className="text-[10px] sm:text-xs h-6 sm:h-7 px-2 sm:px-3 flex-shrink-0"
               >
-                {tempSelectedIds.length === filteredDocuments.length ? "Deselect All" : "Select All"}
+                {tempSelectedIds.length === filteredDocuments.length 
+                  ? (isMobile ? "Clear" : "Deselect All") 
+                  : (isMobile ? "All" : "Select All")
+                }
               </Button>
             )}
           </div>
         </div>
 
         {/* Document list with fixed height and scroll */}
-        <div className="flex-1 min-h-0 border rounded-md bg-background">
-          <ScrollArea className="h-full p-2">
-            <div className="space-y-2 pr-2">
-              <AnimatePresence>
+        <div className="flex-1 min-h-0 border-t border-b sm:border sm:rounded-md bg-background mx-4 sm:mx-6 my-3 sm:my-4">
+          <ScrollArea 
+            className="h-full"
+            style={{
+              overscrollBehavior: "contain",
+              WebkitOverflowScrolling: "touch"
+            }}
+          >
+            <div className="space-y-2 p-2 sm:p-3">
+              <AnimatePresence mode="sync">
                 {filteredDocuments.length === 0 && (
                   <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    className="flex flex-col items-center justify-center h-32 text-muted-foreground"
+                    exit={{ opacity: 0 }}
+                    className="flex flex-col items-center justify-center h-32 sm:h-40 text-muted-foreground"
                   >
-                    <FileIcon className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                    <p className="text-sm text-center">
+                    <FileIcon className="h-6 w-6 sm:h-8 sm:w-8 mx-auto mb-2 opacity-50" />
+                    <p className="text-xs sm:text-sm text-center px-4">
                       {searchQuery || selectedFileTypes.length > 0
-                        ? "No documents match your filters" 
-                        : "No documents available"
+                        ? (isMobile ? "No match" : "No documents match your filters")
+                        : (isMobile ? "No documents" : "No documents available")
                       }
                     </p>
-                    <p className="text-xs mt-1 text-center">
+                    <p className="text-[10px] sm:text-xs mt-1 text-center px-4">
                       {searchQuery || selectedFileTypes.length > 0
-                        ? "Try adjusting your search or filters"
-                        : "Upload some documents to get started"
+                        ? (isMobile ? "Try different filters" : "Try adjusting your search or filters")
+                        : (isMobile ? "Upload docs to start" : "Upload some documents to get started")
                       }
                     </p>
                   </motion.div>
                 )}
 
-                {filteredDocuments.map((document, index) => {
+                {filteredDocuments.map((document) => {
                   const isSelected = tempSelectedIds.includes(document.id);
                   
                   return (
                     <motion.div
                       key={document.id}
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -20 }}
-                      transition={{ delay: index * 0.03 }}
+                      layout
+                      initial={isInitialRender ? { opacity: 1, y: 0 } : { opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      transition={{ 
+                        duration: 0.15,
+                        ease: "easeOut"
+                      }}
                       className={cn(
-                        "group relative rounded-lg border transition-all cursor-pointer p-3",
+                        "group relative rounded-lg border transition-all cursor-pointer p-2.5 sm:p-3 touch-manipulation",
                         "hover:border-primary/50 hover:bg-muted/20",
                         isSelected && "border-primary bg-primary/5 shadow-sm",
                         !isSelected && "border-border"
                       )}
                       onClick={() => handleDocumentToggle(document.id)}
                     >
-                      <div className="flex items-start gap-3">
+                      <div className="flex items-start gap-2 sm:gap-3">
                         {/* Checkbox/selection indicator */}
-                        <div className="flex-shrink-0 pt-1">
+                        <div className="flex-shrink-0 pt-0.5 sm:pt-1">
                           {mode === "single" ? (
                             <div className={cn(
-                              "w-4 h-4 rounded-full border-2 transition-colors",
+                              "w-4 h-4 sm:w-5 sm:h-5 rounded-full border-2 transition-colors",
                               isSelected 
                                 ? "border-primary bg-primary" 
                                 : "border-muted-foreground group-hover:border-primary"
@@ -394,7 +439,7 @@ export function DocumentSelectionModal({
                             <Checkbox
                               checked={isSelected}
                               onChange={() => handleDocumentToggle(document.id)}
-                              className="data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+                              className="data-[state=checked]:bg-primary data-[state=checked]:border-primary h-4 w-4 sm:h-5 sm:w-5"
                             />
                           )}
                         </div>
@@ -403,9 +448,9 @@ export function DocumentSelectionModal({
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between">
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-1">
+                              <div className="flex items-start gap-1.5 sm:gap-2 mb-1">
                                 <h4 className={cn(
-                                  "font-medium text-sm line-clamp-2 transition-colors",
+                                  "font-medium text-xs sm:text-sm line-clamp-2 flex-1 transition-colors leading-tight",
                                   isSelected ? "text-primary" : "text-foreground group-hover:text-primary"
                                 )}>
                                   {document.filename}
@@ -413,7 +458,7 @@ export function DocumentSelectionModal({
                                 <Badge 
                                   variant="outline" 
                                   className={cn(
-                                    "text-xs flex-shrink-0 gap-1",
+                                    "text-[10px] sm:text-xs flex-shrink-0 gap-1 h-4 sm:h-5",
                                     isSelected && "border-primary/50 text-primary"
                                   )}
                                 >
@@ -421,13 +466,13 @@ export function DocumentSelectionModal({
                                   {getFileExtension(document.filename)}
                                 </Badge>
                               </div>
-                              <div className="flex items-center gap-3 mt-1">
-                                <span className="text-xs text-muted-foreground">
+                              <div className="flex items-center gap-2 sm:gap-3 mt-1 flex-wrap">
+                                <span className="text-[10px] sm:text-xs text-muted-foreground">
                                   {formatFileSize(document.size)}
                                 </span>
                                 <div className="flex items-center gap-1">
-                                  <Clock className="h-3 w-3 text-muted-foreground" />
-                                  <span className="text-xs text-muted-foreground">
+                                  <Clock className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                                  <span className="text-[10px] sm:text-xs text-muted-foreground">
                                     {formatDate(document.uploadedAt)}
                                   </span>
                                 </div>
@@ -445,31 +490,49 @@ export function DocumentSelectionModal({
         </div>
 
         {/* Footer */}
-        <DialogFooter className="flex-shrink-0">
-          <div className="flex items-center justify-between w-full">
-            <div className="text-xs text-muted-foreground">
+        <DialogFooter className={cn(
+          "flex-shrink-0 px-4 sm:px-6 pt-3 sm:pt-4 border-t",
+          isMobile ? "pb-6 safe-bottom" : "pb-4 sm:pb-6"
+        )}>
+          <div className={cn(
+            "w-full",
+            isMobile ? "space-y-3" : "flex items-center justify-between"
+          )}>
+            <div className={cn(
+              "text-[10px] sm:text-xs text-muted-foreground",
+              isMobile && "text-center"
+            )}>
               {tempSelectedIds.length === 0 
-                ? "No filters applied - will search all documents"
+                ? (isMobile ? "No filters - searching all" : "No filters applied - will search all documents")
                 : tempSelectedIds.length === 1
-                ? "Searching 1 document - optimal for best results"
-                : `Will search in ${tempSelectedIds.length} documents. Tip: Works best with a single document.`
+                ? (isMobile ? "1 doc - optimal" : "Searching 1 document - optimal for best results")
+                : (isMobile 
+                    ? `${tempSelectedIds.length} docs selected`
+                    : `Will search in ${tempSelectedIds.length} documents. Tip: Works best with a single document.`
+                  )
               }
             </div>
             
-            <div className="flex gap-2">
+            <div className="flex gap-2 justify-end">
               <Button
                 variant="outline"
                 onClick={handleCancel}
+                className={cn(
+                  isMobile ? "flex-1 h-10 text-sm" : "h-9"
+                )}
               >
                 Cancel
               </Button>
               <Button
                 onClick={handleApply}
                 disabled={!hasChanges}
+                className={cn(
+                  isMobile ? "flex-1 h-10 text-sm" : "h-9"
+                )}
               >
-                Apply Selection
+                {isMobile ? "Apply" : "Apply Selection"}
                 {tempSelectedIds.length > 0 && (
-                  <Badge variant="secondary" className="ml-2 bg-primary-foreground text-primary">
+                  <Badge variant="secondary" className="ml-2 bg-primary-foreground text-primary text-[10px] sm:text-xs h-4 sm:h-5">
                     {tempSelectedIds.length}
                   </Badge>
                 )}

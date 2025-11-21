@@ -11,11 +11,8 @@ const getApiBaseUrl = (): string => {
     return envUrl;
   }
   
-  if (isDevelopment) {
-    return '';
-  }
-  
-  throw new Error('API configuration required');
+  // Default to relative URLs (frontend and backend on same domain)
+  return '';
 };
 
 export const API_CONFIG = {

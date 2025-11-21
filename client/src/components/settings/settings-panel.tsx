@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Settings, X, Moon, Sun, Monitor, Cog, Save, Trash2, Loader2, Eye, EyeOff, Zap, Info, CheckCircle2, XCircle, Circle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -47,6 +47,51 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [linkedinHovered, setLinkedinHovered] = useState(false);
   const { toast } = useToast();
   
+  // Track if we've loaded config to prevent infinite loop
+  const hasLoadedConfigRef = useRef(false);
+  
+  // Track if we're currently closing to prevent multiple onClose calls
+  const isClosingRef = useRef(false);
+  const backdropRef = useRef<HTMLDivElement>(null);
+  
+  // Safe close handler that prevents multiple calls
+  const handleClose = useCallback(() => {
+    // Check and set flag in one atomic operation to prevent race conditions
+    if (isClosingRef.current) {
+      return;
+    }
+    
+    // Set flag IMMEDIATELY before any async operations
+    isClosingRef.current = true;
+    
+    // Disable backdrop clicks immediately by removing event listener
+    if (backdropRef.current) {
+      backdropRef.current.style.pointerEvents = 'none';
+    }
+    
+    // Call onClose which triggers the exit animation
+    onClose();
+    
+    // Reset flag after animation completes (500ms matches Framer Motion exit duration)
+    setTimeout(() => {
+      isClosingRef.current = false;
+    }, 500);
+  }, [onClose]);
+  
+  // Reset closing flag when panel actually closes
+  useEffect(() => {
+    if (!isOpen) {
+      isClosingRef.current = false;
+    }
+  }, [isOpen]);
+  
+  // Reset to general tab when panel closes to prevent state issues
+  useEffect(() => {
+    if (!isOpen && activeTab !== 'general') {
+      setActiveTab('general');
+    }
+  }, [isOpen, activeTab]);
+  
   // Debounced threshold save
   const [thresholdSaveTimeout, setThresholdSaveTimeout] = useState<NodeJS.Timeout | null>(null);
   
@@ -54,7 +99,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const { quotaRemaining, isUnlimited, hasPersonalKey, getQuotaStatus } = useQuotaStore();
   const quotaStatus = getQuotaStatus();
 
-  // Settings store - SINGLE SOURCE OF TRUTH
+  // Settings store - Use selective subscription to prevent unnecessary re-renders
   const {
     llm,
     embedding,
@@ -77,15 +122,42 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     saveConfiguration,
     deleteConfiguration,
     resetTestResults,
-    loadConfiguration,
   } = useSettingsStore();
+  
+  // Get loadConfiguration separately to avoid dependency issues
+  const loadConfiguration = useSettingsStore(state => state.loadConfiguration);
 
-  // Load configuration when panel opens
+  //Load configuration ONCE when panel first opens
   useEffect(() => {
-    if (isOpen) {
-      loadConfiguration();
+    if (isOpen && !hasLoadedConfigRef.current) {
+      hasLoadedConfigRef.current = true;
+      // Small delay to ensure panel is fully mounted
+      setTimeout(() => {
+        loadConfiguration();
+      }, 100);
     }
   }, [isOpen]); // Only depend on isOpen, not loadConfiguration
+  
+  // Reset hasLoaded when panel fully closes
+  useEffect(() => {
+    if (!isOpen) {
+      hasLoadedConfigRef.current = false;
+    }
+  }, [isOpen]);
+
+  // 🔒 CRITICAL: Lock body scroll when panel is open
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    
+    // Cleanup on unmount
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [isOpen]);
 
   const togglePasswordVisibility = (field: string) => {
     setShowPasswords(prev => ({
@@ -156,29 +228,44 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
         <>
           {/* Backdrop */}
           <motion.div
+            ref={backdropRef}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/50 z-40"
-            onClick={onClose}
+            style={{ touchAction: "none" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleClose();
+            }}
           />
 
-          {/* Settings Panel */}
+          {/* Settings Panel - Full Viewport Container */}
           <motion.div
             initial={{ x: "100%", opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: "100%", opacity: 0 }}
             transition={{ type: "spring", damping: 20, stiffness: 300 }}
-            className="fixed right-0 top-0 h-full w-96 bg-background border-l border-border z-50 overflow-hidden"
+            className="fixed right-0 top-0 z-50 bg-background border-l border-border"
+            style={{
+              height: "100vh",
+              width: isMobile ? "100%" : "384px",
+              maxWidth: isMobile ? "100vw" : "384px",
+              overflow: "hidden",
+              touchAction: "none"
+            }}
           >
             <div className="flex flex-col h-full">
               {/* Header */}
-              <div className="flex items-center justify-between p-4 border-b border-border">
-                <h2 className="text-lg font-semibold">Settings</h2>
+              <div className="flex items-center justify-between p-3 sm:p-4 border-b border-border">
+                <h2 className="text-base sm:text-lg font-semibold">Settings</h2>
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={onClose}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleClose();
+                  }}
                   className="h-8 w-8 p-0"
                 >
                   <X className="h-4 w-4" />
@@ -232,7 +319,13 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               </div>
 
               {/* Content */}
-              <div className="flex-1 overflow-y-auto p-4">
+              <div 
+                className={`flex-1 overflow-y-scroll p-3 sm:p-4 ${isMobile ? "pb-8 safe-bottom" : ""}`}
+                style={{
+                  overscrollBehavior: "contain",
+                  WebkitOverflowScrolling: "touch"
+                }}
+              >
                 <AnimatePresence mode="wait">
                   <motion.div
                     key={activeTab}
@@ -717,8 +810,8 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               </div>
 
               {/* Built By Footer */}
-              <div className="p-4 border-t border-border">
-                <div className="flex items-center justify-center space-x-2 text-sm">
+              <div className="p-3 sm:p-4 border-t border-border">
+                <div className="flex items-center justify-center space-x-2 text-xs sm:text-sm">
                   <span className="text-muted-foreground">Built by:</span>
                   <a
                     href="https://www.linkedin.com/in/udit-kashyap-219a70133/"
@@ -732,7 +825,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                       text="Udit Kashyap" 
                       disabled={false} 
                       speed={3} 
-                      className="text-sm"
+                      className="text-xs sm:text-sm"
                     />
                     <div className="[&_svg_path]:stroke-primary [&_svg_path]:fill-none">
                       <Lottie

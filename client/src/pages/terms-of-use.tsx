@@ -37,8 +37,8 @@ export default function TermsOfUse() {
           <h2 className="text-2xl font-semibold text-foreground mt-8 mb-4">Agreement to Terms</h2>
           <p className="text-foreground">
             Welcome to MindMesh! By accessing or using our service at{" "}
-            <a href="https://mindmesh.azurewebsites.net" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-              https://mindmesh.azurewebsites.net
+            <a href="https://mindmesh-ai.cloud/" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+              https://mindmesh-ai.cloud/
             </a>
             , you agree to be bound by these Terms of Use. If you do not agree with these terms, please do not use the service.
           </p>

@@ -9,6 +9,7 @@ import asyncio
 import sys
 from pathlib import Path
 from datetime import datetime
+from server.datetime_utils import utc_now
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from server.storage import storage
@@ -276,7 +277,7 @@ async def stream_query_with_refinement(
                         environment="production",
                         useGeneralKnowledge=key_result.get('use_general_knowledge', True),
                         documentRelevanceThreshold=key_result.get('document_relevance_threshold', 0.65),
-                        updated_at=datetime.now()
+                        updated_at=utc_now()
                     )
                     
                     # Inject into config_manager for this request

@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useUploadContext } from "@/contexts/upload-context";
 import { UploadProcessingVisualizer } from "./upload-processing-visualizer";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { 
   UPLOAD_CONFIG, 
   getSupportedExtensions, 
@@ -33,6 +34,7 @@ export function DocumentUpload({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const { uploads, startUpload, removeUpload, clearCompleted, hasActiveUploads } = useUploadContext();
+  const isMobile = useIsMobile();
 
   const validateFile = (file: File): string | null => {
     const extension = "." + file.name.split(".").pop()?.toLowerCase();
@@ -131,41 +133,48 @@ export function DocumentUpload({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className={cn(
-          "border-2 border-dashed rounded-lg p-8 text-center transition-colors min-h-48 flex flex-col items-center justify-center",
+          "border-2 border-dashed rounded-lg p-4 sm:p-8 text-center transition-colors min-h-48 flex flex-col items-center justify-center",
           isDragging
             ? "border-primary bg-primary/5"
             : "border-border hover:border-primary/50"
         )}
         data-testid="upload-dropzone"
       >
-        <Upload className="h-12 w-12 text-muted-foreground mb-4" />
-        <h3 className="text-lg font-semibold text-foreground mb-2">
-          Upload documents
+        <Upload className="h-10 w-10 sm:h-12 sm:w-12 text-muted-foreground mb-3 sm:mb-4" />
+        <h3 className="text-base sm:text-lg font-semibold text-foreground mb-2">
+          {isMobile ? "Upload docs" : "Upload documents"}
           {hasActiveUploads && (
-            <span className="ml-2 inline-flex items-center gap-1 text-sm text-primary">
+            <span className="ml-2 inline-flex items-center gap-1 text-xs sm:text-sm text-primary">
               <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
               Processing...
             </span>
           )}
         </h3>
-        <p className="text-sm text-muted-foreground mb-4">
-          Drag and drop documents here, or click to browse
+        <p className="text-xs sm:text-sm text-muted-foreground mb-3 sm:mb-4 px-2">
+          {isMobile ? "Tap to select files" : "Drag and drop documents here, or click to browse"}
         </p>
-        <p className="text-xs text-muted-foreground mb-2">
-          Supported: PDF, Word, PowerPoint, TXT (max {formatSizeLimit(maxSize)})
+        <p className="text-[10px] sm:text-xs text-muted-foreground mb-2 px-2">
+          {isMobile 
+            ? `PDF, Word, PPT, TXT (max ${formatSizeLimit(maxSize)})`
+            : `Supported: PDF, Word, PowerPoint, TXT (max ${formatSizeLimit(maxSize)})`
+          }
         </p>
-        <p className="text-xs text-blue-600 dark:text-blue-400 mb-2">
+        <p className="text-[10px] sm:text-xs text-blue-600 dark:text-blue-400 mb-2">
           <strong>Beta:</strong> Excel, CSV, JSON
         </p>
-        <div className="text-xs text-amber-600 dark:text-amber-400 mb-4 max-w-md">
-          ⏱ <strong>Processing time:</strong> Excel/CSV files and multiple uploads may take 1-2 minutes to process completely
+        <div className="text-[10px] sm:text-xs text-amber-600 dark:text-amber-400 mb-3 sm:mb-4 max-w-md px-2">
+          {isMobile 
+            ? "⏱ Excel/CSV may take 1-2 min"
+            : "⏱ Processing time: Excel/CSV files and multiple uploads may take 1-2 minutes to process completely"
+          }
         </div>
         <Button
           onClick={() => fileInputRef.current?.click()}
           variant="outline"
           data-testid="button-browse-files"
+          className="text-sm sm:text-base"
         >
-          Browse files
+          {isMobile ? "Select files" : "Browse files"}
         </Button>
         <input
           ref={fileInputRef}
@@ -180,28 +189,36 @@ export function DocumentUpload({
 
       {/* Upload Progress Visualization - Show on upload screen */}
       {uploads.length > 0 && (
-        <div className="space-y-4">
+        <div className="space-y-3 sm:space-y-4">
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium text-foreground">
-              Processing {uploads.length} document{uploads.length !== 1 ? 's' : ''}
+            <h4 className="text-xs sm:text-sm font-medium text-foreground">
+              {isMobile 
+                ? `Processing ${uploads.length} doc${uploads.length !== 1 ? 's' : ''}`
+                : `Processing ${uploads.length} document${uploads.length !== 1 ? 's' : ''}`
+              }
             </h4>
             {uploads.some((u) => u.status === "completed") && (
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={clearCompleted}
-                className="text-xs"
+                className="text-[10px] sm:text-xs h-7 sm:h-8"
               >
-                Clear completed
+                Clear
               </Button>
             )}
           </div>
           
           {/* Processing Time Reminder */}
           {hasActiveUploads && (
-            <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-2 rounded border">
+            <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-2 rounded border">
               <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse flex-shrink-0" />
-              <span>Processing documents... Large files may take 1-2 minutes</span>
+              <span>
+                {isMobile 
+                  ? "Processing... Large files may take 1-2 min"
+                  : "Processing documents... Large files may take 1-2 minutes"
+                }
+              </span>
             </div>
           )}
           
@@ -215,30 +232,30 @@ export function DocumentUpload({
       {/* Invalid Files Display */}
       {dropFiles.filter(f => f.error).length > 0 && (
         <div className="space-y-2">
-          <h4 className="text-sm font-medium text-destructive">
-            Files with errors:
+          <h4 className="text-xs sm:text-sm font-medium text-destructive">
+            {isMobile ? "Errors:" : "Files with errors:"}
           </h4>
           {dropFiles
             .filter(f => f.error)
             .map((dropFile) => (
-              <Card key={dropFile.id} className="p-3 border-destructive/20">
-                <div className="flex items-center gap-3">
-                  <File className="h-5 w-5 text-destructive flex-shrink-0" />
+              <Card key={dropFile.id} className="p-2 sm:p-3 border-destructive/20">
+                <div className="flex items-center gap-2 sm:gap-3">
+                  <File className="h-4 w-4 sm:h-5 sm:w-5 text-destructive flex-shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-medium truncate text-destructive">
+                      <p className="text-xs sm:text-sm font-medium truncate text-destructive">
                         {dropFile.file.name}
                       </p>
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-6 w-6"
+                        className="h-6 w-6 sm:h-7 sm:w-7 touch-manipulation"
                         onClick={() => removeDropFile(dropFile.id)}
                       >
                         <X className="h-3 w-3" />
                       </Button>
                     </div>
-                    <p className="text-xs text-destructive mt-1">
+                    <p className="text-[10px] sm:text-xs text-destructive mt-1 break-words">
                       {dropFile.error}
                     </p>
                   </div>

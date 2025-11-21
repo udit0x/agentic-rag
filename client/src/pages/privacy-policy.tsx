@@ -36,8 +36,8 @@ export default function PrivacyPolicy() {
 
           <p className="text-foreground">
             This Privacy Policy explains how MindMesh, a personal educational project, collects, uses, and protects your information when you use our service at{" "}
-            <a href="https://mindmesh.azurewebsites.net" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-              https://mindmesh.azurewebsites.net
+            <a href="https://mindmesh-ai.cloud/" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+              https://mindmesh-ai.cloud/
             </a>
             . By using MindMesh, you agree to the practices described in this policy.
           </p>

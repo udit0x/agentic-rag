@@ -100,7 +100,7 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
     return ['txt', 'text', 'log', 'md', 'readme'].includes(ext);
   };
 
-  // Auto-load preview when component mounts
+  // Auto-load preview when component mounts or document changes
   useEffect(() => {
     const loadPreview = async () => {
       setLoading(true);
@@ -118,7 +118,8 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
     };
 
     loadPreview();
-  }, [document.id, fetchDocumentContent]); // Re-load if document changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [document.id]); // Only re-load if document ID changes, NOT fetchDocumentContent
 
   const retryLoad = async () => {
     setLoading(true);
@@ -137,42 +138,42 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
   };
 
   return (
-    <DialogContent className="max-w-6xl max-h-[90vh] w-[95vw] overflow-hidden">
-      <DialogHeader>
-        <DialogTitle className="flex items-center gap-2 flex-shrink-0">
-          <File className="h-5 w-5" />
-          <span className="truncate">{document.filename}</span>
-          <Badge variant="outline" className="ml-2 flex-shrink-0">
+    <DialogContent className="max-w-6xl max-h-[90vh] w-[95vw] sm:w-[90vw] overflow-hidden p-3 sm:p-6">
+      <DialogHeader className="space-y-2">
+        <DialogTitle className="flex items-start gap-2 text-sm sm:text-base pr-8">
+          <File className="h-4 w-4 sm:h-5 sm:w-5 flex-shrink-0 mt-0.5" />
+          <span className="break-words flex-1 min-w-0 leading-tight">{document.filename}</span>
+          <Badge variant="outline" className="text-[10px] sm:text-xs flex-shrink-0 h-5 ml-1">
             {getFileExtension(document.filename)}
           </Badge>
         </DialogTitle>
-        <DialogDescription>
+        <DialogDescription className="text-xs sm:text-sm break-words">
           Preview of {document.filename} ({formatFileSize(document.size)})
         </DialogDescription>
       </DialogHeader>
       
-        <div className="flex flex-col gap-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4 text-sm text-muted-foreground">
-            <span>Size: {(document.size / 1024).toFixed(1)} KB</span>
-            <span>Uploaded: {new Date(document.uploadedAt).toLocaleDateString()}</span>
+        <div className="flex flex-col gap-3 sm:gap-4">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2 sm:gap-4 text-xs sm:text-sm text-muted-foreground flex-wrap">
+            <span className="flex-shrink-0">Size: {(document.size / 1024).toFixed(1)} KB</span>
+            <span className="flex-shrink-0">Uploaded: {new Date(document.uploadedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
           </div>
           
           {error && (
-            <Button onClick={retryLoad} size="sm" variant="outline">
-              <Eye className="h-4 w-4 mr-2" />
+            <Button onClick={retryLoad} size="sm" variant="outline" className="text-xs h-8">
+              <Eye className="h-3 w-3 sm:h-4 sm:w-4 mr-1.5 sm:mr-2" />
               Retry
             </Button>
           )}
         </div>        <div
-          className="relative border rounded-md bg-background h-[60vh] w-full custom-scroll"
+          className="relative border rounded-md bg-background h-[50vh] sm:h-[60vh] w-full custom-scroll"
           style={{
             overflowX: isTxtFile(document.filename) ? "hidden" : "auto",
             overflowY: "auto",
           }}
         >
           <div
-            className="absolute inset-0 p-4"
+            className="absolute inset-0 p-3 sm:p-4"
             style={{
               width: isTxtFile(document.filename) ? "100%" : "fit-content",
               minWidth: isTxtFile(document.filename) ? "auto" : "100%",
@@ -180,19 +181,19 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
           >
             {loading && (
               <div className="flex items-center justify-center h-full w-full">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+                <div className="animate-spin rounded-full h-6 w-6 sm:h-8 sm:w-8 border-b-2 border-primary"></div>
               </div>
             )}
 
             {error && (
-              <div className="flex items-center justify-center h-full w-full text-destructive">
+              <div className="flex items-center justify-center h-full w-full text-destructive text-xs sm:text-sm text-center px-4">
                 {error}
               </div>
             )}
 
             {content && (
               <pre
-                className={`text-xs leading-relaxed font-mono ${
+                className={`text-[10px] sm:text-xs leading-relaxed font-mono ${
                   isTxtFile(document.filename) 
                     ? "whitespace-pre-wrap word-break-break-word" 
                     : "whitespace-pre"
@@ -209,7 +210,7 @@ function DocumentPreview({ document, onClose }: DocumentPreviewProps) {
             )}
 
             {!content && !loading && !error && (
-              <div className="flex items-center justify-center h-full w-full text-muted-foreground">
+              <div className="flex items-center justify-center h-full w-full text-muted-foreground text-xs sm:text-sm">
                 Loading document content...
               </div>
             )}
@@ -235,7 +236,7 @@ function AnimatedDeleteButton({
       <Button
         variant="ghost"
         size="icon"
-        className={`h-8 w-8 sm:h-8 sm:w-8 transition-all duration-200 touch-manipulation ${
+        className={`h-8 w-8 sm:h-9 sm:w-9 transition-all duration-200 touch-manipulation ${
           isDeleting 
             ? 'text-destructive/40 cursor-not-allowed' 
             : 'text-destructive hover:text-destructive hover:bg-destructive/10 active:bg-destructive/20'
@@ -243,7 +244,7 @@ function AnimatedDeleteButton({
         onClick={onClick}
         disabled={disabled || isDeleting}
       >
-        <Trash2 className="h-4 w-4" />
+        <Trash2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
       </Button>
       
       {/* Loading spinner beside the button */}
@@ -391,32 +392,38 @@ export function DocumentLibrary({ documents: propDocuments = [], onRefresh, onDe
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Library className="h-5 w-5" />
-            Document Library
-            <Badge variant="secondary" className="ml-auto">
+        <CardHeader className="p-3 sm:p-6">
+          <CardTitle className="flex items-center gap-2 text-sm sm:text-base flex-wrap">
+            <Library className="h-4 w-4 sm:h-5 sm:w-5 flex-shrink-0" />
+            <span className="flex-shrink-0">Document Library</span>
+            <Badge variant="secondary" className="ml-auto text-xs flex-shrink-0">
               {documents.length} document{documents.length !== 1 ? 's' : ''}
             </Badge>
           </CardTitle>
         </CardHeader>
         
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-4 p-3 sm:p-6 pt-0 sm:pt-0">
           {/* Search */}
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 sm:h-4 sm:w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search documents..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10"
+              className="pl-9 sm:pl-10 h-9 sm:h-10 text-xs sm:text-sm"
             />
           </div>
 
           {/* Document List */}
           <div className="border rounded-md">
-            <ScrollArea className="h-96">
-              <div className="p-2 space-y-2">
+            <ScrollArea 
+              className="h-80 sm:h-96"
+              style={{
+                overscrollBehavior: "contain",
+                WebkitOverflowScrolling: "touch"
+              }}
+            >
+              <div className="p-1.5 sm:p-2 space-y-1.5 sm:space-y-2">
                 <AnimatePresence>
                   {isLoading ? (
                     <motion.div
@@ -424,8 +431,8 @@ export function DocumentLibrary({ documents: propDocuments = [], onRefresh, onDe
                       animate={{ opacity: 1 }}
                       className="flex flex-col items-center justify-center h-32 text-muted-foreground"
                     >
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mb-2"></div>
-                      <p>Loading documents...</p>
+                      <div className="animate-spin rounded-full h-6 w-6 sm:h-8 sm:w-8 border-b-2 border-primary mb-2"></div>
+                      <p className="text-xs sm:text-sm">Loading documents...</p>
                     </motion.div>
                   ) : filteredDocuments.length === 0 ? (
                     <motion.div
@@ -433,8 +440,8 @@ export function DocumentLibrary({ documents: propDocuments = [], onRefresh, onDe
                       animate={{ opacity: 1 }}
                       className="flex flex-col items-center justify-center h-32 text-muted-foreground"
                     >
-                      <Library className="h-8 w-8 mb-2" />
-                      <p>{searchTerm ? 'No documents match your search' : 'No documents uploaded yet'}</p>
+                      <Library className="h-6 w-6 sm:h-8 sm:w-8 mb-2" />
+                      <p className="text-xs sm:text-sm text-center px-4">{searchTerm ? 'No documents match your search' : 'No documents uploaded yet'}</p>
                     </motion.div>
                   ) : (
                     <>
@@ -452,12 +459,13 @@ export function DocumentLibrary({ documents: propDocuments = [], onRefresh, onDe
                               : 'hover:shadow-md'
                           }`}>
                             <CardContent className="p-3 sm:p-4">
-                              <div className="flex items-center gap-2 sm:gap-3">
-                                <div className="flex-shrink-0">
-                                  <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-primary/10 flex items-center justify-center transition-all duration-200 ${
+                              {/* Desktop Layout */}
+                              <div className="hidden sm:flex items-start gap-2 sm:gap-3">
+                                <div className="flex-shrink-0 pt-0.5">
+                                  <div className={`w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center transition-all duration-200 ${
                                     deletingDocuments.has(document.id) ? 'bg-destructive/10' : ''
                                   }`}>
-                                    <File className={`h-4 w-4 sm:h-5 sm:w-5 transition-colors duration-200 ${
+                                    <File className={`h-5 w-5 transition-colors duration-200 ${
                                       deletingDocuments.has(document.id) 
                                         ? 'text-destructive/60' 
                                         : 'text-primary'
@@ -465,33 +473,32 @@ export function DocumentLibrary({ documents: propDocuments = [], onRefresh, onDe
                                   </div>
                                 </div>
                                 
-                                <div className="flex-1 min-w-0 document-content">
-                                  <div className="flex items-center gap-1 sm:gap-2 mb-1">
-                                    <h4 className="text-xs sm:text-sm font-medium truncate">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-start gap-2 mb-1">
+                                    <h4 className="text-sm font-medium truncate flex-1 min-w-0 leading-tight">
                                       {document.filename}
                                     </h4>
-                                    <Badge variant="outline" className="text-xs flex-shrink-0">
+                                    <Badge variant="outline" className="text-xs flex-shrink-0 h-5">
                                       {getFileExtension(document.filename)}
                                     </Badge>
                                   </div>
                                   
-                                  <div className="flex items-center gap-2 sm:gap-4 text-xs text-muted-foreground">
+                                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
                                     <span className="flex items-center gap-1">
                                       <Calendar className="h-3 w-3" />
-                                      <span className="hidden xs:inline">{new Date(document.uploadedAt).toLocaleDateString()}</span>
-                                      <span className="xs:hidden">{new Date(document.uploadedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                                      {new Date(document.uploadedAt).toLocaleDateString()}
                                     </span>
-                                    <span className="flex-shrink-0">{formatFileSize(document.size)}</span>
+                                    <span>{formatFileSize(document.size)}</span>
                                   </div>
                                 </div>
                                 
-                                <div className="document-actions flex items-center gap-1 flex-shrink-0">
+                                <div className="flex items-center gap-1 flex-shrink-0 pt-0.5">
                                   <Dialog>
                                     <DialogTrigger asChild>
                                       <Button
                                         variant="ghost"
                                         size="icon"
-                                        className="h-8 w-8 sm:h-8 sm:w-8 touch-manipulation hover:bg-primary/10 active:bg-primary/20"
+                                        className="h-9 w-9 touch-manipulation hover:bg-primary/10 active:bg-primary/20"
                                         onClick={() => setSelectedDocument(document)}
                                       >
                                         <Eye className="h-4 w-4" />
@@ -509,6 +516,80 @@ export function DocumentLibrary({ documents: propDocuments = [], onRefresh, onDe
                                     isDeleting={deletingDocuments.has(document.id)}
                                     onClick={() => handleDelete(document.id, document.filename)}
                                   />
+                                </div>
+                              </div>
+
+                              {/* Mobile Layout */}
+                              <div className="sm:hidden space-y-2">
+                                <div className="flex items-start gap-2">
+                                  <div className="flex-shrink-0 pt-0.5">
+                                    <div className={`w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center transition-all duration-200 ${
+                                      deletingDocuments.has(document.id) ? 'bg-destructive/10' : ''
+                                    }`}>
+                                      <File className={`h-4 w-4 transition-colors duration-200 ${
+                                        deletingDocuments.has(document.id) 
+                                          ? 'text-destructive/60' 
+                                          : 'text-primary'
+                                      }`} />
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-start gap-1 mb-1.5">
+                                      <h4 className="text-xs font-medium leading-tight flex-1 min-w-0 break-words line-clamp-2">
+                                        {document.filename}
+                                      </h4>
+                                      <Badge variant="outline" className="text-[10px] flex-shrink-0 h-5 ml-1">
+                                        {getFileExtension(document.filename)}
+                                      </Badge>
+                                    </div>
+                                    
+                                    <div className="flex items-center gap-2 text-[10px] text-muted-foreground flex-wrap">
+                                      <span className="flex items-center gap-1 flex-shrink-0">
+                                        <Calendar className="h-3 w-3" />
+                                        {new Date(document.uploadedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                      </span>
+                                      <span className="flex-shrink-0">{formatFileSize(document.size)}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                                
+                                {/* Action Buttons Row for Mobile */}
+                                <div className="flex items-center justify-end gap-1 pl-11 border-t border-border/50 pt-2">
+                                  <Dialog>
+                                    <DialogTrigger asChild>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-8 flex-1 text-xs touch-manipulation"
+                                        onClick={() => setSelectedDocument(document)}
+                                      >
+                                        <Eye className="h-3.5 w-3.5 mr-1.5" />
+                                        Preview
+                                      </Button>
+                                    </DialogTrigger>
+                                    {selectedDocument && (
+                                      <DocumentPreview
+                                        document={selectedDocument}
+                                        onClose={() => setSelectedDocument(null)}
+                                      />
+                                    )}
+                                  </Dialog>
+                                  
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className={`h-8 flex-1 text-xs transition-all duration-200 touch-manipulation ${
+                                      deletingDocuments.has(document.id) 
+                                        ? 'text-destructive/40 cursor-not-allowed' 
+                                        : 'text-destructive hover:text-destructive hover:bg-destructive/10 active:bg-destructive/20'
+                                    }`}
+                                    onClick={() => handleDelete(document.id, document.filename)}
+                                    disabled={deletingDocuments.has(document.id)}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                                    {deletingDocuments.has(document.id) ? 'Deleting...' : 'Delete'}
+                                  </Button>
                                 </div>
                               </div>
                             </CardContent>
@@ -529,9 +610,9 @@ export function DocumentLibrary({ documents: propDocuments = [], onRefresh, onDe
               size="sm"
               onClick={handleRefresh}
               disabled={isRefreshing}
-              className="w-full"
+              className="w-full h-9 text-xs sm:text-sm"
             >
-              <RotateCcw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <RotateCcw className={`h-3.5 w-3.5 sm:h-4 sm:w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
               {isRefreshing ? 'Refreshing...' : 'Refresh Library'}
             </Button>
           </div>

@@ -13,6 +13,7 @@ from server.hybrid_middleware import (
     remove_user_personal_key,
     get_user_key_status
 )
+from server.datetime_utils import utc_now
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -82,7 +83,7 @@ async def sync_user(request: SyncUserRequest):
     Creates new user if doesn't exist, updates if exists.
     """
     try:
-        # Check if user already exists
+        # Check if user already exists by Clerk ID
         existing_user = await db_storage.getUser(request.id)
         
         if existing_user:
@@ -92,7 +93,7 @@ async def sync_user(request: SyncUserRequest):
                 "picture": request.picture,
                 "locale": request.locale or "en",
                 "preferences": request.preferences or {},
-                "lastLoginAt": datetime.now()
+                "lastLoginAt": utc_now()
             }
             
             user = await db_storage.updateUser(request.id, update_data)
@@ -118,7 +119,7 @@ async def sync_user(request: SyncUserRequest):
                 "picture": request.picture,
                 "locale": request.locale or "en",
                 "preferences": request.preferences or {},
-                "lastLoginAt": datetime.now()
+                "lastLoginAt": utc_now()
             }
             
             user = await db_storage.createUser(user_data)

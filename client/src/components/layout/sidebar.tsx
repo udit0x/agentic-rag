@@ -41,6 +41,7 @@ interface ChatHistoryItem {
   id: string;
   title: string;
   createdAt: string;
+  updatedAt?: string; // Last activity timestamp
   messageCount: number;
 }
 
@@ -99,6 +100,7 @@ export function Sidebar({
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreTriggerRef = useRef<HTMLDivElement>(null);
+  const previousFirstChatIdRef = useRef<string | null>(null);
 
   const filteredHistory = chatHistory.filter(chat =>
     chat.title.toLowerCase().includes(searchQuery.toLowerCase())
@@ -125,6 +127,30 @@ export function Sidebar({
   useEffect(() => {
     setDisplayedCount(15);
   }, [searchQuery]);
+
+  // 📜 AUTO-SCROLL TO TOP: When chat order changes (new message sent)
+  useEffect(() => {
+    const firstChatId = chatHistory[0]?.id;
+    
+    // If the first chat changed (meaning order changed), scroll to top
+    if (firstChatId && previousFirstChatIdRef.current && 
+        firstChatId !== previousFirstChatIdRef.current && 
+        isOpen) {
+      
+      // Use the viewport element from ScrollArea
+      const scrollContainer = scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]');
+      
+      if (scrollContainer) {
+        scrollContainer.scrollTo({
+          top: 0,
+          behavior: 'smooth'
+        });
+      }
+    }
+    
+    // Update the ref for next comparison
+    previousFirstChatIdRef.current = firstChatId || null;
+  }, [chatHistory, isOpen]);
 
   // Intersection Observer for infinite scroll
   useEffect(() => {
@@ -156,8 +182,11 @@ export function Sidebar({
   }, [isOpen, hasMore, isLoadingMore, loadMore]);
 
 const formatDate = (dateString: string): string => {
+  // Parse the UTC timestamp from server
   const date = new Date(dateString);
   const now = new Date();
+  
+  // Calculate difference in milliseconds
   const diffMs = now.getTime() - date.getTime();
   const diffSec = Math.floor(diffMs / 1000);
   const diffMin = Math.floor(diffSec / 60);
@@ -170,7 +199,7 @@ const formatDate = (dateString: string): string => {
   if (diffHour < 24) return `${diffHour}h ago`;
   if (diffDay < 7) return `${diffDay}d ago`;
 
-  // More than a week — show month and day, optionally year
+  // More than a week — show month and day, optionally year (in user's local timezone)
   const options: Intl.DateTimeFormatOptions =
     date.getFullYear() === now.getFullYear()
       ? { month: "short", day: "numeric" }
@@ -230,8 +259,36 @@ const formatDate = (dateString: string): string => {
     };
   }, []);
 
+  // 🔒 CRITICAL: Lock body scroll when sidebar is open on mobile
+  useEffect(() => {
+    if (isMobile && isOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    
+    // Cleanup on unmount
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [isMobile, isOpen]);
+
   return (
     <TooltipProvider>
+      {/* Mobile Backdrop */}
+      <AnimatePresence>
+        {isMobile && isOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 z-[59]"
+            style={{ touchAction: "none" }}
+            onClick={onToggle}
+          />
+        )}
+      </AnimatePresence>
+
       <motion.aside
         initial={false}
         animate={{
@@ -254,7 +311,11 @@ const formatDate = (dateString: string): string => {
         )}
         style={{
           // Ensure sidebar doesn't cause horizontal overflow on mobile
-          ...(isMobile && { maxWidth: 'min(280px, 80vw)' })
+          ...(isMobile && { 
+            maxWidth: 'min(280px, 80vw)',
+            overflow: 'hidden',
+            touchAction: 'none'
+          })
         }}
       >
       {/* Header */}
@@ -413,7 +474,14 @@ const formatDate = (dateString: string): string => {
 
       {/* Chat History */}
       <div className="flex-1 min-h-0">
-        <ScrollArea className="h-full px-1.5 sm:px-2" ref={scrollAreaRef}>
+        <ScrollArea 
+          className="h-full px-1.5 sm:px-2" 
+          ref={scrollAreaRef}
+          style={{
+            overscrollBehavior: "contain",
+            WebkitOverflowScrolling: "touch"
+          }}
+        >
           <div className={cn(
             "space-y-1 pb-4",
             isMobile && "pb-2"
@@ -462,16 +530,16 @@ const formatDate = (dateString: string): string => {
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
                                 <Clock className={cn(
-                                  "text-muted-foreground",
-                                  isMobile ? "h-2.5 w-2.5" : "h-3 w-3"
-                                )} />
-                                <span className={cn(
-                                  "text-muted-foreground",
-                                  isMobile ? "text-[10px]" : "text-xs"
-                                )}>
-                                  {formatDate(chat.createdAt)}
-                                </span>
-                              </div>
+                                "text-muted-foreground",
+                                isMobile ? "h-2.5 w-2.5" : "h-3 w-3"
+                              )} />
+                              <span className={cn(
+                                "text-muted-foreground",
+                                isMobile ? "text-[10px]" : "text-xs"
+                              )}>
+                                {formatDate(chat.updatedAt || chat.createdAt)}
+                              </span>
+                            </div>
                               <Badge variant="secondary" className={cn(
                                 "px-2 py-0",
                                 isMobile ? "text-[10px]" : "text-xs"
@@ -507,7 +575,7 @@ const formatDate = (dateString: string): string => {
 
                                   <div className="flex items-center justify-between pt-1">
                                     <span className="text-xs text-muted-foreground">
-                                      {formatDate(chat.createdAt)}
+                                      {formatDate(chat.updatedAt || chat.createdAt)}
                                     </span>
                                     <Badge variant="secondary" className="text-xs px-2 py-0">
                                       {chat.messageCount}

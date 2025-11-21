@@ -14,6 +14,8 @@ import Chat from "@/pages/chat";
 import NotFound from "@/pages/not-found";
 import PrivacyPolicy from "@/pages/privacy-policy";
 import TermsOfUse from "@/pages/terms-of-use";
+import SignInPage from "@/pages/sign-in";
+import SignUpPage from "@/pages/sign-up";
 
 const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
@@ -37,6 +39,12 @@ function AuthenticatedRouter() {
 function Router() {
   return (
     <Switch>
+      <Route path="/sign-in">
+        <SignInPage />
+      </Route>
+      <Route path="/sign-up">
+        <SignUpPage />
+      </Route>
       <Route path="/privacy-policy">
         <PrivacyPolicy />
       </Route>

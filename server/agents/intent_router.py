@@ -185,15 +185,19 @@ Analyze the query and return JSON:
         Detect if query is requesting document summary/overview/understanding.
         Only triggers when documents are selected (document_ids provided).
         
-        Patterns indicating summary request:
+        IMPORTANT: This should ONLY trigger for holistic document understanding requests,
+        NOT for specific topic searches within documents.
+        
+        Examples that SHOULD trigger:
         - "Summarize this document"
-        - "What is this document about?"
-        - "Give me an overview"
-        - "Tell me about this file"
-        - "What's in this document?"
-        - "Explain this document"
+        - "What is this document about?" (without specific topic)
+        - "Give me an overview of this file"
         - "Main points from this document"
-        - "Key takeaways"
+        
+        Examples that should NOT trigger:
+        - "In this document I want to understand about Azure pricing" (specific topic → RAG)
+        - "What does this document say about X" (specific query → RAG)
+        - "Find information about Y in this document" (specific search → RAG)
         """
         # Only consider as summary request if documents are selected
         if not document_ids or len(document_ids) == 0:
@@ -201,41 +205,51 @@ Analyze the query and return JSON:
         
         query_lower = query.lower()
         
-        # Summary request patterns
+        # EXCLUSION CHECK: If query mentions a specific topic/keyword to search for, it's NOT a summary request
+        # These patterns indicate the user wants to search FOR something, not get an overview
+        specific_search_indicators = [
+            r'\b(about|regarding|on|for|find|search|look for|information about|details about|tell me about)\s+\w+',
+            r'\bwant to (know|understand|learn|find)\s+(about|regarding)',
+            r'\b(what|how|why|when|where|who)\s+(does|do|is|are|can|should|would).+(say|mention|explain|describe|tell)',
+            r'\bin (this|the|these) (document|file).+(i want|want to|need to|looking for|find)',
+        ]
+        
+        for pattern in specific_search_indicators:
+            if re.search(pattern, query_lower):
+                # Check if there's actual content after the indicator (not just asking about the document itself)
+                # Extract what comes after "about", "regarding", etc.
+                match = re.search(pattern, query_lower)
+                if match:
+                    # Get text after the match to see if it's a specific topic
+                    after_match = query_lower[match.end():].strip()
+                    # If there's substantial text after (>3 characters), it's likely a specific topic search
+                    if len(after_match) > 3:
+                        logger.debug("Specific topic search detected: '%s' - NOT routing to summary", query)
+                        return False
+        
+        # VERY SPECIFIC summary request patterns - must be clear intent for document overview
         summary_patterns = [
-            # Direct summary requests
-            r'\b(summarize|summary|overview)\b',
+            # Explicit summary/overview requests (no specific topic mentioned)
+            r'^\s*(summarize|summary|overview)\s*(this|the|these)?\s*(document|file|doc|pdf)s?\s*$',
+            r'^\s*give me (a|an)?\s*(summary|overview)\s*$',
+            r'^\s*provide (a|an)?\s*(summary|overview)\s*$',
             
-            # "What is this document about" patterns
-            r'\bwhat (is|are|does) (this|the|these) (document|file|doc|pdf).*(about|contain|cover|discuss)',
-            r'\bwhat (is|are) in (this|the|these) (document|file|doc|pdf)',
+            # "What is this document about" - ONLY if no specific topic follows
+            r'^\s*what (is|are) (this|the|these) (document|file|doc|pdf)s?\s*(about|for)?\s*\??\s*$',
+            r'^\s*what (does|do) (this|the|these) (document|file|doc|pdf)s?\s*contain\s*\??\s*$',
             
-            # "Tell me about" patterns
-            r'\btell me (about|what is in) (this|the|these) (document|file|doc|pdf)',
+            # Main points / key takeaways (without specific topic)
+            r'^\s*(main|key) (points|takeaways|themes|topics|ideas|findings)\s*$',
+            r'^\s*key (information|insights|highlights)\s*$',
             
-            # "Explain/describe" patterns
-            r'\b(explain|describe) (this|the|these) (document|file|doc|pdf)',
+            # High-level overview (without specific topic)
+            r'^\s*(give|provide)\s*(me)?\s*(a|an)?\s*high.?level (overview|summary)\s*$',
             
-            # Main points / key takeaways
-            r'\b(main|key) (points|takeaways|themes|topics|ideas|findings)\b',
-            r'\bkey (information|insights|highlights)\b',
-            
-            # Overview patterns
-            r'\bgive.*overview',
-            r'\bprovide.*summary',
-            r'\bhigh.?level (overview|summary)',
-            
-            # Understanding patterns
-            r'\bwhat.*understanding of (this|the|these) (document|file)',
-            r'\bhelp me understand (this|the|these) (document|file)',
-            
-            # Content patterns
-            r'\bwhat (does|do) (this|the|these) (document|file).*(say|tell|show|explain)',
-            r'\bwhat.*content of (this|the|these) (document|file)',
-            
-            # Pronoun-based (when documents selected, likely referring to them)
-            r'\b(summarize|overview of|what is|tell me about|explain) (it|them)\b',
-            r'\bwhat (does|do) (it|they) (contain|cover|discuss|say)\b'
+            # Short queries that are clearly asking for document overview (no specific topic)
+            r'^\s*what is (this|it)\s*about\s*\??\s*$',
+            r'^\s*tell me about (this|it)\s*\??\s*$',
+            r'^\s*explain (this|it)\s*\??\s*$',
+            r'^\s*describe (this|it)\s*\??\s*$',
         ]
         
         for pattern in summary_patterns:
@@ -391,54 +405,74 @@ Analyze the query and return JSON:
     
     def _is_query_about_document_content(self, query: str) -> bool:
         """
-        Detect if query is asking about document content (when documents are filtered).
+        Detect if query is asking about general document content (when documents are filtered).
         
-        Patterns that indicate user wants to know about the selected documents:
-        - "What does this document do"
-        - "What is in this document"
-        - "Tell me about this document"
-        - "What does this file contain"
-        - "Summarize this document"
-        - "What is this document about"
+        IMPORTANT: This should ONLY trigger for GENERAL document questions,
+        NOT for specific topic searches.
+        
+        Examples that SHOULD trigger:
+        - "What does this document do?"
+        - "What is in this document?" (without specific topic)
+        - "Tell me about this document" (without specific topic)
+        
+        Examples that should NOT trigger:
+        - "What does this document say about Azure pricing?" (specific topic → goes through normal RAG)
+        - "In this document find information about X" (specific search)
         """
         query_lower = query.lower()
         
-        # Document content query patterns
+        # EXCLUSION CHECK: If query asks about a specific topic, it's NOT a general document query
+        # These patterns indicate specific information search, not general document overview
+        specific_topic_indicators = [
+            r'\b(about|regarding|on|for)\s+\w{3,}',  # "about [topic]", "regarding [topic]"
+            r'\b(find|search|look for|information on|details on)\s+\w+',
+            r'\bwant to (know|understand|learn|find)\s+about',
+            r'\bin (this|the) (document|file).+(i want|want to|need|looking for)',
+        ]
+        
+        for pattern in specific_topic_indicators:
+            if re.search(pattern, query_lower):
+                # Extract what comes after to verify it's a topic, not just trailing words
+                match = re.search(pattern, query_lower)
+                if match:
+                    after_match = query_lower[match.end():].strip()
+                    # If there's content after (indicating a specific topic), don't trigger
+                    if len(after_match) > 3:
+                        logger.debug("Specific topic in query detected: '%s' - NOT general document query", query)
+                        return False
+        
+        # Very specific patterns for GENERAL document content questions (no specific topic)
         document_content_patterns = [
-            r'\bwhat (does|is|do) (this|the|these) (document|file|doc|pdf|text)\b',
-            r'\btell me (about|what is in) (this|the|these) (document|file|doc)\b',
-            r'\bwhat (does|is) (this|the) (document|file) (contain|do|say|about|include)\b',
-            r'\bsummarize (this|the|these) (document|file|doc)\b',
-            r'\bwhat (is|are) (this|the|these) (document|file|doc) (about|for)\b',
-            r'\bexplain (this|the|these) (document|file|doc)\b',
-            r'\bdescribe (this|the|these) (document|file|doc)\b',
-            r'\bwhat (information|content|details) (is|are) in (this|the|these) (document|file|doc)\b',
-            r'\bwhat (does|do) (this|the|these) (document|file|doc) (say|tell|show|explain)\b',
-            r'\b(show|give) me (what|information) (is|are) in (this|the|these) (document|file|doc)\b',
-            r'\bwhat (can|should) i (learn|find|know) (from|about) (this|the|these) (document|file|doc)\b',
-            r'\b(what|tell me) (about|regarding) (this|the|these) (document|file|doc)\b',
+            # General "what does this document" questions (MUST be at start and not followed by "about [topic]")
+            r'^\s*what (does|is|do) (this|the|these) (document|file|doc|pdf)s?\s*(do|contain)?\s*\??\s*$',
+            
+            # General "tell me about this document" (NOT "tell me about [topic] in this document")
+            r'^\s*tell me about (this|the|these) (document|file|doc)s?\s*\??\s*$',
+            
+            # General "what is in this document" (no specific topic)
+            r'^\s*what (is|are) in (this|the|these) (document|file|doc)s?\s*\??\s*$',
+            
+            # Explain/describe the document itself (not a topic within it)
+            r'^\s*(explain|describe) (this|the|these) (document|file|doc)s?\s*\??\s*$',
         ]
         
         for pattern in document_content_patterns:
             if re.search(pattern, query_lower):
-                logger.debug("Document content query detected: '%s' matches pattern '%s'", query, pattern)
+                logger.debug("General document content query detected: '%s' matches pattern '%s'", query, pattern)
                 return True
         
-        # Also check for pronouns that might refer to documents when context suggests it
-        # "What does it do", "What is it about" when documents are selected
-        pronoun_patterns = [
-            r'\bwhat (does|is|do) (it|they) (do|say|contain|tell|show|explain|about)\b',
-            r'\bwhat (is|are) (it|they) (about|for)\b',
-            r'\btell me (about|what is in) (it|them)\b',
-            r'\bexplain (it|them)\b',
-            r'\bdescribe (it|them)\b',
-        ]
-        
-        # Only match pronouns if query is relatively short (likely referring to selected docs)
-        if len(query.split()) <= 10:
+        # Short pronoun-based queries ONLY if they're very short (likely referring to selected docs)
+        # "What does it do", "What is it about" - but ONLY if query is < 6 words
+        if len(query.split()) <= 6:
+            pronoun_patterns = [
+                r'^\s*what (does|is|do) (it|they)\s*(do|about|for)?\s*\??\s*$',
+                r'^\s*tell me about (it|them)\s*\??\s*$',
+                r'^\s*(explain|describe) (it|them)\s*\??\s*$',
+            ]
+            
             for pattern in pronoun_patterns:
                 if re.search(pattern, query_lower):
-                    logger.debug("Document content query detected (pronoun): '%s' matches pattern '%s'", query, pattern)
+                    logger.debug("General document pronoun query detected: '%s' matches pattern '%s'", query, pattern)
                     return True
         
         return False

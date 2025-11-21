@@ -34,7 +34,6 @@ import { cn } from "@/lib/utils";
 import { Settings, Zap } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useCachedChatHistory, useCachedDocuments } from "@/hooks/use-cached-api";
-import { useCacheStore } from "@/stores/cache-store";
 
 export default function Chat() {
   const isMobile = useIsMobile();
@@ -65,9 +64,6 @@ export default function Chat() {
   } = useCachedChatHistory();
   
   const { fetchDocuments, refreshDocuments } = useCachedDocuments();
-  
-  // Direct cache store access for immediate cache checks
-  const getChatSessionHistory = useCacheStore((state) => state.getChatSessionHistory);
   
   // Sidebar state - mobile-aware initialization
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
@@ -107,15 +103,16 @@ export default function Chat() {
         id: session.id,
         title: session.title,
         createdAt: session.createdAt,
+        updatedAt: session.updatedAt, // ✅ TIMESTAMP FIX: Pass last activity time
         messageCount: session.messageCount,
       }));
       
       return sessions;
     },
     enabled: !!userId, // Only fetch when userId is available
-    staleTime: 30 * 1000, // Mark stale after 30 seconds
+    staleTime: 60 * 1000, // Increased: 30s → 60s to reduce refetches
     gcTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
-    refetchOnWindowFocus: true, // Refresh when user returns to tab
+    refetchOnWindowFocus: false, // Disabled aggressive refetch on focus
     refetchOnReconnect: true, // Refresh when network reconnects
   });
 
@@ -180,8 +177,28 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<{ focus: () => void }>(null);
   const hasPreloadedRef = useRef<boolean>(false);
-  const activeSessionRef = useRef<string | undefined>(undefined); // ✅ Track active session for race condition prevention
+  
+  //P0 FIX: Smart scroll management to prevent layout thrashing
+  const isUserScrollingRef = useRef<boolean>(false);
+  const lastMessageCountRef = useRef<number>(0);
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // 🔧 CACHE FIX: Debounce sidebar refetch to prevent duplicate calls
+  const sidebarRefetchDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  
   const { toast } = useToast();
+
+  // 🔧 CACHE FIX: Debounced sidebar refetch to prevent spam
+  const debouncedRefetchSidebar = useCallback((delay: number = 500) => {
+    if (sidebarRefetchDebounceRef.current) {
+      clearTimeout(sidebarRefetchDebounceRef.current);
+    }
+    
+    sidebarRefetchDebounceRef.current = setTimeout(() => {
+      refetchChatSessions();
+      sidebarRefetchDebounceRef.current = null;
+    }, delay);
+  }, [refetchChatSessions]);
 
   // Load saved configuration on mount
   useEffect(() => {
@@ -273,9 +290,9 @@ export default function Chat() {
       };
     },
     enabled: !!sessionId,
-    staleTime: 30 * 1000, // Mark stale after 30 seconds for background revalidation
+    staleTime: 60 * 1000, // Increased: 30s → 60s to reduce refetches
     gcTime: 60 * 60 * 1000,
-    refetchOnWindowFocus: true, // Revalidate when tab regains focus
+    refetchOnWindowFocus: false, // Disabled aggressive refetch - causes UI freezing
     refetchOnReconnect: true, //  Revalidate when network reconnects
     // Removed placeholderData: keepPreviousData - it was preventing isLoading from being true
   });
@@ -333,7 +350,7 @@ export default function Chat() {
     enabled: !!userId, // Only fetch when userId is available
     staleTime: 5 * 60 * 1000, // 5 minutes - matches cache TTL
     gcTime: 10 * 60 * 1000, // 10 minutes
-    refetchOnWindowFocus: true, // Refresh when user returns
+    refetchOnWindowFocus: false, // Disabled aggressive refetch
     refetchOnReconnect: true, // Refresh on reconnect
   });
 
@@ -432,31 +449,51 @@ export default function Chat() {
     query: string,
     documentIds?: string[]
   ) => {
-    // console.log('[STREAM] handleStreamingQuery called with query:', query.substring(0, 50));
-    
     const streamSessionId = getSessionId(); // Capture session at stream start
     if (!streamSessionId) {
-      // console.error('[STREAM] No session ID available');
       throw new Error("Cannot stream without a session");
     }
     
-    // console.log('[STREAM] Session ID:', streamSessionId);
+    // 🔧 CACHE FIX: Track if this is a new session for sidebar update
+    const isNewSession = streamSessionId.startsWith('temp-session-');
 
     let accumulatedContent = "";
     let hasReceivedRefinement = false;
     let refinementTimeout: NodeJS.Timeout | null = null;
+    
+    //P0 FIX: Token batching to prevent re-render storms
+    let batchedChunks = "";
+    let batchFlushTimer: NodeJS.Timeout | null = null;
+    let animationFrameId: number | null = null;
+    
+    const flushBatchedChunks = () => {
+      if (!batchedChunks) return;
+      
+      const currentSession = getSessionId();
+      if (currentSession) {
+        const chunksToFlush = batchedChunks;
+        batchedChunks = ""; // Clear immediately to prevent duplicate flushes
+        
+        // Use requestAnimationFrame for smooth UI updates
+        if (animationFrameId !== null) {
+          cancelAnimationFrame(animationFrameId);
+        }
+        
+        animationFrameId = requestAnimationFrame(() => {
+          applyEventToCache(queryClient, {
+            type: "chunk",
+            sessionId: currentSession,
+            assistantServerId: lastMessageId || undefined,
+            append: chunksToFlush
+          });
+          animationFrameId = null;
+        });
+      }
+    };
+    
+    let lastMessageId: string | null = null;
 
     try {
-      // console.log('[STREAM] Initiating fetch to:', API_ENDPOINTS.EXECUTE_STREAM);
-      // console.log('[STREAM] Request body:', {
-      //   query,
-      //   sessionId: streamSessionId.startsWith('temp-session-') ? undefined : streamSessionId,
-      //   topK: 5,
-      //   enableTracing,
-      //   debugMode,
-      //   documentIds,
-      // });
-      
       const response = await fetch(API_ENDPOINTS.EXECUTE_STREAM, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -471,8 +508,6 @@ export default function Chat() {
         }),
       });
 
-      // console.log('[STREAM] Fetch completed, response status:', response.status, response.statusText);
-
       if (!response.ok) {
         const errorText = await response.text();
         console.error('[STREAM] HTTP error response body:', errorText);
@@ -484,20 +519,27 @@ export default function Chat() {
         throw new Error("Failed to get response reader");
       }
 
-      // Set timeout for refinement (5 seconds max wait - reduced from 10s)
+      // Set timeout for refinement (5 seconds max wait)
       refinementTimeout = setTimeout(() => {
         if (!hasReceivedRefinement) {
-          // Refinement timeout - proceeding without refined questions (silent)
           hasReceivedRefinement = true;
         }
-      }, 5000); // Reduced from 10000ms to 5000ms
+      }, 5000);
 
       const decoder = new TextDecoder();
       let buffer = "";
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          // Flush any remaining batched chunks on stream end
+          if (batchFlushTimer) {
+            clearTimeout(batchFlushTimer);
+            batchFlushTimer = null;
+          }
+          flushBatchedChunks();
+          break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n\n");
@@ -530,14 +572,21 @@ export default function Chat() {
                 const contentChunk = data.data.content || data.data.token || data.data.chunk;
                 if (contentChunk) {
                   accumulatedContent += contentChunk;
-                  const currentSession = getSessionId();
-                  if (currentSession && data.data.messageId) {
-                    applyEventToCache(queryClient, {
-                      type: "chunk",
-                      sessionId: currentSession,
-                      assistantServerId: data.data.messageId,
-                      append: contentChunk
-                    });
+                  
+                  //P0 FIX: Batch chunks instead of applying immediately
+                  if (data.data.messageId) {
+                    lastMessageId = data.data.messageId;
+                    batchedChunks += contentChunk;
+                    
+                    // Schedule flush after 40ms (balance between smoothness and responsiveness)
+                    if (batchFlushTimer) {
+                      clearTimeout(batchFlushTimer);
+                    }
+                    
+                    batchFlushTimer = setTimeout(() => {
+                      flushBatchedChunks();
+                      batchFlushTimer = null;
+                    }, 40);
                   }
                 }
               } 
@@ -552,12 +601,6 @@ export default function Chat() {
                 const currentSession = getSessionId();
                 if (currentSession && data.data.userMessageId) {
                   const refinedQueries = data.data.refined_queries || [];
-                  
-                  // console.log('[STREAM] Refinement received:', {
-                  //   userMessageId: data.data.userMessageId,
-                  //   count: refinedQueries.length,
-                  //   status: data.data.status
-                  // });
 
                   // Only apply if we have valid queries
                   if (refinedQueries.length > 0) {
@@ -567,19 +610,18 @@ export default function Chat() {
                       userMessageId: data.data.userMessageId,
                       refined: refinedQueries
                     });
-
-                    // REMOVED: invalidateQueries mid-stream
-                    // Instead, just scroll to show the new content
-                    setTimeout(() => {
-                      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-                    }, 50);
-                  } else {
-                    // console.log('[STREAM] Refinement skipped:', data.data.status);
                   }
                 }
               } 
               
               else if (data.type === "completion") {
+                //P0 FIX: Flush remaining chunks before completion
+                if (batchFlushTimer) {
+                  clearTimeout(batchFlushTimer);
+                  batchFlushTimer = null;
+                }
+                flushBatchedChunks();
+                
                 if (pendingUserMessage) {
                   setPendingUserMessage(null);
                 }
@@ -623,19 +665,18 @@ export default function Chat() {
                   } else {
                     setCurrentAgentTraces(data.data.agentTraces);
                   }
-
-                  // NO invalidation needed - cache already updated via applyEventToCache
-                  // Invalidating causes refetch which clears client-side refinedQueries
                   
-                  // REMOVED: Don't refetch sessions here - wait for title_update event
-                  // This prevents redundant fetches during streaming query completion
-                  // refetchChatSessions();
+                  // 🔧 CACHE FIX: Debounced refetch to update message count in sidebar
+                  // New sessions: 500ms delay, existing: 2s delay
+                  const refetchDelay = isNewSession ? 500 : 2000;
+                  debouncedRefetchSidebar(refetchDelay);
                 }
               } 
               
               else if (data.type === "title_update") {
-                //ONLY refetch sessions when title is actually updated
-                refetchChatSessions();
+                // Refetch sessions when title is updated (usually first message in new chat)
+                // Use immediate refetch (no delay) for title updates
+                debouncedRefetchSidebar(100);
               } 
               
               else if (data.type === "error") {
@@ -680,6 +721,13 @@ export default function Chat() {
         variant: "destructive",
       });
     } finally {
+      //Clean up batch timers
+      if (batchFlushTimer) {
+        clearTimeout(batchFlushTimer);
+      }
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+      }
       if (refinementTimeout) {
         clearTimeout(refinementTimeout);
       }
@@ -696,20 +744,12 @@ export default function Chat() {
       return;
     }
 
-    // console.log("[SUBMIT] User submitted message:", {
-    //   messageLength: content.length,
-    //   hasDocumentIds: documentIds.length > 0,
-    //   currentSessionId: sessionId,
-    //   timestamp: new Date().toISOString()
-    // });
-
     // Optimistically decrement quota
     if (!isUnlimited) {
       decrementQuota();
     }
 
     const optimisticId = `optimistic-${crypto.randomUUID()}`;
-    // console.log("[SUBMIT] Generated optimistic ID:", optimisticId);
 
     const optimisticMessage: Message = {
       id: optimisticId,
@@ -731,48 +771,35 @@ export default function Chat() {
     // Create new session for first message
     if (!sessionId) {
       const tempSessionId = `temp-session-${crypto.randomUUID()}`;
-      // console.log("[SUBMIT] Creating new temp session:", tempSessionId);
       setSession(tempSessionId);
       
       queryClient.setQueryData(
         ["chat-history", tempSessionId],
         {
           messages: [optimisticMessage],
-          refinedQueriesFor: undefined, // Initialize structure
-          refinedQueries: undefined,    // Initialize structure
+          refinedQueriesFor: undefined,
+          refinedQueries: undefined,
         }
       );
-      // console.log("[SUBMIT] Optimistic message added to cache (new session)");
     } else {
       // Add optimistic message to existing session
       queryClient.setQueryData(
         ["chat-history", sessionId],
         (old?: { messages: Message[]; refinedQueriesFor?: string; refinedQueries?: string[] }) => {
-          // console.log("[SUBMIT] Cache before update:", {
-          //   messageCount: old?.messages?.length,
-          //   refinedQueriesFor: old?.refinedQueriesFor
-          // });
-          
           // Clear old refined queries when new message is sent (they're only for the latest question)
           const result = {
             messages: [...(old?.messages ?? []), optimisticMessage],
-            refinedQueriesFor: undefined, // Clear old refined queries
-            refinedQueries: undefined,    // Will be set by new refinement event
+            refinedQueriesFor: undefined,
+            refinedQueries: undefined,
           };
-          
-          // console.log("[SUBMIT] Optimistic message added to cache (existing session):", {
-          //   newMessageCount: result.messages.length
-          // });
           
           return result;
         }
       );
     }
 
-    // console.log("[SUBMIT] Starting streaming query...");
     setIsStreaming(true);
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    // console.log("[SUBMIT] Scrolled to bottom, anchor set");
     
     // Use streaming query with error handling
     try {
@@ -1015,31 +1042,23 @@ export default function Chat() {
       return;
     }
 
-    if (sessionId === chatId && !isLoadingChatHistory) {
-      return;
-    }
+    // � SINGLE TRUTH RULE: Always refetch unless session is already selected AND has messages
+    const cached = queryClient.getQueryData<{ messages: Message[] }>(["chat-history", chatId]);
+    const hasMessages = (cached?.messages?.length ?? 0) > 0;
 
-    // Set active session immediately to prevent race conditions
-    activeSessionRef.current = chatId;
-
-    setIsLoadingChatHistory(true);
-    setLoadingChatId(chatId);
-
-    // Clear current session data (preserve structure with refined queries)
-    if (sessionId && sessionId !== chatId) {
-      const previousCache = queryClient.getQueryData<{ 
-        messages: Message[]; 
-        refinedQueriesFor?: string; 
-        refinedQueries?: string[] 
-      }>(["chat-history", sessionId]);
-      
-      // Preserve refined queries even when clearing messages for UI
-      queryClient.setQueryData(["chat-history", sessionId], { 
-        messages: [],
-        refinedQueriesFor: previousCache?.refinedQueriesFor,
-        refinedQueries: previousCache?.refinedQueries,
+    if (!(sessionId === chatId && hasMessages)) {
+      queryClient.invalidateQueries({
+        queryKey: ["chat-history", chatId],
+        exact: true
       });
     }
+
+    // Set session immediately
+    setSession(chatId);
+
+    // Set loading state
+    setIsLoadingChatHistory(true);
+    setLoadingChatId(chatId);
 
     // Clear current context
     setCurrentSources(undefined);
@@ -1047,78 +1066,6 @@ export default function Chat() {
     setCurrentAgentTraces(undefined);
     setCurrentExecutionTime(undefined);
     setCurrentResponseType(undefined);
-
-    // FIX 7: Use React Query as single source of truth
-    // Check React Query cache first (primary cache)
-    const reactQueryCache = queryClient.getQueryData<{ messages: Message[] }>(["chat-history", chatId]);
-    
-    if (reactQueryCache?.messages && reactQueryCache.messages.length > 0) {
-      // Data exists in React Query - use it directly
-      setSession(chatId);
-      
-      // Trigger background refetch for freshness
-      queueMicrotask(() => {
-        queryClient.refetchQueries({
-          queryKey: ["chat-history", chatId],
-          exact: true,
-        }).catch(error => {
-          console.warn('[BACKGROUND REFRESH] Failed for', chatId, error);
-        });
-      });
-    } else {
-      // No React Query cache - try Zustand as fallback for instant display
-      const cachedHistory = getChatSessionHistory(chatId);
-      
-      if (cachedHistory && Array.isArray(cachedHistory) && cachedHistory.length > 0) {
-        // Sync Zustand cache to React Query immediately (preserve structure)
-        queryClient.setQueryData(["chat-history", chatId], { 
-          messages: cachedHistory,
-          refinedQueriesFor: undefined, // Will be set by refinement event
-          refinedQueries: undefined,    // Will be set by refinement event
-        });
-        setSession(chatId);
-
-        // Refresh in background
-        queueMicrotask(() => {
-          fetchChatSessionHistory(chatId, true).then(freshHistory => {
-            // Only update if this chat is still the active one (prevents race condition)
-            if (activeSessionRef.current !== chatId) {
-              // console.log('[RACE PROTECTION] Skipping stale update for', chatId);
-              return;
-            }
-
-            // Lightweight comparison: check length and last message id
-            const shouldUpdate = freshHistory.length !== cachedHistory.length || 
-              (freshHistory.length > 0 && cachedHistory.length > 0 && 
-               freshHistory[freshHistory.length - 1]?.id !== cachedHistory[cachedHistory.length - 1]?.id);
-            
-            if (shouldUpdate) {
-              // Preserve refined queries during background refresh
-              const currentData = queryClient.getQueryData<{ 
-                messages: Message[]; 
-                refinedQueriesFor?: string; 
-                refinedQueries?: string[] 
-              }>(["chat-history", chatId]);
-              
-              queryClient.setQueryData(["chat-history", chatId], { 
-                messages: freshHistory,
-                refinedQueriesFor: currentData?.refinedQueriesFor, // Preserve
-                refinedQueries: currentData?.refinedQueries,       // Preserve
-              });
-            }
-          }).catch(error => {
-            // Background refresh failed - not critical
-            console.warn('[BACKGROUND REFRESH] Failed for', chatId, error);
-          });
-        });
-      } else {
-        // No cache available - set session and let React Query handle loading
-        // console.log('[CHAT SELECT] No cache available, setting session and triggering fetch');
-        setSession(chatId);
-        // React Query's useQuery hook will automatically fetch when sessionId changes
-        // The loading state will be handled by isLoadingHistory
-      }
-    }
 
     if (isMobile) {
       setIsSidebarOpen(false);
@@ -1133,9 +1080,6 @@ export default function Chat() {
       });
       return;
     }
-
-    // Clear active session ref for new chat
-    activeSessionRef.current = undefined;
 
     // Clear query cache for current session
     if (sessionId) {
@@ -1171,7 +1115,8 @@ export default function Chat() {
       setIsSidebarOpen(false);
     }
 
-    refetchChatSessions();
+    // 🔧 CACHE FIX: Use debounced refetch to prevent spam
+    debouncedRefetchSidebar(500);
   };
 
   // Handle document selection changes
@@ -1187,59 +1132,6 @@ export default function Chat() {
   // Include isLoadingHistory to prevent empty state flash during chat switching
   const shouldShowChatView = hasMessages || isStreaming || queryMutation.isPending || isLoadingHistory;
   const documents = (documentsData as any[] | undefined) || [];
-
-  // DEBUG: Track re-renders and cache state changes
-  useEffect(() => {
-  //   console.log('[RENDER] Chat component re-rendered:', {
-  //     sessionId,
-  //     messageCount: messages.length,
-  //     refinedQueriesFor,
-  //     refinedQueriesCount: refinedQueries.length,
-  //     isStreaming,
-  //     isLoadingHistory,
-  //     hasMessages,
-  //     shouldShowChatView,
-  //     chatHistoryData: chatHistory ? 'present' : 'null',
-  //     timestamp: new Date().toISOString()
-  //   });
-  });
-
-  // DEBUG: Track shouldShowChatView transitions (flicker detector)
-  useEffect(() => {
-    // console.log('[STATE] shouldShowChatView changed:', {
-    //   shouldShowChatView,
-    //   hasMessages,
-    //   messageCount: messages.length,
-    //   isStreaming,
-    //   isLoadingHistory,
-    //   isPending: queryMutation.isPending,
-    //   calculation: `${hasMessages} || ${isStreaming} || ${queryMutation.isPending} || ${isLoadingHistory} = ${shouldShowChatView}`
-    // });
-  }, [shouldShowChatView, hasMessages, messages.length, isStreaming, isLoadingHistory, queryMutation.isPending]);
-
-  // DEBUG: Track messages array changes (potential flicker source)
-  useEffect(() => {
-    if (messages.length > 0) {
-      // console.log(' [MESSAGES] Messages array updated:', {
-      //   count: messages.length,
-      //   sessionId,
-      //   messages: messages.map(m => ({
-      //     id: m.id,
-      //     serverId: m.serverId,
-      //     role: m.role,
-      //     contentPreview: m.content.substring(0, 30) + '...'
-      //   }))
-      // });
-    } else if (sessionId && !isLoadingHistory && chatHistory) {
-      // Only warn if session exists, not loading, and we have chatHistory data but no messages
-      // This indicates a potential issue (not just normal loading state)
-      console.warn(' [MESSAGES] Messages array is EMPTY but session exists!', {
-        sessionId,
-        chatHistoryData: chatHistory ? 'present' : 'null',
-        isLoadingHistory
-      });
-    }
-  }, [messages, sessionId, isLoadingHistory, chatHistory]);
 
   const handleDeleteChat = async (chatId: string) => {
     try {
@@ -1267,14 +1159,14 @@ export default function Chat() {
         method: "DELETE",
       })
         .then(() => {
-          // Sync with backend to ensure consistency
-          refetchChatSessions();
+          // 🔧 CACHE FIX: Use debounced refetch to prevent spam
+          debouncedRefetchSidebar(500);
         })
         .catch(error => {
           console.error("Failed to delete chat:", error);
           
-          // Revert optimistic update on failure
-          refetchChatSessions();
+          // 🔧 CACHE FIX: Use debounced refetch to prevent spam
+          debouncedRefetchSidebar(500);
           
           toast({
             title: "Delete failed", 
@@ -1286,8 +1178,8 @@ export default function Chat() {
     } catch (error) {
       console.error("Failed to delete chat:", error);
       
-      // Revert optimistic update and show error
-      refetchChatSessions();
+      // 🔧 CACHE FIX: Use debounced refetch to prevent spam
+      debouncedRefetchSidebar(500);
       
       toast({
         title: "Delete failed",
@@ -1380,64 +1272,89 @@ export default function Chat() {
   }, [handleKeyboardShortcuts, settings.enableKeyboardShortcuts]);
 
   // 🛡️ Tab visibility handler - revalidate when user returns to tab after being idle
+  // Optimized to prevent refetch storms during streaming
   useEffect(() => {
     let lastVisibilityChange = Date.now();
     let healthCheckInterval: NodeJS.Timeout | null = null;
+    let refetchDebounceTimeout: NodeJS.Timeout | null = null;
     
     const handleVisibilityChange = () => {
       if (!document.hidden) {
         const idleTime = Date.now() - lastVisibilityChange;
         
-        // If tab was hidden for more than 30 seconds, force revalidation
-        if (idleTime > 30 * 1000) {
-          // console.log(`[VISIBILITY] Tab was idle for ${Math.round(idleTime / 1000)}s - revalidating cache`);
-          
-          // Use refetchQueries instead of invalidateQueries for stale-while-revalidate pattern
-          // This shows stale data immediately while fetching fresh data in background
-          if (sessionId && !sessionId.startsWith('temp-session-')) {
-            queryClient.refetchQueries({
-              queryKey: ["chat-history", sessionId],
-              exact: true,
-            });
+        //Don't refetch if actively streaming
+        if (isStreaming) {
+          return;
+        }
+        
+        // Only refetch if tab was hidden for more than 2 minutes (increased threshold)
+        if (idleTime > 2 * 60 * 1000) {
+          // Debounce refetches to prevent storm when rapidly switching tabs
+          if (refetchDebounceTimeout) {
+            clearTimeout(refetchDebounceTimeout);
           }
           
-          // Also revalidate chat sessions list
-          queryClient.refetchQueries({
-            queryKey: ["chat-sessions"],
-            exact: true,
-          });
-          
-          // Revalidate documents
-          queryClient.refetchQueries({
-            queryKey: ["documents"],
-            exact: true,
-          });
+          refetchDebounceTimeout = setTimeout(() => {
+            // 🚀 P3 FIX: Double-check not streaming before refetch
+            if (isStreaming) return;
+            
+            // Use refetchQueries instead of invalidateQueries for stale-while-revalidate pattern
+            if (sessionId && !sessionId.startsWith('temp-session-')) {
+              queryClient.refetchQueries({
+                queryKey: ["chat-history", sessionId],
+                exact: true,
+              }).catch(err => console.warn('[VISIBILITY] Refetch failed:', err));
+            }
+            
+            // Stagger refetches to prevent simultaneous network calls
+            setTimeout(() => {
+              if (isStreaming) return;
+              queryClient.refetchQueries({
+                queryKey: ["chat-sessions"],
+                exact: true,
+              }).catch(err => console.warn('[VISIBILITY] Sessions refetch failed:', err));
+            }, 500);
+            
+            setTimeout(() => {
+              if (isStreaming) return;
+              queryClient.refetchQueries({
+                queryKey: ["documents"],
+                exact: true,
+              }).catch(err => console.warn('[VISIBILITY] Documents refetch failed:', err));
+            }, 1000);
+          }, 300); // 300ms debounce
         }
         
         // Start periodic health check when tab is active
         if (!healthCheckInterval) {
           healthCheckInterval = setInterval(() => {
-            // Check if cache is stale every 60 seconds when tab is active
+            // Skip health check during streaming
+            if (isStreaming) return;
+            
+            // Check if cache is stale every 2 minutes
             if (sessionId && !sessionId.startsWith('temp-session-')) {
               const cacheData = queryClient.getQueryState(["chat-history", sessionId]);
               const cacheAge = cacheData?.dataUpdatedAt ? Date.now() - cacheData.dataUpdatedAt : Infinity;
               
-              // If cache is older than 2 minutes, refetch with stale-while-revalidate
-              if (cacheAge > 2 * 60 * 1000) {
-                // console.log('[HEALTH] Cache is stale, refreshing in background...');
+              // If cache is older than 5 minutes, refetch
+              if (cacheAge > 5 * 60 * 1000) {
                 queryClient.refetchQueries({
                   queryKey: ["chat-history", sessionId],
                   exact: true,
-                });
+                }).catch(err => console.warn('[HEALTH] Background refetch failed:', err));
               }
             }
-          }, 60 * 1000); // Check every 60 seconds
+          }, 2 * 60 * 1000); // Check every 2 minutes
         }
       } else {
         // Tab hidden - stop health checks
         if (healthCheckInterval) {
           clearInterval(healthCheckInterval);
           healthCheckInterval = null;
+        }
+        if (refetchDebounceTimeout) {
+          clearTimeout(refetchDebounceTimeout);
+          refetchDebounceTimeout = null;
         }
       }
       
@@ -1456,8 +1373,68 @@ export default function Chat() {
       if (healthCheckInterval) {
         clearInterval(healthCheckInterval);
       }
+      if (refetchDebounceTimeout) {
+        clearTimeout(refetchDebounceTimeout);
+      }
     };
-  }, [sessionId]);
+  }, [sessionId, isStreaming]); // 🚀 P3 FIX: Added isStreaming to deps
+
+  // Smart scroll management - only scroll when truly needed
+  useEffect(() => {
+    // Clear any pending scroll timeout
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current);
+    }
+    
+    const shouldScroll = (
+      // Scroll when message count changes (new message added)
+      messages.length > lastMessageCountRef.current ||
+      // Scroll when streaming completes
+      (!isStreaming && lastMessageCountRef.current > 0) ||
+      // Scroll when pending message appears
+      queryMutation.isPending ||
+      pendingUserMessage
+    );
+    
+    if (shouldScroll && !isUserScrollingRef.current) {
+      scrollTimeoutRef.current = setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      }, 100);
+    }
+    
+    lastMessageCountRef.current = messages.length;
+    
+    return () => {
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current);
+      }
+    };
+  }, [messages.length, isStreaming, queryMutation.isPending, pendingUserMessage]);
+  
+  // Detect user manual scrolling to prevent auto-scroll interruption
+  useEffect(() => {
+    const scrollArea = document.querySelector('[data-radix-scroll-area-viewport]');
+    if (!scrollArea) return;
+    
+    let scrollTimeout: NodeJS.Timeout;
+    
+    const handleScroll = () => {
+      isUserScrollingRef.current = true;
+      
+      // Reset after 2 seconds of no scrolling
+      clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => {
+        isUserScrollingRef.current = false;
+      }, 2000);
+    };
+    
+    scrollArea.addEventListener('scroll', handleScroll);
+    
+    return () => {
+      scrollArea.removeEventListener('scroll', handleScroll);
+      clearTimeout(scrollTimeout);
+    };
+  }, []);
 
   // Deferred typing indicator to prevent flicker before optimistic message paints
   useEffect(() => {
@@ -1465,26 +1442,9 @@ export default function Chat() {
       const timer = setTimeout(() => setShowTypingIndicator(true), 50);
       return () => clearTimeout(timer);
     } else {
-      // Hide typing indicator immediately when streaming stops (no delay)
       setShowTypingIndicator(false);
     }
   }, [isStreaming]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, queryMutation.isPending, pendingUserMessage]);
-
-  // Additional effect to ensure scrolling when chat loads
-  useEffect(() => {
-    if (messages && messages.length > 0 && !isLoadingHistory) {
-      // Use a small timeout to ensure the DOM is updated
-      const timer = setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-      }, 100);
-      
-      return () => clearTimeout(timer);
-    }
-  }, [messages, isLoadingHistory]);
 
   // Auto-select the most recent assistant message when loading a chat (if no message is currently selected)
   useEffect(() => {
@@ -1539,36 +1499,53 @@ export default function Chat() {
     }
   }, [isLoadingChatHistory, sessionId, messages]);
 
-  // Safe background preloading - only once after initial app load
+  // Safe background preloading - RUNS ONLY ONCE after initial app load
   useEffect(() => {
+    // CRITICAL: Check ref immediately to prevent re-runs
+    if (hasPreloadedRef.current) return;
+    
     const preloadSessions = async () => {
-      if (hasPreloadedRef.current || !chatSessions || chatSessions.length === 0) {
-        return;
-      }
-
+      // Wait 5 seconds after app load before preloading
       await new Promise(resolve => setTimeout(resolve, 5000));
-
-      if (hasPreloadedRef.current || isStreaming || pendingUserMessage || queryMutation.isPending) {
-        return;
-      }
-
+      
+      // Double-check we haven't already preloaded (e.g., if effect re-ran)
+      if (hasPreloadedRef.current) return;
+      
+      // Mark as preloaded BEFORE starting
       hasPreloadedRef.current = true;
-
-      const recentSessions = chatSessions.slice(0, 5);
-
+      
+      const sessions = queryClient.getQueryData<any[]>(["chat-sessions", userId]);
+      if (!sessions || sessions.length === 0) return;
+      
+      const recentSessions = sessions.slice(0, 5);
+      
       for (const session of recentSessions) {
         try {
           if (session.id !== sessionId) {
             await fetchChatSessionHistory(session.id);
           }
         } catch (error) {
+          console.error('[PRELOAD] Failed for session:', session.id, error);
           break;
         }
       }
     };
-
-    preloadSessions();
-  }, [chatSessions]);
+    
+    // Defer preload to avoid blocking initial render
+    setTimeout(preloadSessions, 0);
+  }, []); // NO DEPENDENCIES - runs once only
+  
+  // 🔧 CLEANUP: Clear any pending debounce timers on unmount
+  useEffect(() => {
+    return () => {
+      if (sidebarRefetchDebounceRef.current) {
+        clearTimeout(sidebarRefetchDebounceRef.current);
+      }
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Check if the app is still loading initial data
   const isInitialLoading = !isAppInitialized || isLoadingChatSessions || isLoadingDocuments;
@@ -1619,7 +1596,9 @@ export default function Chat() {
         onNewChat={handleNewChat}
         onDeleteChat={handleDeleteChat}
         userProfile={userProfile}
-        onSettingsClick={() => setIsSettingsOpen(true)}
+        onSettingsClick={() => {
+          setIsSettingsOpen(true);
+        }}
         onUpdateRole={handleUpdateRole}
         onLogout={handleLogout}
         isLoadingChat={isLoadingChatHistory}
@@ -1642,7 +1621,11 @@ export default function Chat() {
         <div className="flex flex-1 overflow-hidden">
           <div className="flex-1 flex flex-col min-w-0">
 
-            <ScrollArea className="flex-1">
+            <ScrollArea className={cn(
+              "flex-1",
+              //  Add bottom padding to account for fixed input bar
+              isMobile && "pb-[140px]" // Approximate height of fixed input + padding
+            )}>
               <div className={cn(
                 "max-w-4xl mx-auto px-3 py-4 sm:px-4 sm:py-6",
                 // For empty state, ensure container takes available height and prevents scrolling
@@ -1668,14 +1651,6 @@ export default function Chat() {
                     </motion.div>
                   ) : !shouldShowChatView && !pendingUserMessage ? (
                     (() => {
-                      // console.log('[VIEW] Showing EmptyState:', {
-                      //   shouldShowChatView,
-                      //   hasMessages,
-                      //   messageCount: messages.length,
-                      //   isStreaming,
-                      //   pendingUserMessage,
-                      //   sessionId
-                      // });
                       return (
                         <div className="w-full">
                           <EmptyState 
@@ -1686,22 +1661,13 @@ export default function Chat() {
                     })()
                   ) : (
                     (() => {
-                      // console.log('[VIEW] Showing ChatView:', {
-                      //   shouldShowChatView,
-                      //   hasMessages,
-                      //   messageCount: messages.length,
-                      //   isStreaming,
-                      //   pendingUserMessage,
-                      //   sessionId,
-                      //   refinedQueriesFor,
-                      //   refinedQueriesCount: refinedQueries.length
-                      // });
                       return (
                         <motion.div 
                           initial={{ opacity: 0 }}
                           animate={{ opacity: 1 }}
                           className="space-y-4 sm:space-y-6"
                         >
+                      {/*  Disable animations during streaming to prevent layout thrashing */}
                       <AnimatePresence mode="popLayout" initial={false}>
                         {messages.map((message: Message, index: number) => {
                           // For assistant messages, check if this is the most recent assistant message
@@ -1715,15 +1681,16 @@ export default function Chat() {
                           // This prevents React from remounting when optimistic messages are confirmed
                           const messageKey = message.id;
                           
-                          // Skip animation for optimistic messages (user just typed them)
+                          // Skip animation for optimistic messages OR during streaming
                           const isOptimistic = messageKey.startsWith('optimistic-');
+                          const shouldAnimate = !isOptimistic && !isStreaming;
                           
                           return (
                             <motion.div
                               key={messageKey}
-                              initial={isOptimistic ? { opacity: 1, y: 0 } : { opacity: 0, y: 20 }}
+                              initial={shouldAnimate ? { opacity: 0, y: 20 } : { opacity: 1, y: 0 }}
                               animate={{ opacity: 1, y: 0 }}
-                              transition={{ duration: isOptimistic ? 0 : 0.3 }}
+                              transition={shouldAnimate ? { duration: 0.3 } : { duration: 0 }}
                             >
                               <MessageBubble
                                 message={message}
@@ -1761,7 +1728,15 @@ export default function Chat() {
             <motion.div 
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="flex-shrink-0 border-t border-border bg-background"
+              className={cn(
+                "flex-shrink-0 border-t border-border bg-background",
+                // Use fixed positioning on mobile to stay above keyboard
+                isMobile && [
+                  "fixed bottom-0 left-0 right-0 z-50",
+                  "shadow-[0_-4px_16px_rgba(0,0,0,0.1)]",
+                  "dark:shadow-[0_-4px_16px_rgba(0,0,0,0.3)]"
+                ]
+              )}
               style={{
                 paddingBottom: isMobile ? 'env(safe-area-inset-bottom)' : undefined
               }}

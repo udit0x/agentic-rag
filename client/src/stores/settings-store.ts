@@ -81,6 +81,7 @@ interface SettingsState {
   isSaving: boolean;
   isDeleting: boolean;
   isTesting: boolean;
+  isLoadingConfig: boolean; 
   hasUnsavedChanges: boolean;
   isConfigurationSaved: boolean; // Backend has saved config
   
@@ -233,6 +234,7 @@ export const useSettingsStore = create<SettingsState>()(
       isSaving: false,
       isDeleting: false,
       isTesting: false,
+      isLoadingConfig: false, // 🚀 SETTINGS FIX: Now part of state instead of module-level
       hasUnsavedChanges: false,
       isConfigurationSaved: false,
       
@@ -560,7 +562,13 @@ export const useSettingsStore = create<SettingsState>()(
       },
       
       loadConfiguration: async () => {
+        //  Use store state instead of module-level boolean
+        const { isLoadingConfig } = get();
+        if (isLoadingConfig) return;
+
         try {
+          set({ isLoadingConfig: true }, false, 'loadConfiguration:start');
+          
           const response: any = await apiRequest(API_ENDPOINTS.CONFIG.CURRENT);
           
           if (response && response.config) {
@@ -593,6 +601,7 @@ export const useSettingsStore = create<SettingsState>()(
                 validationErrors: [],
                 isConfigurationSaved: false,
                 hasUnsavedChanges: false,
+                isLoadingConfig: false,
               }, false, 'loadConfiguration:empty-config');
               return;
             }
@@ -630,6 +639,7 @@ export const useSettingsStore = create<SettingsState>()(
               llmTest: { status: 'success', message: 'Using saved configuration' },
               embeddingTest: { status: 'success', message: 'Using saved configuration' },
               validationErrors: [],
+              isLoadingConfig: false,
             }, false, 'loadConfiguration:success');
           } else {
             // No config from backend - ensure we're in clean default state
@@ -642,6 +652,7 @@ export const useSettingsStore = create<SettingsState>()(
               validationErrors: [],
               isConfigurationSaved: false,
               hasUnsavedChanges: false,
+              isLoadingConfig: false,
             }, false, 'loadConfiguration:no-config');
           }
         } catch (error) {
@@ -655,6 +666,7 @@ export const useSettingsStore = create<SettingsState>()(
             validationErrors: [],
             isConfigurationSaved: false,
             hasUnsavedChanges: false,
+            isLoadingConfig: false,
           }, false, 'loadConfiguration:error');
         }
       },

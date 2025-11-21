@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
+from server.datetime_utils import utc_now
 
 
 @dataclass
@@ -20,7 +21,7 @@ class DocumentChunk:
     content: str
     chunkIndex: int = 0
     embeddingId: Optional[str] = None
-    createdAt: datetime = field(default_factory=datetime.now)
+    createdAt: datetime = field(default_factory=utc_now)
 
 
 @dataclass
@@ -58,7 +59,7 @@ class MemStorage:
             id=doc_id,
             name=data.get("filename", data.get("name", "")),
             content=data["content"],
-            uploadedAt=datetime.now()
+            uploadedAt=utc_now()
         )
         self.documents[doc_id] = document
         return {
@@ -119,7 +120,7 @@ class MemStorage:
             content=data["content"],
             chunkIndex=data.get("chunkIndex", 0),
             embeddingId=data.get("embeddingId"),
-            createdAt=datetime.now()
+            createdAt=utc_now()
         )
         self.document_chunks[chunk_id] = chunk
         return {
@@ -166,7 +167,7 @@ class MemStorage:
     async def createChatSession(self, data: dict) -> dict:
         """Create a new chat session."""
         session_id = str(uuid.uuid4())
-        now = datetime.now()
+        now = utc_now()
         session = ChatSession(
             id=session_id,
             title=data.get("title", "New Chat"),
@@ -198,7 +199,7 @@ class MemStorage:
         if session_id in self.chat_sessions:
             session = self.chat_sessions[session_id]
             session.title = title
-            session.updatedAt = datetime.now()
+            session.updatedAt = utc_now()
 
     # Message operations
     async def createMessage(self, data: dict) -> dict:
@@ -209,14 +210,14 @@ class MemStorage:
             sessionId=data["sessionId"],
             role=data["role"],
             content=data["content"],
-            createdAt=datetime.now(),
+            createdAt=utc_now(),
             sources=data.get("sources")
         )
         self.messages[message_id] = message
 
         # Update session's updatedAt timestamp
         if data["sessionId"] in self.chat_sessions:
-            self.chat_sessions[data["sessionId"]].updatedAt = datetime.now()
+            self.chat_sessions[data["sessionId"]].updatedAt = utc_now()
 
         return {
             "id": message.id,

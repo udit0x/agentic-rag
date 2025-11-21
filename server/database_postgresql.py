@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 import uuid
+from server.datetime_utils import utc_now, utc_now_iso, to_iso
 
 logger = logging.getLogger(__name__)
 
@@ -183,8 +184,11 @@ class PostgreSQLStorage:
             # Convert snake_case to camelCase if mapping exists
             new_key = field_mapping.get(key, key)
             
+            # Convert datetime objects to ISO 8601 strings with 'Z' suffix (UTC)
+            if isinstance(value, datetime):
+                result[new_key] = to_iso(value)
             # Parse JSON fields
-            if new_key in json_fields and value is not None and isinstance(value, str):
+            elif new_key in json_fields and value is not None and isinstance(value, str):
                 try:
                     import json as json_lib
                     result[new_key] = json_lib.loads(value)
@@ -204,7 +208,7 @@ class PostgreSQLStorage:
             INSERT INTO documents (id, filename, content_type, size, content, uploaded_at, user_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
         """, doc_id, data['filename'], data['contentType'], data['size'], 
-            data['content'], datetime.now(), data.get('userId'))
+            data['content'], utc_now(), data.get('userId'))
         
         return await self.getDocument(doc_id)
     
@@ -239,7 +243,7 @@ class PostgreSQLStorage:
             INSERT INTO document_chunks (id, document_id, chunk_index, content, metadata, embedding_id, created_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
         """, chunk_id, data['documentId'], data['chunkIndex'], data['content'],
-            json.dumps(data.get('metadata', {})), data.get('embeddingId'), datetime.now())
+            json.dumps(data.get('metadata', {})), data.get('embeddingId'), utc_now())
         
         row = await self.db.fetchone("SELECT * FROM document_chunks WHERE id = $1", chunk_id)
         return self._convert_row_to_dict(row)
@@ -275,7 +279,7 @@ class PostgreSQLStorage:
         insert_values = []
         for i, data in enumerate(chunks_data):
             chunk_id = str(uuid.uuid4())
-            now = datetime.now()
+            now = utc_now()
             
             chunk_records.append({
                 "id": chunk_id,
@@ -306,7 +310,7 @@ class PostgreSQLStorage:
                 data["content"],
                 json.dumps(data.get("metadata", {})),
                 data.get("embeddingId"),
-                datetime.now()  # Use datetime object, not string
+                utc_now()  # Use datetime object, not string
             ])
         
         await self.db.execute(query, *params)
@@ -353,7 +357,7 @@ class PostgreSQLStorage:
             INSERT INTO chat_sessions (id, title, user_id, metadata, message_count, last_message_at, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         """, session_id, data.get('title'), data.get('userId'), 
-            json.dumps(data.get('metadata', {})), 0, None, datetime.now(), datetime.now())
+            json.dumps(data.get('metadata', {})), 0, None, utc_now(), utc_now())
         
         return await self.getChatSession(session_id)
     
@@ -392,7 +396,8 @@ class PostgreSQLStorage:
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         
-        query += " GROUP BY cs.id ORDER BY cs.created_at DESC"
+        # ✅ SORT FIX: Order by updated_at DESC to show most recently active chats first
+        query += " GROUP BY cs.id ORDER BY cs.updated_at DESC"
         
         rows = await self.db.fetchall(query, *args)
         return [self._convert_row_to_dict(row) for row in rows]
@@ -409,7 +414,7 @@ class PostgreSQLStorage:
         
         if update_fields:
             update_fields.append(f"updated_at = ${len(args) + 1}")
-            args.append(datetime.now())
+            args.append(utc_now())
             args.append(session_id)
             
             await self.db.execute(
@@ -458,7 +463,7 @@ class PostgreSQLStorage:
             json.dumps(data.get('sources', [])), json.dumps(data.get('classification')),
             json.dumps(data.get('agentTraces', [])), data.get('executionTimeMs'),
             data.get('responseType'), data.get('tokenCount'), data.get('contextWindowUsed'),
-            sequence_number, data.get('parentMessageId'), datetime.now())
+            sequence_number, data.get('parentMessageId'), utc_now())
         
         # Update session's message count and last message time
         await self.db.execute("""
@@ -467,7 +472,7 @@ class PostgreSQLStorage:
                 last_message_at = $1, 
                 updated_at = $1 
             WHERE id = $2
-        """, datetime.now(), data['sessionId'])
+        """, utc_now(), data['sessionId'])
         
         row = await self.db.fetchone("SELECT * FROM messages WHERE id = $1", message_id)
         return self._convert_row_to_dict(row)
@@ -500,7 +505,7 @@ class PostgreSQLStorage:
                 last_message_at = NULL, 
                 updated_at = $1 
             WHERE id = $2
-        """, datetime.now(), session_id)
+        """, utc_now(), session_id)
     
     async def getChatStatistics(self, userId: Optional[str] = None) -> dict:
         """Get chat statistics."""
@@ -533,7 +538,7 @@ class PostgreSQLStorage:
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         """, user_id, data['email'], data['name'], data.get('picture'),
             data.get('locale', 'en'), json.dumps(data.get('preferences', {})),
-            data.get('lastLoginAt') or datetime.now(), datetime.now(), datetime.now(), True)
+            data.get('lastLoginAt') or utc_now(), utc_now(), utc_now(), True)
         
         row = await self.db.fetchone("SELECT * FROM users WHERE id = $1", user_id)
         return self._convert_row_to_dict(row)
@@ -606,7 +611,7 @@ class PostgreSQLStorage:
             param_count += 1
         
         update_fields.append(f"updated_at = ${param_count}")
-        values.append(datetime.now())
+        values.append(utc_now())
         param_count += 1
         
         values.append(user_id)
@@ -616,6 +621,78 @@ class PostgreSQLStorage:
         
         row = await self.db.fetchone("SELECT * FROM users WHERE id = $1", user_id)
         return self._convert_row_to_dict(row)
+    
+    async def updateUserById(self, old_user_id: str, new_user_id: str, data: dict) -> dict:
+        """Update a user's ID (for Clerk migration) and other information.
+        This updates all foreign key references across related tables."""
+        
+        # Start a transaction to ensure atomicity
+        async with PostgreSQLConnection._pool.acquire() as conn:
+            async with conn.transaction():
+                # IMPORTANT: Update the user record FIRST to avoid foreign key violations
+                # The new user ID must exist before we can update related tables
+                update_fields = [f"id = $1"]
+                values = [new_user_id]
+                param_count = 2
+                
+                if 'name' in data:
+                    update_fields.append(f"name = ${param_count}")
+                    values.append(data['name'])
+                    param_count += 1
+                if 'picture' in data:
+                    update_fields.append(f"picture = ${param_count}")
+                    values.append(data['picture'])
+                    param_count += 1
+                if 'locale' in data:
+                    update_fields.append(f"locale = ${param_count}")
+                    values.append(data['locale'])
+                    param_count += 1
+                if 'preferences' in data:
+                    update_fields.append(f"preferences = ${param_count}")
+                    values.append(json.dumps(data['preferences']))
+                    param_count += 1
+                if 'lastLoginAt' in data:
+                    update_fields.append(f"last_login_at = ${param_count}")
+                    values.append(data['lastLoginAt'])
+                    param_count += 1
+                
+                update_fields.append(f"updated_at = ${param_count}")
+                values.append(utc_now())
+                param_count += 1
+                
+                values.append(old_user_id)
+                
+                query = f"UPDATE users SET {', '.join(update_fields)} WHERE id = ${param_count}"
+                await conn.execute(query, *values)
+                
+                # Now update foreign keys in related tables
+                await conn.execute(
+                    "UPDATE chat_sessions SET user_id = $1 WHERE user_id = $2",
+                    new_user_id, old_user_id
+                )
+                await conn.execute(
+                    "UPDATE documents SET user_id = $1 WHERE user_id = $2",
+                    new_user_id, old_user_id
+                )
+                await conn.execute(
+                    "UPDATE message_feedback SET user_id = $1 WHERE user_id = $2",
+                    new_user_id, old_user_id
+                )
+                await conn.execute(
+                    "UPDATE document_processing_jobs SET user_id = $1 WHERE user_id = $2",
+                    new_user_id, old_user_id
+                )
+                try:
+                    await conn.execute(
+                        "UPDATE user_personal_configs SET user_id = $1 WHERE user_id = $2",
+                        new_user_id, old_user_id
+                    )
+                except Exception as e:
+                    # Table might not exist in older database versions
+                    if "does not exist" not in str(e):
+                        raise
+        
+        return await self.getUser(new_user_id)
     
     async def getAllUsers(self, search: str | None = None, active_only: bool = True, page: int = 1, limit: int = 20) -> List[dict]:
         """Get all users with optional filtering."""

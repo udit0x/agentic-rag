@@ -91,9 +91,13 @@ export function EmptyState({ uploadedDocuments = [] }: EmptyStateProps) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5 }}
       className={cn(
-        "flex flex-col items-center justify-center px-4 overflow-auto relative",
+        "flex flex-col items-center justify-center px-4 overflow-y-auto relative",
         isMobile ? "py-6 min-h-full" : "py-1 gap-2 lg:gap-4"
       )}
+      style={{
+        overscrollBehavior: "contain",
+        WebkitOverflowScrolling: "touch"
+      }}
     >
       {/* Help Button - Top Right Corner */}
       <div className={cn(

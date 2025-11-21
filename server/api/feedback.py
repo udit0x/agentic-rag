@@ -12,6 +12,7 @@ import logging
 # Database and auth imports
 from server.database_interface import db_storage
 from server.auth_middleware import require_authenticated_user
+from server.datetime_utils import utc_now
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])
@@ -163,7 +164,7 @@ async def submit_feedback(
             id=feedback_id,
             message_id=request.message_id,
             feedback_type=request.feedback_type,
-            created_at=datetime.utcnow(),
+            created_at=utc_now(),
         )
     
     except HTTPException:

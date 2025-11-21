@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { API_CONFIG } from "@/lib/api-config";
 
 export interface BackendHealthStatus {
@@ -9,7 +9,7 @@ export interface BackendHealthStatus {
 }
 
 /**
- * Service health monitoring
+ * Service health monitoring with optimized polling
  */
 export function useBackendHealth() {
   const [status, setStatus] = useState<BackendHealthStatus>({
@@ -19,31 +19,31 @@ export function useBackendHealth() {
     lastChecked: null,
   });
 
+  // Track if a check is in progress to prevent concurrent requests (MUST be useRef, not useState!)
+  const checkInProgressRef = useRef(false);
+
   const checkHealth = async (): Promise<boolean> => {
+    // Prevent concurrent health checks
+    // if (checkInProgressRef.current) {
+    //   console.log('[HEALTH] Check already in progress, skipping');
+    //   return status.isHealthy;
+    // }
+
     try {
+      checkInProgressRef.current = true;
       setStatus((prev) => ({ ...prev, isChecking: true, error: null }));
 
-      // Primary service check
-      const primaryResponse = await fetch(`${API_CONFIG.API_BASE_URL}/api/ts-health`, {
+      // Single consolidated health check (removed duplicate secondary check)
+      const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/health`, {
         method: "GET",
         signal: AbortSignal.timeout(5000),
       });
 
-      if (!primaryResponse.ok) {
-        throw new Error(`Service unavailable: ${primaryResponse.status}`);
+      if (!response.ok) {
+        throw new Error(`Service unavailable: ${response.status}`);
       }
 
-      // Secondary service check
-      const secondaryResponse = await fetch(`${API_CONFIG.API_BASE_URL}/api/health`, {
-        method: "GET",
-        signal: AbortSignal.timeout(5000),
-      });
-
-      if (!secondaryResponse.ok) {
-        throw new Error(`Service unavailable: ${secondaryResponse.status}`);
-      }
-
-      const healthData = await secondaryResponse.json();
+      const healthData = await response.json();
       
       if (!healthData || healthData.status !== "healthy") {
         throw new Error("Invalid service status");
@@ -70,6 +70,8 @@ export function useBackendHealth() {
       });
 
       return false;
+    } finally {
+      checkInProgressRef.current = false;
     }
   };
 
@@ -77,17 +79,14 @@ export function useBackendHealth() {
     checkHealth();
   }, []);
 
+  // Poll continuously regardless of health status (improved recovery behavior)
   useEffect(() => {
-    if (!status.isHealthy) {
-      return;
-    }
-
     const intervalId = setInterval(() => {
       checkHealth();
-    }, 30000);
+    }, 60000); // Poll every 60s
 
     return () => clearInterval(intervalId);
-  }, [status.isHealthy]);
+  }, []); // Empty deps - poll always, never restart interval
 
   return {
     ...status,

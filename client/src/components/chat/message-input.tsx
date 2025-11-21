@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, forwardRef, useImperativeHandle } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -43,6 +43,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
   const [message, setMessage] = useState("");
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const isMobile = useIsMobile();
   const { toast } = useToast();
   const { hasActiveUploads } = useUploadContext();
@@ -62,6 +63,64 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
 
   // Combine disabled states
   const isInputDisabled = disabled || hasActiveUploads || isQuotaExhausted;
+  
+  // � PROPER MOBILE FIX: Scroll parent container on focus (not the textarea itself)
+  useEffect(() => {
+    if (!isMobile || !containerRef.current) return;
+
+    const handleFocus = () => {
+      requestAnimationFrame(() => {
+        const el = containerRef.current;
+        if (el) {
+          el.scrollTop = el.scrollHeight;
+        }
+      });
+    };
+
+    const textarea = textareaRef.current;
+    textarea?.addEventListener("focus", handleFocus);
+
+    return () => textarea?.removeEventListener("focus", handleFocus);
+  }, [isMobile]);
+
+  // 🦶 KEYBOARD OVERLAP FIX: Handle keyboard with VisualViewport API + scroll into view
+  useEffect(() => {
+    if (!isMobile || typeof window === 'undefined' || !window.visualViewport) return;
+
+    const viewport = window.visualViewport;
+    const onResize = () => {
+      const vh = viewport.height;
+      const container = containerRef.current;
+      const textarea = textareaRef.current;
+      
+      if (container && textarea) {
+        const keyboardHeight = window.innerHeight - vh;
+        
+        // Add padding for keyboard
+        container.style.paddingBottom = `${keyboardHeight}px`;
+        
+        // Scroll the input into view when keyboard appears
+        if (keyboardHeight > 0) {
+          requestAnimationFrame(() => {
+            textarea.scrollIntoView({ 
+              behavior: 'smooth', 
+              block: 'nearest',
+              inline: 'nearest'
+            });
+          });
+        }
+      }
+    };
+
+    viewport.addEventListener("resize", onResize);
+    return () => {
+      viewport.removeEventListener("resize", onResize);
+      // Clean up padding when unmounting
+      if (containerRef.current) {
+        containerRef.current.style.paddingBottom = '';
+      }
+    };
+  }, [isMobile]);
 
   useImperativeHandle(ref, () => ({
     focus: () => {
@@ -103,31 +162,15 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
     }
   };
 
-  // Auto-resize textarea with stable mobile behavior
-  useEffect(() => {
-    if (textareaRef.current) {
-      // Reset height first
-      textareaRef.current.style.height = "auto";
-      
-      // Calculate new height based on content
-      const scrollHeight = textareaRef.current.scrollHeight;
-      const maxHeight = isMobile ? 120 : 192; // 120px for mobile, 192px for desktop
-      const minHeight = isMobile ? 44 : 48; // Minimum height
-      
-      // Ensure we don't go below minimum or above maximum
-      const newHeight = Math.max(minHeight, Math.min(scrollHeight, maxHeight));
-      textareaRef.current.style.height = `${newHeight}px`;
-    }
-  }, [message, isMobile]); // Remove isMobile dependency to prevent flicker
+  // 🧠 BETTER AUTO-HEIGHT: Use useLayoutEffect to prevent flickers
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
 
-  // Handle mobile viewport changes separately
-  useEffect(() => {
-    if (textareaRef.current && isMobile) {
-      // Force recalculation when mobile state changes
-      const event = new Event('input', { bubbles: true });
-      textareaRef.current.dispatchEvent(event);
-    }
-  }, [isMobile]);
+    el.style.height = "auto";
+    const maxHeight = isMobile ? 120 : 192;
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+  }, [message, isMobile]);
 
   // Show toast at quota thresholds
   useEffect(() => {
@@ -272,12 +315,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(({
               onClick={handleInputInteraction}
               placeholder={
                 hasActiveUploads 
-                  ? "Upload in progress, please wait..."
+                  ? (isMobile ? "Uploading..." : "Upload in progress, please wait...")
                   : isQuotaExhausted
-                    ? "Quota exhausted - Add API key to continue..."
+                    ? (isMobile ? "Quota exhausted..." : "Quota exhausted - Add API key to continue...")
                     : selectedDocumentIds.length > 0 
-                      ? `Ask about ${selectedDocumentIds.length === 1 ? 'the selected document' : `${selectedDocumentIds.length} selected documents`}...`
-                      : placeholder
+                      ? (isMobile 
+                          ? `Ask about ${selectedDocumentIds.length} doc${selectedDocumentIds.length === 1 ? '' : 's'}...`
+                          : `Ask about ${selectedDocumentIds.length === 1 ? 'the selected document' : `${selectedDocumentIds.length} selected documents`}...`)
+                      : (isMobile && placeholder.length > 30 
+                          ? "Ask about your documents..." 
+                          : placeholder)
               }
               disabled={isInputDisabled}
               maxLength={MAX_CHARACTERS}

@@ -100,7 +100,7 @@ export function AppHelpDialog({ isOpen, onClose, isFirstTime = false, onGetStart
                   "font-bold tracking-tight mb-2",
                   isMobile ? "text-2xl" : "text-3xl"
                 )}>
-                  {isFirstTime ? "Welcome to AI Orchestrator" : "How It Works"}
+                  {isFirstTime ? "Welcome to MindMesh" : "How It Works"}
                 </DialogTitle>
                 <DialogDescription className="text-muted-foreground text-xs md:text-sm max-w-xl mx-auto">
                   {isFirstTime 

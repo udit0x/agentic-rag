@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +13,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { cn } from "@/lib/utils";
 import { AlertCircle, CheckCircle2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 export type FeedbackCategory =
   | "ignored_instructions"
@@ -60,6 +61,29 @@ export function FeedbackDialog({ open, onOpenChange, onSubmit }: FeedbackDialogP
   const [detailText, setDetailText] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isMobile = useIsMobile();
+
+  // Scroll textarea into view when focused on mobile
+  useEffect(() => {
+    if (!isMobile || !open) return;
+
+    const handleFocus = () => {
+      // Small delay to let keyboard appear
+      setTimeout(() => {
+        textareaRef.current?.scrollIntoView({ 
+          behavior: 'smooth', 
+          block: 'center' 
+        });
+      }, 300);
+    };
+
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.addEventListener('focus', handleFocus);
+      return () => textarea.removeEventListener('focus', handleFocus);
+    }
+  }, [isMobile, open]);
 
   const handleSubmit = async () => {
     if (!selectedCategory) return;
@@ -91,7 +115,13 @@ export function FeedbackDialog({ open, onOpenChange, onSubmit }: FeedbackDialogP
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-[510px] max-h-[90vh] overflow-y-auto rounded-2xl">
+      <DialogContent className={`
+        ${isMobile 
+          ? 'h-[100vh] w-[100vw] rounded-none max-h-none pb-[env(safe-area-inset-bottom)]' 
+          : 'sm:max-w-[510px] max-h-[90vh] rounded-2xl'
+        } 
+        overflow-y-auto
+      `}>
         <AnimatePresence mode="wait">
           {submitSuccess ? (
             <motion.div
@@ -130,22 +160,25 @@ export function FeedbackDialog({ open, onOpenChange, onSubmit }: FeedbackDialogP
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.3, ease: "easeInOut" }}
             >
-            <DialogHeader className="pb-2.5">
-              <DialogTitle className="flex items-center gap-2.5 text-lg">
-                <AlertCircle className="h-5 w-5 text-amber-500" />
+            <DialogHeader className={isMobile ? "pb-2" : "pb-2.5"}>
+              <DialogTitle className={`flex items-center gap-2.5 ${isMobile ? 'text-base' : 'text-lg'}`}>
+                <AlertCircle className={`${isMobile ? 'h-4 w-4' : 'h-5 w-5'} text-amber-500`} />
                 What went wrong?
               </DialogTitle>
-              <DialogDescription>
-                Help us improve by letting us know what went wrong with this response.
+              <DialogDescription className={isMobile ? "text-xs" : ""}>
+                {isMobile 
+                  ? "Let us know what went wrong with this response" 
+                  : "Help us improve by letting us know what went wrong with this response."
+                }
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-5 py-2.5">
+            <div className={`${isMobile ? 'space-y-3.5' : 'space-y-5'} py-2.5`}>
               {/* Category Selection - Compact Grid */}
               <RadioGroup
                 value={selectedCategory || ""}
                 onValueChange={(value) => setSelectedCategory(value as FeedbackCategory)}
-                className="grid grid-cols-2 gap-2.5"
+                className={`grid grid-cols-2 ${isMobile ? 'gap-2' : 'gap-2.5'}`}
               >
                 {FEEDBACK_OPTIONS.map((option) => (
                   <motion.div
@@ -162,11 +195,11 @@ export function FeedbackDialog({ open, onOpenChange, onSubmit }: FeedbackDialogP
                     <RadioGroupItem 
                       value={option.value} 
                       id={option.value} 
-                      className="shrink-0 border-2 self-center"
+                      className={`shrink-0 border-2 self-center ${isMobile ? 'h-4 w-4' : ''}`}
                     />
                     <Label
                       htmlFor={option.value}
-                      className="text-sm font-medium leading-tight cursor-pointer flex-1 self-center"
+                      className={`${isMobile ? 'text-xs' : 'text-sm'} font-medium leading-tight cursor-pointer flex-1 self-center`}
                     >
                       {option.label}
                     </Label>
@@ -175,16 +208,17 @@ export function FeedbackDialog({ open, onOpenChange, onSubmit }: FeedbackDialogP
               </RadioGroup>
 
               {/* Detail Text Input - Compact */}
-              <div className="space-y-2">
-                <Label htmlFor="detail-text" className="text-sm text-muted-foreground">
-                  Additional details (optional)
+              <div className={isMobile ? "space-y-1.5" : "space-y-2"}>
+                <Label htmlFor="detail-text" className={`${isMobile ? 'text-xs' : 'text-sm'} text-muted-foreground`}>
+                  {isMobile ? "Details (optional)" : "Additional details (optional)"}
                 </Label>
                 <Textarea
+                  ref={textareaRef}
                   id="detail-text"
-                  placeholder="Describe what happened..."
+                  placeholder={isMobile ? "What happened?" : "Describe what happened..."}
                   value={detailText}
                   onChange={(e) => setDetailText(e.target.value)}
-                  className="min-h-[85px] resize-none text-sm"
+                  className={`${isMobile ? 'min-h-[100px] text-[16px]' : 'min-h-[85px] text-sm'} resize-none`}
                   maxLength={500}
                   disabled={selectedCategory !== "other"}
                 />
@@ -195,13 +229,13 @@ export function FeedbackDialog({ open, onOpenChange, onSubmit }: FeedbackDialogP
             </div>
 
             {/* Action Buttons */}
-            <div className="flex justify-end gap-2.5 pt-2.5">
+            <div className={`flex ${isMobile ? 'flex-col' : 'justify-end'} gap-2.5 pt-2.5`}>
               <Button 
                 variant="ghost" 
                 size="sm" 
                 onClick={handleClose} 
                 disabled={isSubmitting}
-                className="h-9 px-4 text-sm"
+                className={`${isMobile ? 'w-full h-10' : 'h-9 px-4'} text-sm`}
               >
                 Cancel
               </Button>
@@ -209,7 +243,7 @@ export function FeedbackDialog({ open, onOpenChange, onSubmit }: FeedbackDialogP
                 size="sm"
                 onClick={handleSubmit}
                 disabled={!selectedCategory || isSubmitting}
-                className="h-9 px-5 text-sm"
+                className={`${isMobile ? 'w-full h-10' : 'h-9 px-5'} text-sm`}
               >
                 {isSubmitting ? (
                   <span className="flex items-center gap-2">

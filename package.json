@@ -23,6 +23,7 @@
     "@azure/search-documents": "^12.2.0",
     "@clerk/clerk-react": "^5.54.0",
     "@clerk/express": "^1.7.48",
+    "@clerk/themes": "^2.4.36",
     "@hookform/resolvers": "^3.10.0",
     "@jridgewell/trace-mapping": "^0.3.25",
     "@langchain/openai": "^1.0.0",

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { SignOutButton } from "@clerk/clerk-react";
 import { 
@@ -67,6 +67,20 @@ export function ProfileScreen({
   const [hasChanges, setHasChanges] = useState(false);
   const isMobile = useIsMobile();
 
+  // 🔒 CRITICAL: Lock body scroll when profile screen is open
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    
+    // Cleanup on unmount
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [isOpen]);
+
   const handleRoleChange = (newRole: string) => {
     setSelectedRole(newRole);
     setHasChanges(newRole !== userProfile.role);
@@ -128,10 +142,16 @@ export function ProfileScreen({
       </div>
 
       {/* Content */}
-      <div className={cn(
-        "flex-1 overflow-y-auto",
-        isMobile ? "p-4" : "p-6"
-      )}>
+      <div 
+        className={cn(
+          "flex-1 overflow-y-scroll",
+          isMobile ? "p-4 pb-8 safe-bottom" : "p-6"
+        )}
+        style={{
+          overscrollBehavior: "contain",
+          WebkitOverflowScrolling: "touch"
+        }}
+      >
         {isMobile ? (
           // Mobile Layout - Keep existing vertical layout
           <div className="space-y-6">
@@ -168,7 +188,6 @@ export function ProfileScreen({
                     Full Name
                   </Label>
                   <p className="text-sm text-muted-foreground pl-6">{userProfile.name}</p>
-                  <p className="text-xs text-muted-foreground pl-6">Provided by Google Account</p>
                 </div>
 
                 <div className="space-y-2">
@@ -177,7 +196,6 @@ export function ProfileScreen({
                     Email Address
                   </Label>
                   <p className="text-sm text-muted-foreground pl-6">{userProfile.email}</p>
-                  <p className="text-xs text-muted-foreground pl-6">Provided by Google Account</p>
                 </div>
 
                 {userProfile.joinedAt && (
@@ -367,6 +385,11 @@ export function ProfileScreen({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           className="fixed inset-0 z-[100] bg-background"
+          style={{
+            height: "100vh",
+            overflow: "hidden",
+            touchAction: "none"
+          }}
         >
           <motion.div
             initial={{ x: "100%" }}
@@ -390,6 +413,7 @@ export function ProfileScreen({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-4"
+        style={{ touchAction: "none" }}
         onClick={onClose}
       >
         <motion.div
@@ -398,6 +422,9 @@ export function ProfileScreen({
           exit={{ opacity: 0, scale: 0.95 }}
           onClick={(e) => e.stopPropagation()}
           className="w-full max-w-2xl max-h-[90vh] overflow-hidden"
+          style={{
+            overscrollBehavior: "contain"
+          }}
         >
           {content}
         </motion.div>
