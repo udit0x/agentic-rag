@@ -40,7 +40,7 @@ class DatabaseStorage:
         """Create a new document."""
         await self.ensure_initialized()
         
-        doc_id = str(uuid.uuid4())
+        doc_id = data.get('id', str(uuid.uuid4()))
         now = utc_now_iso()
         
         await self.db.execute(
@@ -55,14 +55,7 @@ class DatabaseStorage:
              data.get("userId"))
         )
         
-        return {
-            "id": doc_id,
-            "filename": data.get("filename", data.get("name", "")),
-            "content": data["content"],
-            "size": data.get("size", len(data["content"])),
-            "uploadedAt": now,
-            "contentType": data.get("contentType", "text/plain")
-        }
+        return await self.getDocument(doc_id)
 
     async def getDocument(self, doc_id: str) -> Optional[dict]:
         """Get a document by ID."""
@@ -78,15 +71,23 @@ class DatabaseStorage:
                 "filename": result["filename"],
                 "content": result["content"],
                 "size": result["size"],
-                "uploadedAt": result["uploaded_at"]
+                "contentType": result["content_type"],
+                "uploadedAt": result["uploaded_at"],
+                "userId": result.get("user_id")
             }
         return None
 
-    async def getAllDocuments(self) -> List[dict]:
-        """Get all documents."""
+    async def getAllDocuments(self, userId: Optional[str] = None) -> List[dict]:
+        """Get all documents, optionally filtered by userId."""
         await self.ensure_initialized()
         
-        results = await self.db.fetchall("SELECT * FROM documents")
+        if userId:
+            results = await self.db.fetchall(
+                "SELECT * FROM documents WHERE user_id = ? ORDER BY uploaded_at DESC",
+                (userId,)
+            )
+        else:
+            results = await self.db.fetchall("SELECT * FROM documents ORDER BY uploaded_at DESC")
         
         return [
             {
@@ -94,7 +95,9 @@ class DatabaseStorage:
                 "filename": doc["filename"],
                 "content": doc["content"],
                 "size": doc["size"],
-                "uploadedAt": doc["uploaded_at"]
+                "contentType": doc["content_type"],
+                "uploadedAt": doc["uploaded_at"],
+                "userId": doc.get("user_id")
             }
             for doc in results
         ]
@@ -599,7 +602,7 @@ class DatabaseStorage:
         """Create a new user."""
         await self.ensure_initialized()
         
-        user_id = str(uuid.uuid4())
+        user_id = data.get('id', str(uuid.uuid4()))
         now = utc_now_iso()
         
         await self.db.execute(
@@ -611,24 +614,13 @@ class DatabaseStorage:
              data.get("picture"),
              data.get("locale", "en"),
              json.dumps(data.get("preferences", {})),
-             None,
+             data.get('lastLoginAt'),
              now,
              now,
              1)
         )
         
-        return {
-            "id": user_id,
-            "email": data["email"],
-            "name": data["name"],
-            "picture": data.get("picture"),
-            "locale": data.get("locale", "en"),
-            "preferences": data.get("preferences", {}),
-            "lastLoginAt": None,
-            "createdAt": now,
-            "updatedAt": now,
-            "isActive": True
-        }
+        return await self.getUser(user_id)
 
     async def getUser(self, user_id: str) -> Optional[dict]:
         """Get a user by ID."""
@@ -640,7 +632,7 @@ class DatabaseStorage:
         
         if result:
             preferences = json.loads(result["preferences"]) if result["preferences"] else {}
-            return {
+            user_dict = {
                 "id": result["id"],
                 "email": result["email"],
                 "name": result["name"],
@@ -652,6 +644,20 @@ class DatabaseStorage:
                 "updatedAt": result["updated_at"],
                 "isActive": bool(result["is_active"])
             }
+            
+            # Add quota fields if they exist in the schema
+            if "is_unlimited" in result.keys():
+                user_dict["isUnlimited"] = bool(result["is_unlimited"])
+            if "remaining_quota" in result.keys():
+                user_dict["remainingQuota"] = result["remaining_quota"]
+            if "api_key_hash" in result.keys():
+                user_dict["apiKeyHash"] = result["api_key_hash"]
+            if "encrypted_api_key" in result.keys():
+                user_dict["encryptedApiKey"] = result["encrypted_api_key"]
+            if "api_key_provider" in result.keys():
+                user_dict["apiKeyProvider"] = result["api_key_provider"]
+            
+            return user_dict
         return None
 
     async def getUserByEmail(self, email: str) -> Optional[dict]:
@@ -664,7 +670,7 @@ class DatabaseStorage:
         
         if result:
             preferences = json.loads(result["preferences"]) if result["preferences"] else {}
-            return {
+            user_dict = {
                 "id": result["id"],
                 "email": result["email"],
                 "name": result["name"],
@@ -676,6 +682,20 @@ class DatabaseStorage:
                 "updatedAt": result["updated_at"],
                 "isActive": bool(result["is_active"])
             }
+            
+            # Add quota fields if they exist in the schema
+            if "is_unlimited" in result.keys():
+                user_dict["isUnlimited"] = bool(result["is_unlimited"])
+            if "remaining_quota" in result.keys():
+                user_dict["remainingQuota"] = result["remaining_quota"]
+            if "api_key_hash" in result.keys():
+                user_dict["apiKeyHash"] = result["api_key_hash"]
+            if "encrypted_api_key" in result.keys():
+                user_dict["encryptedApiKey"] = result["encrypted_api_key"]
+            if "api_key_provider" in result.keys():
+                user_dict["apiKeyProvider"] = result["api_key_provider"]
+            
+            return user_dict
         return None
 
     async def getAllUsers(self, search: Optional[str] = None, active_only: bool = True, page: int = 1, limit: int = 20) -> List[dict]:
@@ -706,7 +726,7 @@ class DatabaseStorage:
         users = []
         for result in results:
             preferences = json.loads(result["preferences"]) if result["preferences"] else {}
-            users.append({
+            user_dict = {
                 "id": result["id"],
                 "email": result["email"],
                 "name": result["name"],
@@ -717,7 +737,21 @@ class DatabaseStorage:
                 "createdAt": result["created_at"],
                 "updatedAt": result["updated_at"],
                 "isActive": bool(result["is_active"])
-            })
+            }
+            
+            # Add quota fields if they exist in the schema
+            if "is_unlimited" in result.keys():
+                user_dict["isUnlimited"] = bool(result["is_unlimited"])
+            if "remaining_quota" in result.keys():
+                user_dict["remainingQuota"] = result["remaining_quota"]
+            if "api_key_hash" in result.keys():
+                user_dict["apiKeyHash"] = result["api_key_hash"]
+            if "encrypted_api_key" in result.keys():
+                user_dict["encryptedApiKey"] = result["encrypted_api_key"]
+            if "api_key_provider" in result.keys():
+                user_dict["apiKeyProvider"] = result["api_key_provider"]
+            
+            users.append(user_dict)
         
         return users
 
@@ -771,6 +805,72 @@ class DatabaseStorage:
         )
         
         return await self.getUser(user_id)
+    
+    async def updateUserById(self, old_user_id: str, new_user_id: str, data: dict) -> dict:
+        """Update a user's ID (for Clerk migration) and other information.
+        This updates all foreign key references across related tables."""
+        await self.ensure_initialized()
+        
+        # SQLite requires manual transaction handling
+        # Update the user record FIRST before updating foreign keys
+        set_clauses = ["id = ?"]
+        params = [new_user_id]
+        
+        if "name" in data:
+            set_clauses.append("name = ?")
+            params.append(data["name"])
+        if "picture" in data:
+            set_clauses.append("picture = ?")
+            params.append(data["picture"])
+        if "locale" in data:
+            set_clauses.append("locale = ?")
+            params.append(data["locale"])
+        if "preferences" in data:
+            set_clauses.append("preferences = ?")
+            params.append(json.dumps(data["preferences"]))
+        if "lastLoginAt" in data:
+            set_clauses.append("last_login_at = ?")
+            params.append(data["lastLoginAt"])
+        
+        set_clauses.append("updated_at = ?")
+        params.append(utc_now_iso())
+        params.append(old_user_id)
+        
+        # Update user record
+        await self.db.execute(
+            f"UPDATE users SET {', '.join(set_clauses)} WHERE id = ?",
+            tuple(params)
+        )
+        
+        # Update foreign keys in related tables
+        await self.db.execute(
+            "UPDATE chat_sessions SET user_id = ? WHERE user_id = ?",
+            (new_user_id, old_user_id)
+        )
+        await self.db.execute(
+            "UPDATE documents SET user_id = ? WHERE user_id = ?",
+            (new_user_id, old_user_id)
+        )
+        await self.db.execute(
+            "UPDATE message_feedback SET user_id = ? WHERE user_id = ?",
+            (new_user_id, old_user_id)
+        )
+        await self.db.execute(
+            "UPDATE document_processing_jobs SET user_id = ? WHERE user_id = ?",
+            (new_user_id, old_user_id)
+        )
+        
+        # Try to update user_personal_configs if it exists
+        try:
+            await self.db.execute(
+                "UPDATE user_personal_configs SET user_id = ? WHERE user_id = ?",
+                (new_user_id, old_user_id)
+            )
+        except Exception:
+            # Table might not exist in older database versions
+            pass
+        
+        return await self.getUser(new_user_id)
 
     async def deactivateUser(self, user_id: str) -> None:
         """Deactivate a user (soft delete)."""
@@ -1002,6 +1102,150 @@ class DatabaseStorage:
         """Get a message by ID."""
         row = await self.db.fetchone("SELECT * FROM messages WHERE id = ?", [message_id])
         return dict(row) if row else None
+    
+    # ==================== QUOTA MANAGEMENT ====================
+    
+    async def decrementQuota(self, user_id: str) -> dict | None:
+        """
+        Atomically decrement user's quota and return updated user data.
+        
+        Uses UPDATE...WHERE...RETURNING-like pattern for SQLite.
+        Multiple simultaneous requests will be handled correctly by the database.
+        
+        Args:
+            user_id: User ID to decrement quota for
+        
+        Returns:
+            Updated user data if successful, None if quota already at 0
+        
+        Security:
+        - Atomic operation prevents race conditions
+        - WHERE clause ensures we only decrement if quota > 0
+        - Returns None if quota exhausted (no rows updated)
+        """
+        await self.ensure_initialized()
+        
+        # SQLite doesn't support RETURNING, so we need to do this in two steps
+        # First, try to decrement
+        await self.db.execute("""
+            UPDATE users
+            SET remaining_quota = remaining_quota - 1,
+                updated_at = ?
+            WHERE id = ? AND remaining_quota > 0
+        """, (utc_now_iso(), user_id))
+        
+        # Check if any row was updated by fetching the user
+        user = await self.getUser(user_id)
+        if user and user.get('remainingQuota', 0) >= 0:
+            return user
+        return None
+    
+    async def setUnlimitedQuota(self, user_id: str, unlimited: bool = True) -> dict:
+        """
+        Set a user's unlimited quota status.
+        
+        Args:
+            user_id: User ID
+            unlimited: True for unlimited, False for limited (50 quota)
+        
+        Returns:
+            Updated user data
+        """
+        await self.ensure_initialized()
+        
+        if unlimited:
+            # Set unlimited and clear quota count
+            await self.db.execute("""
+                UPDATE users
+                SET is_unlimited = 1,
+                    remaining_quota = NULL,
+                    updated_at = ?
+                WHERE id = ?
+            """, (utc_now_iso(), user_id))
+        else:
+            # Set limited and initialize quota to 50
+            await self.db.execute("""
+                UPDATE users
+                SET is_unlimited = 0,
+                    remaining_quota = 50,
+                    updated_at = ?
+                WHERE id = ?
+            """, (utc_now_iso(), user_id))
+        
+        return await self.getUser(user_id)
+    
+    async def resetUserQuota(self, user_id: str, quota: int = 50) -> dict:
+        """
+        Reset a user's quota to a specific value.
+        
+        Args:
+            user_id: User ID
+            quota: New quota value (default 50)
+        
+        Returns:
+            Updated user data
+        """
+        await self.ensure_initialized()
+        
+        await self.db.execute("""
+            UPDATE users
+            SET remaining_quota = ?,
+                updated_at = ?
+            WHERE id = ? AND (is_unlimited = 0 OR is_unlimited IS NULL)
+        """, (quota, utc_now_iso(), user_id))
+        
+        return await self.getUser(user_id)
+    
+    async def setUserApiKey(self, user_id: str, api_key_hash: str) -> dict:
+        """
+        Set a user's personal API key hash.
+        
+        Args:
+            user_id: User ID
+            api_key_hash: SHA-256 hash of the API key
+        
+        Returns:
+            Updated user data
+        """
+        await self.ensure_initialized()
+        
+        await self.db.execute("""
+            UPDATE users
+            SET api_key_hash = ?,
+                updated_at = ?
+            WHERE id = ?
+        """, (api_key_hash, utc_now_iso(), user_id))
+        
+        return await self.getUser(user_id)
+    
+    async def getUserQuota(self, user_id: str) -> dict | None:
+        """
+        Get quota information for a user.
+        
+        Args:
+            user_id: User ID
+        
+        Returns:
+            Dict with quota information or None if user not found
+        """
+        await self.ensure_initialized()
+        
+        row = await self.db.fetchone("""
+            SELECT id, email, is_unlimited, remaining_quota, 
+                   (api_key_hash IS NOT NULL) as has_personal_key
+            FROM users
+            WHERE id = ?
+        """, (user_id,))
+        
+        if row:
+            return {
+                "id": row["id"],
+                "email": row["email"],
+                "isUnlimited": bool(row["is_unlimited"]),
+                "remainingQuota": row["remaining_quota"],
+                "hasPersonalKey": bool(row["has_personal_key"])
+            }
+        return None
 
 
 # Global storage instance

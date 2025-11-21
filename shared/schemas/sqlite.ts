@@ -35,6 +35,13 @@ export const users = sqliteTable("users", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   isActive: integer("is_active", { mode: "boolean" }).default(true),
+  // Quota management fields
+  isUnlimited: integer("is_unlimited", { mode: "boolean" }).default(false),
+  remainingQuota: integer("remaining_quota").default(50),
+  apiKeyHash: text("api_key_hash"), // SHA-256 hash of user's personal API key (verification-only)
+  // Enhanced personal API key storage (encrypted, can be used automatically)
+  encryptedApiKey: text("encrypted_api_key"), // Fernet-encrypted personal API key
+  apiKeyProvider: text("api_key_provider"), // 'openai', 'azure', 'gemini'
 });
 
 // Enhanced chat sessions
@@ -160,6 +167,29 @@ export const documentProcessingJobs = sqliteTable("document_processing_jobs", {
   createdAt: text("created_at").notNull(),
 });
 
+// User feedback for response quality and ML training
+export const messageFeedback = sqliteTable("message_feedback", {
+  id: text("id").primaryKey(),
+  messageId: text("message_id").notNull().references(() => messages.id, { onDelete: "cascade" }),
+  sessionId: text("session_id").notNull().references(() => chatSessions.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  feedbackType: text("feedback_type").notNull(), // "positive" | "negative"
+  category: text("category"), // Only for negative feedback: "ignored_instructions" | "fetched_multiple_documents" | "harmful_offensive" | "forgot_context" | "missing_information" | "other"
+  detailText: text("detail_text"), // User's additional comments
+  // Store context for future ML training
+  queryContext: text("query_context"), // JSON string
+  // ML training fields (for future use)
+  isReviewed: integer("is_reviewed", { mode: "boolean" }).default(false),
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: text("reviewed_at"),
+  trainingWeight: real("training_weight").default(1.0), // For weighted training
+  modelVersion: text("model_version"), // Track which model version received feedback
+  // Metadata for analysis
+  metadata: text("metadata"), // JSON string
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 // Insert schemas
 export const insertDocumentSchema = createInsertSchema(documents);
 export const insertDocumentChunkSchema = createInsertSchema(documentChunks);
@@ -172,6 +202,7 @@ export const insertConfigVersionSchema = createInsertSchema(configVersions);
 export const insertQueryAnalyticsSchema = createInsertSchema(queryAnalytics);
 export const insertAgentTraceSchema = createInsertSchema(agentTraces);
 export const insertDocumentProcessingJobSchema = createInsertSchema(documentProcessingJobs);
+export const insertMessageFeedbackSchema = createInsertSchema(messageFeedback);
 
 // Types
 export type Document = typeof documents.$inferSelect;
@@ -206,3 +237,6 @@ export type InsertAgentTrace = typeof agentTraces.$inferInsert;
 
 export type DocumentProcessingJob = typeof documentProcessingJobs.$inferSelect;
 export type InsertDocumentProcessingJob = typeof documentProcessingJobs.$inferInsert;
+
+export type MessageFeedback = typeof messageFeedback.$inferSelect;
+export type InsertMessageFeedback = typeof messageFeedback.$inferInsert;
