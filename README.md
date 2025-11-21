@@ -50,77 +50,6 @@ Meta Knowledge  Cost Tracker      Title Generator   General Knowledge
 - **Personal API keys** for unlimited usage
 - **Mobile-responsive** design with dark/light mode
 
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         🌐 FRONTEND                             │
-│                  React 18 + TypeScript + Vite                   │
-│                         Port 5000                               │
-├─────────────────────────────────────────────────────────────────┤
-│  • Chat Interface with streaming responses                      │
-│  • Document management (upload, view, delete)                   │
-│  • Settings & configuration (models, quotas, keys)              │
-│  • Real-time SSE connection for agent updates                   │
-│  • Clerk authentication with JWT                                │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │
-                   HTTP/REST + SSE
-                            │
-┌───────────────────────────▼─────────────────────────────────────┐
-│                      ⚙️ BACKEND LAYER                           │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │          📦 Node.js Express API (Port 5000)              │  │
-│  │  • Authentication middleware (Clerk JWT validation)      │  │
-│  │  • Session management & user context                     │  │
-│  │  • Document upload & metadata storage                    │  │
-│  │  • API gateway to Python services                        │  │
-│  │  • Database operations (Drizzle ORM)                     │  │
-│  └────────────────────┬─────────────────────────────────────┘  │
-│                       │                                         │
-│                  Proxy Requests                                 │
-│                       │                                         │
-│  ┌────────────────────▼─────────────────────────────────────┐  │
-│  │        🐍 Python FastAPI + LangGraph (Port 8000)         │  │
-│  │  • Multi-agent orchestration (LangGraph StateGraph)      │  │
-│  │  • Intent routing & query classification                 │  │
-│  │  • Document processing pipeline (PyMuPDF, python-docx)   │  │
-│  │  • Vector embeddings & hybrid search                     │  │
-│  │  • RAG chain with citation extraction                    │  │
-│  │  • Streaming response generation                         │  │
-│  │  • Cost tracking & quota enforcement                     │  │
-│  └────────────────────┬─────────────────────────────────────┘  │
-└────────────────────────┼──────────────────────────────────────┘
-                         │
-              ┌──────────┴──────────┐
-              │                     │
-    ┌─────────▼────────┐  ┌─────────▼──────────┐
-    │   💾 Database    │  │   🔍 Vector Store  │
-    │                  │  │                    │
-    │  PostgreSQL      │  │  Azure Cognitive   │
-    │  (Production)    │  │  Search            │
-    │       or         │  │                    │
-    │  SQLite (Dev)    │  │  • Vector index    │
-    │                  │  │  • Hybrid search   │
-    │  • User data     │  │  • Metadata filter │
-    │  • Documents     │  │  • User isolation  │
-    │  • Chat history  │  │                    │
-    │  • Configurations│  │                    │
-    └──────────────────┘  └──────────┬─────────┘
-                                     │
-                            ┌────────▼─────────┐
-                            │   🤖 Azure AI    │
-                            │                  │
-                            │  Azure OpenAI    │
-                            │  • GPT-4o        │
-                            │  • Embeddings    │
-                            │  • Streaming     │
-                            └──────────────────┘
-```
-
 ### 📊 Data Flow Example
 
 **User Query: "What were the Q3 revenue numbers?"**
@@ -135,7 +64,7 @@ Meta Knowledge  Cost Tracker      Title Generator   General Knowledge
 8. **Frontend** → Displays answer + sources + agent traces
 9. **Title Generator** → Creates session title → Updates UI
 
-**⚡ Total Time: ~3-5 seconds | User sees response word-by-word in real-time**
+**⚡ Total Time: ~13-15 seconds | User sees response word-by-word in real-time**
 
 ---
 
@@ -360,10 +289,7 @@ PhaseOneBuild/
 │   └── docker-compose.yml           # Docker setup
 │
 └── 📚 Documentation
-    ├── README.md                    # This file
-    ├── PRODUCT_OVERVIEW.md          # Product details
-    ├── DEPLOYMENT_READY.md          # Deployment guide
-    └── azure/                       # Azure deployment docs
+    └──  README.md                    # This file
 ```
 
 ---
