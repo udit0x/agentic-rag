@@ -42,7 +42,7 @@ function Router() {
       <Route path="/sign-in">
         <SignInPage />
       </Route>
-      <Route path="/sign-up">
+      <Route path="/sign-up" nest>
         <SignUpPage />
       </Route>
       <Route path="/privacy-policy">

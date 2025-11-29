@@ -5,6 +5,7 @@ import Aurora from "@/components/ui/Aurora";
 import { Link } from "wouter";
 
 export default function SignInPage() {
+
   return (
     <div className="min-h-screen relative overflow-hidden bg-background">
       {/* Aurora background */}
@@ -129,14 +130,16 @@ export default function SignInPage() {
                   formFieldErrorText: "text-red-600 dark:text-red-400",
                   identityPreview: "bg-background/50 border-border text-foreground",
                   identityPreviewEditButtonIcon: "text-primary",
+                  verificationLinkStatusText: "text-foreground",
+                  verificationLinkStatusIcon: "text-primary",
+                  codeFieldInput: "bg-background border-border text-foreground",
+                  resendButton: "text-primary hover:text-primary/80",
                 },
                 layout: {
                   socialButtonsPlacement: "top",
                   socialButtonsVariant: "blockButton",
                 },
               }}
-              path="/sign-in"
-              routing="path"
               signUpUrl="/sign-up"
               forceRedirectUrl="/"
               fallbackRedirectUrl="/"

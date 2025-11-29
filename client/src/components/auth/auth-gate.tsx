@@ -18,7 +18,7 @@ export function AuthGate({ children }: AuthGateProps) {
   const { isHealthy, isChecking, error: healthError, retry } = useBackendHealth();
   const [showContent, setShowContent] = useState(false);
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
 
   useEffect(() => {
     if (isLoaded && !initialLoadComplete) {
@@ -37,11 +37,15 @@ export function AuthGate({ children }: AuthGateProps) {
   }, [isLoaded, isSignedIn, isSyncing, initialLoadComplete, isHealthy]);
 
   // Redirect to sign-in page if not authenticated
+  // BUT DO NOT redirect if user is already on an auth page (prevents OTP interruption)
   useEffect(() => {
     if (isLoaded && !isSignedIn) {
-      setLocation("/sign-in");
+      // Don't redirect if user is on sign-in or sign-up pages (including sub-routes like OTP verification)
+      if (location !== "/sign-in" && !location.startsWith("/sign-up")) {
+        setLocation("/sign-in");
+      }
     }
-  }, [isLoaded, isSignedIn, setLocation]);
+  }, [isLoaded, isSignedIn, location, setLocation]);
 
   // Show loading state while Clerk is initializing
   if (!isLoaded || !initialLoadComplete) {
@@ -159,8 +163,15 @@ export function AuthGate({ children }: AuthGateProps) {
     );
   }
 
-  // If not signed in, redirect is handled by useEffect above
+  // If not signed in, check if we're on an auth page before showing loading
   if (!isSignedIn) {
+    // If user is on sign-up or sign-in pages, let those components render instead of showing loading
+    if (location.startsWith("/sign-up") || location === "/sign-in") {
+      // Return children directly for auth pages (let Clerk components handle the UI)
+      return <>{children}</>;
+    }
+    
+    // For other pages, show loading while redirecting
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <motion.div

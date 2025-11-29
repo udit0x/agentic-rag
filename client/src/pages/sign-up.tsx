@@ -129,17 +129,31 @@ export default function SignUpPage() {
                   formFieldErrorText: "text-red-600 dark:text-red-400",
                   identityPreview: "bg-background/50 border-border text-foreground",
                   identityPreviewEditButtonIcon: "text-primary",
+                  // Enhanced OTP/verification styling
+                  verificationLinkStatusText: "text-foreground",
+                  verificationLinkStatusIcon: "text-primary",
+                  codeFieldInput: "bg-background border-border text-foreground text-center",
+                  codeFieldInputs: "gap-2",
+                  resendButton: "text-primary hover:text-primary/80",
+                  resendCodeLink: "text-primary hover:text-primary/80",
+                  verificationCodeField: "bg-background border-border text-foreground",
+                  verificationCodeFieldInput: "bg-background border-border text-foreground text-center",
+                  // Additional form elements
+                  formButtonReset: "text-muted-foreground hover:text-foreground",
+                  formButtonSecondary: "border-border bg-background hover:bg-accent text-foreground",
+                  phoneInputBox: "bg-background border-border text-foreground",
                 },
                 layout: {
                   socialButtonsPlacement: "top",
                   socialButtonsVariant: "blockButton",
+                  showOptionalFields: true,
                 },
               }}
               path="/sign-up"
               routing="path"
               signInUrl="/sign-in"
-              forceRedirectUrl="/"
-              fallbackRedirectUrl="/"
+              // forceRedirectUrl="/"  // Removed to prevent OTP screen from disappearing
+              // fallbackRedirectUrl="/"  // Removed to prevent OTP screen from disappearing
             />
           </motion.div>
 
